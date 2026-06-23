@@ -24,7 +24,7 @@ feat/phase{N}-{kebab-case-description}
 | 2 | `feat/phase5-builtin-presets` | `main` | 5.1 | 无（可与 Phase 2 并行） | **已合并 main** |
 | 3 | `feat/phase3-rest-server` | Phase 2 后的 `main` | 3.1→3.2→3.3 | Phase 2 | **已合并 main** |
 | 4 | `feat/phase4-webgui` | Phase 3 后的 `main` | 4.1→4.4 | Phase 3 | **已合并 main** |
-| 5 | `feat/phase5-release` | Phase 4 后的 `main` | 5.2→5.3 | Phase 4 | **待开工** |
+| 5 | `feat/phase5-release` | Phase 4 后的 `main` | 5.2→5.3 | Phase 4 | **已合并 main** |
 
 ### Phase 2 分支内顺序（共享 `packages/cli/src/index.ts`，不可拆并行）
 
