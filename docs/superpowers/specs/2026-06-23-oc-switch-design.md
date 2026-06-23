@@ -471,6 +471,8 @@ oc-switch/
 
 首版内置以下公益站/常用 provider 模板（从用户现有配置反向验证）：
 
+> **说明：** 内置 preset 反映**当前**常用 provider 的快照，端点、模型列表等可能随站点变更；不代表永久承诺。用户应通过 `oc-switch import` 从本地配置同步，或用 `provider edit` / 自定义 preset 覆盖过时模板。
+
 | Preset ID | API 类型 | 说明 |
 |-----------|----------|------|
 | `elysiver` | openai-completions | Elysiver 公益站 |

@@ -6,3 +6,7 @@ export * from "./env-manager";
 export * from "./operations";
 export * from "./transaction-writer";
 export * from "./paths";
+export * from "./backup-manager";
+export * from "./diff";
+export * from "./preset-store";
+export * from "./provider-sync";

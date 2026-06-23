@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sample from "../../core/test/fixtures/openclaw.sample.json";
@@ -70,5 +70,245 @@ describe("cli write commands", () => {
 
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("Disabled nvidia/deepseek-ai/deepseek-v4-flash");
+  });
+
+  test("lists backups after write", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+    await runCli(["use", "nvidia/deepseek-ai/deepseek-v4-flash"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    const result = await runCli(["backup", "list"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("set primary model");
+  });
+
+  test("diff shows changes since latest backup", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+    await runCli(["use", "nvidia/deepseek-ai/deepseek-v4-flash"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    const result = await runCli(["diff"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("primaryChanged");
+    expect(result.stdout).not.toContain("sk-");
+  });
+
+  test("restores backup", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+    await runCli(["use", "nvidia/deepseek-ai/deepseek-v4-flash"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    const listResult = await runCli(["backup", "list"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+    const backupId = listResult.stdout.trim().split("\n")[0]?.split("\t")[0];
+    expect(backupId).toBeTruthy();
+
+    const restoreResult = await runCli(["backup", "restore", backupId!], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+    expect(restoreResult.code).toBe(0);
+
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(config.agents.defaults.model).toBe("minimax-portal/MiniMax-M3");
+  });
+});
+
+describe("cli preset commands", () => {
+  test("exports provider preset without secrets", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+    const result = await runCli(["presets", "export", "nvidia"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Exported preset");
+    expect(result.stdout).not.toContain("sk-");
+    expect(result.stderr).not.toContain("sk-");
+  });
+
+  test("imports all providers as presets", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+    const result = await runCli(["import"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Imported preset nvidia");
+    expect(result.stdout).not.toContain("sk-");
+  });
+
+  test("lists presets", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+    await runCli(["import"], { OPENCLAW_CONFIG_PATH: configPath, HOME: dir });
+    const result = await runCli(["presets", "list"], { OPENCLAW_CONFIG_PATH: configPath, HOME: dir });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("nvidia");
+    expect(result.stdout).toContain("custom");
+  });
+});
+
+describe("cli provider crud", () => {
+  test("adds provider from preset with key", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+    const customDir = join(dir, ".oc-switch", "presets", "custom");
+    mkdirSync(customDir, { recursive: true });
+    writeFileSync(join(customDir, "testprov.json"), JSON.stringify({
+      id: "testprov",
+      name: "Test Provider",
+      provider: { api: "openai-completions", baseUrl: "https://test.example/v1", apiKeyEnv: "TESTPROV_API_KEY" },
+      models: [{ id: "vendor/model", alias: "vm" }]
+    }));
+
+    const result = await runCli(["provider", "add", "testprov", "--key", "test-secret-value", "--models", "vendor/model"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toContain("test-secret-value");
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(config.models.providers.testprov.baseUrl).toBe("https://test.example/v1");
+    expect(config.agents.defaults.models["testprov/vendor/model"]).toEqual({ alias: "vm" });
+  });
+
+  test("edits provider base url", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+    const result = await runCli(["provider", "edit", "nvidia", "--base-url", "https://new-nvidia.example/v1"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    expect(result.code).toBe(0);
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(config.models.providers.nvidia.baseUrl).toBe("https://new-nvidia.example/v1");
+    expect(config.models.providers.nvidia.models[0].id).toBe("deepseek-ai/deepseek-v4-flash");
+  });
+
+  test("deletes provider with new primary", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+    const result = await runCli([
+      "provider", "delete", "minimax-portal",
+      "--new-primary", "nvidia/deepseek-ai/deepseek-v4-flash"
+    ], { OPENCLAW_CONFIG_PATH: configPath, HOME: dir });
+
+    expect(result.code).toBe(0);
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(config.models.providers["minimax-portal"]).toBeUndefined();
+    expect(config.agents.defaults.model).toBe("nvidia/deepseek-ai/deepseek-v4-flash");
+  });
+});
+
+describe("cli model crud", () => {
+  test("adds model with slash id", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+    const result = await runCli([
+      "model", "add", "nvidia/deepseek-ai/deepseek-v4-pro",
+      "--alias", "nv-ds-pro", "--enable"
+    ], { OPENCLAW_CONFIG_PATH: configPath, HOME: dir });
+
+    expect(result.code).toBe(0);
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(config.models.providers.nvidia.models.map((m: { id: string }) => m.id)).toContain("deepseek-ai/deepseek-v4-pro");
+    expect(config.agents.defaults.models["nvidia/deepseek-ai/deepseek-v4-pro"]).toEqual({ alias: "nv-ds-pro" });
+  });
+
+  test("removes model", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+    const result = await runCli(["model", "remove", "nvidia/deepseek-ai/deepseek-v4-flash"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    expect(result.code).toBe(0);
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(config.models.providers.nvidia.models.map((m: { id: string }) => m.id)).not.toContain("deepseek-ai/deepseek-v4-flash");
+    expect(config.agents.defaults.models["nvidia/deepseek-ai/deepseek-v4-flash"]).toBeUndefined();
+  });
+});
+
+describe("cli provider sync", () => {
+  test("syncs openai-compatible provider with mocked fetch", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+    const result = await runCli(["provider", "sync", "nvidia"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir,
+      OC_SWITCH_MOCK_SYNC: "remote-model-a,remote-model-b"
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toContain("sk-");
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(config.models.providers.nvidia.models.map((m: { id: string }) => m.id)).toContain("remote-model-a");
+    expect(config.models.providers.nvidia.models.map((m: { id: string }) => m.id)).toContain("remote-model-b");
+    expect(config.agents.defaults.models["nvidia/remote-model-a"]).toBeUndefined();
+  });
+
+  test("reports unsupported for anthropic provider", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+    const result = await runCli(["provider", "sync", "minimax-portal"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("anthropic-messages");
   });
 });

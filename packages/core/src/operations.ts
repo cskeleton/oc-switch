@@ -20,6 +20,38 @@ function hasProviderModel(config: OpenClawConfig, ref: string): boolean {
   return Boolean(provider?.models?.some((model) => model.id === modelId));
 }
 
+function assertPrimaryRemovalAllowed(
+  config: OpenClawConfig,
+  ref: string,
+  options: { force: boolean; newPrimary?: string }
+): void {
+  const primary = config.agents!.defaults!.model;
+  if (primary !== ref) return;
+  if (options.newPrimary) {
+    setPrimaryModel(config, options.newPrimary);
+    return;
+  }
+  if (!options.force) {
+    throw new Error(`Model ${ref} is the primary model`);
+  }
+}
+
+function assertProviderPrimaryRemovalAllowed(
+  config: OpenClawConfig,
+  providerId: string,
+  options: { force: boolean; newPrimary?: string }
+): void {
+  const primary = config.agents!.defaults!.model;
+  if (!primary || parseModelRef(primary).providerId !== providerId) return;
+  if (options.newPrimary) {
+    setPrimaryModel(config, options.newPrimary);
+    return;
+  }
+  if (!options.force) {
+    throw new Error(`Provider ${providerId} contains the primary model`);
+  }
+}
+
 export function setPrimaryModel(config: OpenClawConfig, ref: string): OperationResult {
   ensureDefaults(config);
   if (!hasProviderModel(config, ref)) {
@@ -47,11 +79,17 @@ export function enableModel(config: OpenClawConfig, ref: string, alias?: string)
 }
 
 export function deleteProvider(config: OpenClawConfig, providerId: string, options: { force: boolean }): OperationResult {
+  return removeProvider(config, providerId, options);
+}
+
+export function removeProvider(
+  config: OpenClawConfig,
+  providerId: string,
+  options: { force: boolean; newPrimary?: string }
+): OperationResult {
   ensureDefaults(config);
   const primary = config.agents!.defaults!.model;
-  if (primary && parseModelRef(primary).providerId === providerId && !options.force) {
-    throw new Error(`Provider ${providerId} contains the primary model`);
-  }
+  assertProviderPrimaryRemovalAllowed(config, providerId, options);
 
   delete config.models!.providers![providerId];
 
@@ -61,9 +99,88 @@ export function deleteProvider(config: OpenClawConfig, providerId: string, optio
     }
   }
 
-  const warnings = primary && parseModelRef(primary).providerId === providerId
+  const warnings = primary && parseModelRef(primary).providerId === providerId && options.force
     ? [`Primary model ${primary} now points to a deleted provider`]
     : [];
+
+  return { config, warnings };
+}
+
+export function editProvider(
+  config: OpenClawConfig,
+  providerId: string,
+  changes: { baseUrl?: string; apiKeyEnv?: string }
+): OperationResult {
+  ensureDefaults(config);
+  const provider = config.models!.providers![providerId];
+  if (!provider) throw new Error(`Provider ${providerId} not found`);
+
+  if (changes.baseUrl !== undefined) provider.baseUrl = changes.baseUrl;
+  if (changes.apiKeyEnv !== undefined) {
+    if (provider.apiKey) {
+      provider.apiKey = { ...provider.apiKey, id: changes.apiKeyEnv };
+    } else if (provider.authHeader) {
+      provider.authHeader = { ...provider.authHeader, id: changes.apiKeyEnv };
+    } else {
+      provider.apiKey = { source: "env", id: changes.apiKeyEnv };
+    }
+  }
+
+  return { config, warnings: [] };
+}
+
+export function addProviderModel(
+  config: OpenClawConfig,
+  ref: string,
+  input: { name?: string; alias?: string; enabled: boolean }
+): OperationResult {
+  ensureDefaults(config);
+  const { providerId, modelId } = parseModelRef(ref);
+  const provider = config.models!.providers![providerId];
+  if (!provider) throw new Error(`Provider ${providerId} not found`);
+
+  const models = provider.models ?? [];
+  const existing = models.find((model) => model.id === modelId);
+  const nextModel: OpenClawModel = existing
+    ? { ...existing, ...(input.name !== undefined ? { name: input.name } : {}) }
+    : { id: modelId, ...(input.name !== undefined ? { name: input.name } : {}) };
+
+  if (existing) {
+    provider.models = models.map((model) => (model.id === modelId ? nextModel : model));
+  } else {
+    provider.models = [...models, nextModel];
+  }
+
+  if (input.enabled) {
+    const entry: AllowlistEntry = input.alias
+      ? { ...(config.agents!.defaults!.models![ref] ?? {}), alias: input.alias }
+      : (config.agents!.defaults!.models![ref] ?? {});
+    config.agents!.defaults!.models![ref] = entry;
+  }
+
+  return { config, warnings: [] };
+}
+
+export function removeProviderModel(
+  config: OpenClawConfig,
+  ref: string,
+  options: { force: boolean; newPrimary?: string }
+): OperationResult {
+  ensureDefaults(config);
+  const { providerId, modelId } = parseModelRef(ref);
+  const provider = config.models!.providers![providerId];
+  if (!provider) throw new Error(`Provider ${providerId} not found`);
+
+  assertPrimaryRemovalAllowed(config, ref, options);
+
+  provider.models = (provider.models ?? []).filter((model) => model.id !== modelId);
+  delete config.agents!.defaults!.models![ref];
+
+  const warnings: string[] = [];
+  const primary = config.agents!.defaults!.model;
+  if (primary === ref && options.force) {
+    warnings.push(`Primary model ${ref} was removed`);
+  }
 
   return { config, warnings };
 }
