@@ -119,25 +119,76 @@ describe("ProvidersView", () => {
     expect(await findByText("openai-completions")).toBeTruthy();
     expect(await findByText("2 / 1")).toBeTruthy();
   });
+
+  test("requires a new primary instead of forcing deletion for provider containing primary", async () => {
+    const deleteProvider = mock(async () => ({ ok: true }));
+    const getProviders = mock(async () => ({
+      providers: [
+        {
+          id: "minimax-portal",
+          api: "anthropic-messages",
+          modelCount: 1,
+          enabledModelCount: 1,
+          containsPrimary: true
+        }
+      ]
+    }));
+    const getModels = mock(async () => ({
+      models: [
+        {
+          ref: "minimax-portal/MiniMax-M3",
+          providerId: "minimax-portal",
+          modelId: "MiniMax-M3",
+          name: "MiniMax M3",
+          alias: "mm3",
+          enabled: true,
+          isPrimary: true
+        },
+        {
+          ref: "nvidia/deepseek-ai/deepseek-v4-flash",
+          providerId: "nvidia",
+          modelId: "deepseek-ai/deepseek-v4-flash",
+          name: "DeepSeek",
+          alias: "nv",
+          enabled: true,
+          isPrimary: false
+        }
+      ]
+    }));
+
+    const { findByLabelText, getByText } = render(
+      <ProvidersView client={mockClient({ getProviders, getModels, deleteProvider })} />
+    );
+
+    await userEvent.click(await findByLabelText("删除 minimax-portal"));
+    await userEvent.selectOptions(await findByLabelText("新主模型"), "nvidia/deepseek-ai/deepseek-v4-flash");
+    await userEvent.click(getByText("确认"));
+
+    expect(deleteProvider).toHaveBeenCalledWith("minimax-portal", {
+      newPrimary: "nvidia/deepseek-ai/deepseek-v4-flash"
+    });
+    expect(deleteProvider).not.toHaveBeenCalledWith("minimax-portal", { force: true });
+  });
 });
 
 describe("PresetsView", () => {
   test("sends apiKey only in request body and never renders it after submit", async () => {
     const addProvider = mock(async () => ({ ok: true }));
-    const getPresets = mock(async () => ({
-      presets: [{ id: "nvidia", name: "NVIDIA", source: "builtin" as const, tags: [], modelCount: 1 }]
-    }));
-    const getDiff = mock(async () => ({
+    const previewAddProvider = mock(async () => ({
       providersAdded: ["nvidia"],
       providersRemoved: [],
       providersChanged: [],
-      modelsEnabled: [],
+      modelsEnabled: ["nvidia/deepseek-ai/deepseek-v4-flash"],
       modelsDisabled: [],
       primaryChanged: null
     }));
+    const getPresets = mock(async () => ({
+      presets: [{ id: "nvidia", name: "NVIDIA", source: "builtin" as const, tags: [], modelCount: 1 }]
+    }));
+    const getDiff = mock(async () => { throw new Error("getDiff should not be used for preset preview"); });
 
     const { findByLabelText, getByText, queryByText } = render(
-      <PresetsView client={mockClient({ getPresets, getDiff, addProvider })} />
+      <PresetsView client={mockClient({ getPresets, getDiff, previewAddProvider, addProvider })} />
     );
 
     const keyInput = await findByLabelText("API Key");
@@ -145,7 +196,9 @@ describe("PresetsView", () => {
     await userEvent.click(getByText("预览并添加"));
     await userEvent.click(getByText("确认"));
 
+    expect(previewAddProvider).toHaveBeenCalledWith("nvidia");
     expect(addProvider).toHaveBeenCalledWith("nvidia", "sk-test-secret-key");
+    expect(getDiff).not.toHaveBeenCalled();
     expect(queryByText("sk-test-secret-key")).toBeNull();
   });
 });
@@ -194,12 +247,50 @@ describe("DiffSummary", () => {
 
 describe("SettingsView", () => {
   test("shows non-secret settings", async () => {
-    const { findByText } = render(<SettingsView baseUrl="http://127.0.0.1:7420" />);
+    const { findByText } = render(
+      <SettingsView
+        baseUrl="http://127.0.0.1:7420"
+        client={mockClient({
+          getSettings: async () => ({
+            configPath: "~/.openclaw/openclaw.json",
+            bindAddress: "127.0.0.1",
+            port: 7420,
+            backupRetention: 20,
+            gatewayRestartCommand: "openclaw gateway restart",
+            orphanEnvKeys: []
+          })
+        })}
+      />
+    );
 
     expect(await findByText(/openclaw\.json/)).toBeTruthy();
     expect(await findByText("127.0.0.1")).toBeTruthy();
     expect(await findByText("7420")).toBeTruthy();
-    expect(await findByText(/备份保留份数/)).toBeTruthy();
+    expect(await findByText("20（默认）")).toBeTruthy();
     expect(await findByText("openclaw gateway restart")).toBeTruthy();
+  });
+
+  test("can clean orphan env keys from settings", async () => {
+    const cleanupOrphanEnvKeys = mock(async () => ({ ok: true, removedKeys: ["OLD_API_KEY"] }));
+    const { findByText, getByText } = render(
+      <SettingsView
+        baseUrl="http://127.0.0.1:7420"
+        client={mockClient({
+          getSettings: async () => ({
+            configPath: "~/.openclaw/openclaw.json",
+            bindAddress: "127.0.0.1",
+            port: 7420,
+            backupRetention: 20,
+            gatewayRestartCommand: "openclaw gateway restart",
+            orphanEnvKeys: ["OLD_API_KEY"]
+          }),
+          cleanupOrphanEnvKeys
+        })}
+      />
+    );
+
+    expect(await findByText("OLD_API_KEY")).toBeTruthy();
+    await userEvent.click(getByText("清理 orphan keys"));
+    expect(cleanupOrphanEnvKeys).toHaveBeenCalled();
   });
 });

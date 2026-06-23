@@ -2,7 +2,7 @@ import { RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DataTable } from "../components/DataTable";
-import type { ApiClient, ProviderSummary } from "../api";
+import type { ApiClient, ModelSummary, ProviderSummary } from "../api";
 
 interface ProvidersViewProps {
   client: ApiClient;
@@ -14,6 +14,8 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ProviderSummary | null>(null);
+  const [newPrimaryCandidates, setNewPrimaryCandidates] = useState<ModelSummary[]>([]);
+  const [selectedNewPrimary, setSelectedNewPrimary] = useState("");
 
   const load = useCallback(async () => {
     setError(null);
@@ -29,13 +31,35 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
     void load();
   }, [load]);
 
+  async function openDelete(row: ProviderSummary) {
+    setError(null);
+    setDeleteTarget(row);
+    setNewPrimaryCandidates([]);
+    setSelectedNewPrimary("");
+    if (!row.containsPrimary) return;
+    try {
+      const { models } = await client.getModels();
+      const candidates = models.filter((model) => model.providerId !== row.id);
+      setNewPrimaryCandidates(candidates);
+      setSelectedNewPrimary(candidates[0]?.ref ?? "");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载可选主模型失败");
+    }
+  }
+
   async function confirmDelete() {
     if (!deleteTarget) return;
+    if (deleteTarget.containsPrimary && !selectedNewPrimary) {
+      setError("删除包含 primary 的 Provider 前请选择新的主模型");
+      return;
+    }
     try {
       await client.deleteProvider(deleteTarget.id, {
-        ...(deleteTarget.containsPrimary ? { force: true } : {})
+        ...(deleteTarget.containsPrimary ? { newPrimary: selectedNewPrimary } : {})
       });
       setDeleteTarget(null);
+      setNewPrimaryCandidates([]);
+      setSelectedNewPrimary("");
       await load();
       onRefresh?.();
     } catch (err) {
@@ -87,7 +111,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
               <button
                 type="button"
                 aria-label={`删除 ${row.id}`}
-                onClick={() => setDeleteTarget(row)}
+                onClick={() => void openDelete(row)}
                 className="inline-flex items-center gap-1 rounded border border-red-700/50 px-2 py-1 text-xs text-red-300 hover:bg-red-900/30"
               >
                 <Trash2 className="h-3 w-3" />
@@ -103,9 +127,31 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
         title="删除 Provider"
         message={`确认删除 ${deleteTarget?.id ?? ""}？此操作将创建备份。`}
         danger
-        onCancel={() => setDeleteTarget(null)}
+        onCancel={() => {
+          setDeleteTarget(null);
+          setNewPrimaryCandidates([]);
+          setSelectedNewPrimary("");
+        }}
         onConfirm={() => void confirmDelete()}
-      />
+      >
+        {deleteTarget?.containsPrimary ? (
+          <label className="block text-sm">
+            <span className="mb-1 block text-slate-400">新主模型</span>
+            <select
+              aria-label="新主模型"
+              value={selectedNewPrimary}
+              onChange={(event) => setSelectedNewPrimary(event.target.value)}
+              className="w-full rounded border border-slate-600 bg-slate-950 px-3 py-2 text-slate-100"
+            >
+              {newPrimaryCandidates.map((model) => (
+                <option key={model.ref} value={model.ref}>
+                  {model.ref}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+      </ConfirmDialog>
     </section>
   );
 }

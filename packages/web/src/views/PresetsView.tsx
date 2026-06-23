@@ -61,19 +61,11 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
     }
     setError(null);
     try {
-      const currentDiff = await client.getDiff();
+      const currentDiff = await client.previewAddProvider(selectedPreset);
       setDiff(currentDiff);
       setConfirmAdd(true);
-    } catch {
-      setDiff({
-        providersAdded: [selectedPreset],
-        providersRemoved: [],
-        providersChanged: [],
-        modelsEnabled: [],
-        modelsDisabled: [],
-        primaryChanged: null
-      });
-      setConfirmAdd(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "预览失败");
     }
   }
 

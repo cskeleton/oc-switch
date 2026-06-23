@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 interface ConfirmDialogProps {
   open: boolean;
   title: string;
@@ -7,6 +9,7 @@ interface ConfirmDialogProps {
   onConfirm: () => void;
   onCancel: () => void;
   danger?: boolean;
+  children?: ReactNode;
 }
 
 /** 确认对话框，用于破坏性操作 */
@@ -18,7 +21,8 @@ export function ConfirmDialog({
   cancelLabel = "取消",
   onConfirm,
   onCancel,
-  danger = false
+  danger = false,
+  children
 }: ConfirmDialogProps) {
   if (!open) return null;
 
@@ -27,6 +31,7 @@ export function ConfirmDialog({
       <div className="w-full max-w-md rounded-lg border border-slate-600 bg-slate-900 p-4 shadow-xl">
         <h2 className="text-lg font-semibold text-slate-100">{title}</h2>
         <p className="mt-2 text-sm text-slate-300">{message}</p>
+        {children ? <div className="mt-3">{children}</div> : null}
         <div className="mt-4 flex justify-end gap-2">
           <button
             type="button"

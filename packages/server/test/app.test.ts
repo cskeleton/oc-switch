@@ -186,6 +186,33 @@ describe("server write endpoints", () => {
     const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
     expect(config.models.providers.testprov.baseUrl).toBe("https://test.example/v1");
     expect(config.agents.defaults.models["testprov/vendor/model"]).toEqual({ alias: "vm" });
+    const manifest = JSON.parse(readFileSync(join(ws.paths.stateDir, "manifest.json"), "utf8"));
+    expect(manifest.providers.testprov).toMatchObject({
+      providerId: "testprov",
+      envVar: "TESTPROV_API_KEY",
+      orphan: false
+    });
+  });
+
+  test("POST /api/providers/preview returns diff for the pending preset add without writing", async () => {
+    const ws = workspace();
+    writeFileSync(join(ws.presetDirs.customDir, "previewprov.json"), JSON.stringify({
+      id: "previewprov",
+      name: "Preview Provider",
+      provider: { api: "openai-completions", baseUrl: "https://preview.example/v1", apiKeyEnv: "PREVIEW_API_KEY" },
+      models: [{ id: "vendor/model", alias: "vm" }]
+    }));
+    const app = createTestApp(ws);
+    const { response, json } = await jsonRequest(app, "/api/providers/preview", {
+      method: "POST",
+      body: JSON.stringify({ presetId: "previewprov", models: ["vendor/model"] })
+    });
+
+    expect(response.status).toBe(200);
+    expect(json.providersAdded).toEqual(["previewprov"]);
+    expect(json.modelsEnabled).toEqual(["previewprov/vendor/model"]);
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(config.models.providers.previewprov).toBeUndefined();
   });
 
   test("PUT /api/providers/:id updates baseUrl", async () => {
@@ -213,6 +240,22 @@ describe("server write endpoints", () => {
     const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
     expect(config.models.providers["minimax-portal"]).toBeUndefined();
     expect(config.agents.defaults.model).toBe("nvidia/deepseek-ai/deepseek-v4-flash");
+  });
+
+  test("DELETE /api/providers/:id marks provider env key orphan in manifest", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+    const { response } = await jsonRequest(app, "/api/providers/DeepSeek", {
+      method: "DELETE"
+    });
+
+    expect(response.status).toBe(200);
+    const manifest = JSON.parse(readFileSync(join(ws.paths.stateDir, "manifest.json"), "utf8"));
+    expect(manifest.providers.DeepSeek).toMatchObject({
+      providerId: "DeepSeek",
+      envVar: "DEEPSEEK_API_KEY",
+      orphan: true
+    });
   });
 
   test("POST /api/providers/:id/sync merges remote models", async () => {
@@ -268,6 +311,11 @@ describe("server write endpoints", () => {
 
     const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
     expect(config.agents.defaults.model).toBe("minimax-portal/MiniMax-M3");
+    const { json: afterRestoreBackups } = await jsonRequest(app, "/api/backups");
+    const safetyBackup = (afterRestoreBackups.backups as Array<{ reason: string }>).find((backup) =>
+      backup.reason.includes(`before restore ${backupId}`)
+    );
+    expect(safetyBackup).toBeTruthy();
   });
 
   test("GET /api/diff shows changes since latest backup", async () => {

@@ -134,7 +134,7 @@ export function App() {
       case "backups":
         return <BackupsView client={client} onRefresh={refresh} />;
       case "settings":
-        return <SettingsView baseUrl={baseUrl} />;
+        return <SettingsView baseUrl={baseUrl} client={client} />;
       default:
         return null;
     }

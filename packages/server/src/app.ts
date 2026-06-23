@@ -1,7 +1,9 @@
 import {
   addProviderFromPreset,
   applySyncedModels,
+  cleanupOrphanEnvKeys,
   createConfigAdapter,
+  DEFAULT_BACKUP_RETENTION,
   defaultPaths,
   defaultPresetDirs,
   disableModel,
@@ -9,10 +11,11 @@ import {
   enableModel,
   exportProviderPreset,
   listBackups,
+  listOrphanEnvKeys,
   listPresets,
   loadPreset,
   removeProvider,
-  restoreBackup,
+  restoreBackupSafely,
   saveCustomPreset,
   setPrimaryModel,
   summarizeConfigDiff,
@@ -35,6 +38,8 @@ export interface AppOptions {
   presetDirs?: PresetDirs;
   repoRoot?: string;
   fetchImpl?: FetchImpl;
+  bindAddress?: string;
+  port?: number;
 }
 
 function readConfig(paths: OcSwitchPaths): OpenClawConfig {
@@ -42,6 +47,15 @@ function readConfig(paths: OcSwitchPaths): OpenClawConfig {
     throw new Error("openclaw.json not found");
   }
   return JSON5.parse(readFileSync(paths.openclawPath, "utf8")) as OpenClawConfig;
+}
+
+function readEnvContent(paths: OcSwitchPaths): string | undefined {
+  return existsSync(paths.envPath) ? readFileSync(paths.envPath, "utf8") : undefined;
+}
+
+function providerEnvVar(config: OpenClawConfig, providerId: string): string | undefined {
+  const provider = config.models?.providers?.[providerId];
+  return provider?.apiKey?.id ?? provider?.authHeader?.id;
 }
 
 function isValidationError(error: unknown): boolean {
@@ -110,11 +124,31 @@ export function createApp(options: AppOptions) {
         ...paths,
         reason: `add provider ${presetId}`,
         envUpdates: { [preset.provider.apiKeyEnv]: apiKey },
+        manifestUpdates: [
+          { type: "upsert-provider-env", providerId: presetId, envVar: preset.provider.apiKeyEnv }
+        ],
         mutate(config) {
           return addProviderFromPreset(config, preset, enabledModels).config;
         }
       });
       return c.json({ ok: true, backupId: result.backupDir.split("/").pop() });
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/providers/preview", async (c) => {
+    try {
+      const body = await c.req.json();
+      const presetId = requireString(body.presetId, "presetId");
+      const models = Array.isArray(body.models)
+        ? body.models.filter((id: unknown): id is string => typeof id === "string" && id.length > 0)
+        : undefined;
+      const preset = loadPreset(presetDirs, presetId);
+      const before = readConfig(paths);
+      const enabledModels = models ?? preset.models.map((model) => model.id);
+      const after = addProviderFromPreset(structuredClone(before), preset, enabledModels).config;
+      return c.json(summarizeConfigDiff(before, after));
     } catch (error) {
       return jsonError(c, error);
     }
@@ -136,6 +170,15 @@ export function createApp(options: AppOptions) {
         ...paths,
         reason: `edit provider ${providerId}`,
         ...(Object.keys(envUpdates).length ? { envUpdates } : {}),
+        ...(Object.keys(envUpdates).length
+          ? {
+              manifestUpdates: Object.keys(envUpdates).map((envVar) => ({
+                type: "upsert-provider-env" as const,
+                providerId,
+                envVar
+              }))
+            }
+          : {}),
         mutate(config) {
           const changes: { baseUrl?: string } = {};
           if (body.baseUrl !== undefined) changes.baseUrl = requireString(body.baseUrl, "baseUrl");
@@ -158,9 +201,14 @@ export function createApp(options: AppOptions) {
       if (body.newPrimary !== undefined) {
         removeOptions.newPrimary = requireString(body.newPrimary, "newPrimary");
       }
+      const config = readConfig(paths);
+      const envVar = providerEnvVar(config, providerId);
       const result = await writeOpenClawTransaction({
         ...paths,
         reason: `delete provider ${providerId}`,
+        ...(envVar
+          ? { manifestUpdates: [{ type: "mark-provider-orphan" as const, providerId, envVar }] }
+          : {}),
         mutate(config) {
           return removeProvider(config, providerId, removeOptions).config;
         }
@@ -175,7 +223,11 @@ export function createApp(options: AppOptions) {
     try {
       const providerId = c.req.param("id");
       const config = readConfig(paths);
-      const syncResult = await syncProviderModels(config, providerId, fetchImpl);
+      const envContent = readEnvContent(paths);
+      const syncResult = await syncProviderModels(config, providerId, {
+        fetchImpl,
+        ...(envContent !== undefined ? { envContent } : {})
+      });
       if (syncResult.unsupportedReason) {
         return c.json({
           ok: false,
@@ -302,12 +354,13 @@ export function createApp(options: AppOptions) {
   app.post("/api/backups/:id/restore", (c) => {
     try {
       const id = c.req.param("id");
-      restoreBackup({
+      const result = restoreBackupSafely({
+        stateDir: paths.stateDir,
         backupDir: join(paths.stateDir, "backups", id),
         openclawPath: paths.openclawPath,
         envPath: paths.envPath
       });
-      return c.json({ ok: true, id });
+      return c.json({ ok: true, id, safetyBackupId: result.safetyBackupDir.split("/").pop() });
     } catch (error) {
       return jsonError(c, error);
     }
@@ -320,6 +373,28 @@ export function createApp(options: AppOptions) {
       const before = JSON5.parse(readFileSync(join(latest.path, "openclaw.json"), "utf8")) as OpenClawConfig;
       const after = readConfig(paths);
       return c.json(summarizeConfigDiff(before, after));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.get("/api/settings", (c) => c.json({
+    configPath: paths.openclawPath,
+    bindAddress: options.bindAddress ?? "127.0.0.1",
+    port: options.port ?? 7420,
+    backupRetention: DEFAULT_BACKUP_RETENTION,
+    gatewayRestartCommand: "openclaw gateway restart",
+    orphanEnvKeys: listOrphanEnvKeys(paths.stateDir)
+  }));
+
+  app.post("/api/settings/orphans/cleanup", (c) => {
+    try {
+      const result = cleanupOrphanEnvKeys(paths);
+      return c.json({
+        ok: true,
+        removedKeys: result.removedKeys,
+        ...(result.backupDir ? { backupId: result.backupDir.split("/").pop() } : {})
+      });
     } catch (error) {
       return jsonError(c, error);
     }

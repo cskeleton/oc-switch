@@ -49,6 +49,15 @@ export interface ConfigDiffSummary {
   primaryChanged: { before: string | undefined; after: string | undefined } | null;
 }
 
+export interface SettingsResponse {
+  configPath: string;
+  bindAddress: string;
+  port: number;
+  backupRetention: number;
+  gatewayRestartCommand: string;
+  orphanEnvKeys: string[];
+}
+
 export type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 export interface ApiClientOptions {
@@ -95,6 +104,11 @@ export function createApiClient(options: ApiClientOptions) {
     importPresets: () => request<{ ok: boolean; imported: string[] }>("/api/presets/import", { method: "POST" }),
     exportPreset: (providerId: string) =>
       request<{ ok: boolean; id: string }>(`/api/presets/export/${providerId}`, { method: "POST" }),
+    previewAddProvider: (presetId: string, models?: string[]) =>
+      request<ConfigDiffSummary>("/api/providers/preview", {
+        method: "POST",
+        body: JSON.stringify({ presetId, models })
+      }),
     addProvider: (presetId: string, apiKey: string, models?: string[]) =>
       request<{ ok: boolean }>("/api/providers", {
         method: "POST",
@@ -117,8 +131,13 @@ export function createApiClient(options: ApiClientOptions) {
       ),
     getBackups: () => request<{ backups: BackupEntry[] }>("/api/backups"),
     restoreBackup: (id: string) =>
-      request<{ ok: boolean; id: string }>(`/api/backups/${id}/restore`, { method: "POST" }),
-    getDiff: () => request<ConfigDiffSummary>("/api/diff")
+      request<{ ok: boolean; id: string; safetyBackupId?: string }>(`/api/backups/${id}/restore`, { method: "POST" }),
+    getDiff: () => request<ConfigDiffSummary>("/api/diff"),
+    getSettings: () => request<SettingsResponse>("/api/settings"),
+    cleanupOrphanEnvKeys: () =>
+      request<{ ok: boolean; removedKeys: string[]; backupId?: string }>("/api/settings/orphans/cleanup", {
+        method: "POST"
+      })
   };
 }
 
