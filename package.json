@@ -6,11 +6,14 @@
     "packages/*"
   ],
   "scripts": {
-    "test": "bun test",
-    "typecheck": "bunx tsc -b packages/core packages/cli packages/server",
-    "cli": "bun run packages/cli/src/index.ts"
+    "test": "bun test packages/core packages/cli packages/server && bun test --preload ./packages/web/src/test-setup.ts packages/web/src",
+    "typecheck": "bunx tsc -b packages/core packages/cli packages/server packages/web",
+    "cli": "bun run packages/cli/src/index.ts",
+    "build": "bun run --cwd packages/web build",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.52.0",
     "@types/bun": "^1.2.0",
     "bun-types": "^1.3.14",
     "typescript": "^5.8.0"

@@ -66,6 +66,17 @@ export function createApp(options: AppOptions) {
 
   const app = new Hono();
 
+  // 允许 WebGUI 跨端口访问 REST API
+  app.use("/api/*", async (c, next) => {
+    c.header("Access-Control-Allow-Origin", "*");
+    c.header("Access-Control-Allow-Headers", "Authorization, Content-Type");
+    c.header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+    if (c.req.method === "OPTIONS") {
+      return c.body(null, 204);
+    }
+    await next();
+  });
+
   app.use("/api/*", async (c, next) => {
     const auth = c.req.header("Authorization");
     if (auth !== `Bearer ${options.token}`) {
