@@ -1,0 +1,15 @@
+{
+  "name": "oc-switch",
+  "type": "module",
+  "bin": {
+    "oc-switch": "src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test test",
+    "typecheck": "bunx tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@oc-switch/core": "workspace:*",
+    "commander": "^12.1.0"
+  }
+}

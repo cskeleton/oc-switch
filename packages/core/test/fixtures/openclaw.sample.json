@@ -1,0 +1,76 @@
+{
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "nvidia": {
+        "baseUrl": "https://integrate.api.nvidia.com/v1",
+        "apiKey": { "source": "env", "id": "NVIDIA_API_KEY" },
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "deepseek-ai/deepseek-v4-flash",
+            "name": "DeepSeek V4 Flash",
+            "reasoning": true,
+            "contextWindow": 128000,
+            "maxTokens": 8192
+          },
+          {
+            "id": "z-ai/glm5.1",
+            "name": "GLM 5.1",
+            "contextWindow": 128000,
+            "maxTokens": 8192
+          }
+        ]
+      },
+      "DeepSeek": {
+        "baseUrl": "https://api.deepseek.com/v1",
+        "apiKey": { "source": "env", "id": "DEEPSEEK_API_KEY" },
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "deepseek-chat",
+            "name": "DeepSeek Chat"
+          }
+        ]
+      },
+      "minimax-portal": {
+        "baseUrl": "https://api.minimax.io/anthropic",
+        "api": "anthropic-messages",
+        "authHeader": { "source": "env", "id": "MINIMAX_API_KEY" },
+        "models": [
+          {
+            "id": "MiniMax-M3",
+            "name": "MiniMax M3",
+            "api": "anthropic-messages"
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": "minimax-portal/MiniMax-M3",
+      "models": {
+        "nvidia/deepseek-ai/deepseek-v4-flash": {
+          "alias": "nv-ds-flash",
+          "agentRuntime": { "id": "codex" }
+        },
+        "nvidia/z-ai/glm5.1": {
+          "alias": "nv-glm"
+        },
+        "DeepSeek/deepseek-chat": {
+          "alias": "ds-chat"
+        },
+        "minimax-portal/MiniMax-M3": {
+          "alias": "mm3"
+        }
+      }
+    }
+  },
+  "channels": {
+    "preserve": true
+  },
+  "acp": {
+    "preserve": true
+  }
+}

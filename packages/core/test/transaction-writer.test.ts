@@ -1,0 +1,81 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import sample from "./fixtures/openclaw.sample.json";
+import { writeOpenClawTransaction } from "../src/transaction-writer";
+
+const tempDirs: string[] = [];
+
+function makeWorkspace() {
+  const dir = mkdtempSync(join(tmpdir(), "oc-switch-test-"));
+  tempDirs.push(dir);
+  const openclawPath = join(dir, "openclaw.json");
+  const envPath = join(dir, ".env");
+  const stateDir = join(dir, ".oc-switch");
+  writeFileSync(openclawPath, `${JSON.stringify(sample, null, 2)}\n`);
+  writeFileSync(envPath, "USER_DEFINED_API_KEY=keep\n");
+  return { dir, openclawPath, envPath, stateDir };
+}
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+describe("writeOpenClawTransaction", () => {
+  test("writes config and env with backup package", async () => {
+    const ws = makeWorkspace();
+    const result = await writeOpenClawTransaction({
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath,
+      stateDir: ws.stateDir,
+      reason: "test write",
+      envUpdates: { NVIDIA_API_KEY: "secret" },
+      mutate(config) {
+        config.agents!.defaults!.model = "nvidia/deepseek-ai/deepseek-v4-flash";
+        return config;
+      }
+    });
+
+    expect(result.backupDir).toContain(".oc-switch/backups/");
+    expect(readFileSync(ws.openclawPath, "utf8")).toContain("nvidia/deepseek-ai/deepseek-v4-flash");
+    expect(readFileSync(ws.envPath, "utf8")).toContain("NVIDIA_API_KEY=secret");
+    expect(readFileSync(join(result.backupDir, "openclaw.json"), "utf8")).toContain("minimax-portal/MiniMax-M3");
+    expect(readFileSync(join(result.backupDir, ".env"), "utf8")).toContain("USER_DEFINED_API_KEY=keep");
+  });
+
+  test("rejects unmanaged env collisions before writing config", async () => {
+    const ws = makeWorkspace();
+    await expect(writeOpenClawTransaction({
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath,
+      stateDir: ws.stateDir,
+      reason: "collision",
+      envUpdates: { USER_DEFINED_API_KEY: "replace" },
+      mutate(config) {
+        config.agents!.defaults!.model = "nvidia/deepseek-ai/deepseek-v4-flash";
+        return config;
+      }
+    })).rejects.toThrow("Refusing to overwrite unmanaged env var USER_DEFINED_API_KEY");
+
+    expect(readFileSync(ws.openclawPath, "utf8")).toContain("minimax-portal/MiniMax-M3");
+  });
+
+  test("does not create env file when no env updates are requested", async () => {
+    const ws = makeWorkspace();
+    rmSync(ws.envPath, { force: true });
+
+    await writeOpenClawTransaction({
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath,
+      stateDir: ws.stateDir,
+      reason: "json only",
+      mutate(config) {
+        config.agents!.defaults!.model = "nvidia/deepseek-ai/deepseek-v4-flash";
+        return config;
+      }
+    });
+
+    expect(existsSync(ws.envPath)).toBe(false);
+  });
+});

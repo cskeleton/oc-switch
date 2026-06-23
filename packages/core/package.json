@@ -1,0 +1,13 @@
+{
+  "name": "@oc-switch/core",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "test": "bun test test",
+    "typecheck": "bunx tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "json5": "^2.2.3"
+  }
+}
