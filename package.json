@@ -10,6 +10,8 @@
     "typecheck": "bunx tsc -b packages/core packages/cli packages/server packages/web",
     "cli": "bun run packages/cli/src/index.ts",
     "build": "bun run --cwd packages/web build",
+    "check": "bun run test && bun run typecheck && bun run build",
+    "acceptance": "bun run scripts/acceptance-smoke.ts",
     "test:e2e": "playwright test"
   },
   "devDependencies": {
