@@ -20,9 +20,9 @@ feat/phase{N}-{kebab-case-description}
 
 | 顺序 | 分支 | 基线 | 任务 | 依赖 | 状态 |
 |------|------|------|------|------|------|
-| 1 | `feat/phase2-core-cli-completion` | `main` | 2.1→2.2→2.3→2.4 | 无 | **已完成**（未 commit） |
-| 2 | `feat/phase5-builtin-presets` | `main` | 5.1 | 无（可与 Phase 2 并行） | **已完成**（worktree: `../oc-switch-phase5`，未 commit） |
-| 3 | `feat/phase3-rest-server` | Phase 2 后的 `main` | 3.1→3.2→3.3 | Phase 2 | 排队 |
+| 1 | `feat/phase2-core-cli-completion` | `main` | 2.1→2.2→2.3→2.4 | 无 | **已合并 main** |
+| 2 | `feat/phase5-builtin-presets` | `main` | 5.1 | 无（可与 Phase 2 并行） | **已合并 main** |
+| 3 | `feat/phase3-rest-server` | Phase 2 后的 `main` | 3.1→3.2→3.3 | Phase 2 | **待开工** |
 | 4 | `feat/phase4-webgui` | Phase 3 后的 `main` | 4.1→4.4 | Phase 3 | 排队 |
 | 5 | `feat/phase5-release` | Phase 4 后的 `main` | 5.2→5.3 | Phase 4 | 排队 |
 
