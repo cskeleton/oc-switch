@@ -24,10 +24,13 @@ import {
   summarizeConfigDiff,
   syncProviderModels,
   applySyncedModels,
+  rotatePersistedToken,
+  resolveServeToken,
   version,
   writeOpenClawTransaction,
   type FetchImpl
 } from "@oc-switch/core";
+import { createApp } from "@oc-switch/server";
 import type { OpenClawConfig } from "@oc-switch/core";
 
 function readConfig(): OpenClawConfig {
@@ -310,5 +313,40 @@ program.command("import").action(() => {
     console.log(`Imported preset ${providerId}`);
   }
 });
+
+program.command("serve")
+  .description("Start REST API server for WebGUI")
+  .option("--port <port>", "Listen port", "7420")
+  .option("--host <host>", "Bind address", "127.0.0.1")
+  .option("--token <secret>", "Bearer token for API auth")
+  .action((options: { port: string; host: string; token?: string }) => {
+    const paths = defaultPaths();
+    const { token, ephemeral } = resolveServeToken({
+      host: options.host,
+      ...(options.token !== undefined ? { token: options.token } : {}),
+      stateDir: paths.stateDir
+    });
+    if (ephemeral) {
+      console.log(`Ephemeral token (localhost only): ${token}`);
+    }
+    const repoRoot = join(dirname(import.meta.path), "../../..");
+    const app = createApp({ token, paths, repoRoot });
+    const port = Number(options.port);
+    Bun.serve({
+      port,
+      hostname: options.host,
+      fetch: app.fetch
+    });
+    console.log(`oc-switch server listening on http://${options.host}:${port}`);
+  });
+
+const tokenCmd = program.command("token");
+tokenCmd.command("rotate")
+  .description("Rotate persisted API access token")
+  .action(() => {
+    const paths = defaultPaths();
+    const token = rotatePersistedToken(paths.stateDir);
+    console.log(`Rotated token. New token: ${token}`);
+  });
 
 program.parse();

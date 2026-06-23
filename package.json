@@ -7,7 +7,7 @@
   ],
   "scripts": {
     "test": "bun test",
-    "typecheck": "bunx tsc -b packages/core packages/cli",
+    "typecheck": "bunx tsc -b packages/core packages/cli packages/server",
     "cli": "bun run packages/cli/src/index.ts"
   },
   "devDependencies": {

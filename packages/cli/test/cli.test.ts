@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sample from "../../core/test/fixtures/openclaw.sample.json";
@@ -310,5 +310,31 @@ describe("cli provider sync", () => {
 
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("anthropic-messages");
+  });
+});
+
+describe("cli serve and token", () => {
+  test("serve rejects 0.0.0.0 without token", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    const result = await runCli(["serve", "--host", "0.0.0.0", "--port", "17420"], {
+      HOME: dir,
+      OPENCLAW_CONFIG_PATH: join(dir, "openclaw.json")
+    });
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr + result.stdout).toContain("0.0.0.0");
+  });
+
+  test("token rotate writes persisted token with 0600", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    const result = await runCli(["token", "rotate"], { HOME: dir });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Rotated token");
+    const tokenPath = join(dir, ".oc-switch", "token.json");
+    expect(existsSync(tokenPath)).toBe(true);
+    const mode = statSync(tokenPath).mode & 0o777;
+    expect(mode).toBe(0o600);
+    expect(result.stdout + result.stderr).not.toMatch(/sk-[a-zA-Z0-9]{10,}/);
   });
 });
