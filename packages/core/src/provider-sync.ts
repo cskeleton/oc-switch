@@ -1,4 +1,5 @@
-import type { OpenClawConfig } from "./types";
+import { readEnvValue } from "./env-manager";
+import type { OpenClawConfig, OpenClawProvider } from "./types";
 
 export interface ProviderSyncResult {
   providerId: string;
@@ -36,11 +37,40 @@ export function applySyncedModels(
 
 export type FetchImpl = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
+export interface ProviderSyncOptions {
+  fetchImpl?: FetchImpl;
+  envContent?: string;
+}
+
+function resolveSyncOptions(input?: FetchImpl | ProviderSyncOptions): Required<Pick<ProviderSyncOptions, "fetchImpl">> & Pick<ProviderSyncOptions, "envContent"> {
+  if (typeof input === "function") {
+    return { fetchImpl: input };
+  }
+  return {
+    fetchImpl: input?.fetchImpl ?? fetch,
+    ...(input?.envContent !== undefined ? { envContent: input.envContent } : {})
+  };
+}
+
+function providerAuthHeaders(
+  providerId: string,
+  provider: OpenClawProvider,
+  envContent: string | undefined
+): Record<string, string> {
+  const envRef = provider.apiKey ?? provider.authHeader;
+  if (!envRef) return {};
+  if (envContent === undefined) return {};
+  const value = readEnvValue(envContent, envRef.id);
+  if (!value) throw new Error(`Env var ${envRef.id} for provider ${providerId} not found`);
+  return provider.apiKey ? { Authorization: `Bearer ${value}` } : { Authorization: value };
+}
+
 export async function syncProviderModels(
   config: OpenClawConfig,
   providerId: string,
-  fetchImpl: FetchImpl = fetch
+  options?: FetchImpl | ProviderSyncOptions
 ): Promise<ProviderSyncResult> {
+  const { fetchImpl, envContent } = resolveSyncOptions(options);
   const provider = config.models?.providers?.[providerId];
   if (!provider) throw new Error(`Provider ${providerId} not found`);
 
@@ -65,7 +95,7 @@ export async function syncProviderModels(
   if (!provider.baseUrl) throw new Error(`Provider ${providerId} has no baseUrl`);
 
   const response = await fetchImpl(modelsEndpoint(provider.baseUrl), {
-    headers: { accept: "application/json" }
+    headers: { accept: "application/json", ...providerAuthHeaders(providerId, provider, envContent) }
   });
   if (!response.ok) {
     throw new Error(`Model sync failed: HTTP ${response.status}`);

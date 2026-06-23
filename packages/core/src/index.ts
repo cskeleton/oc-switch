@@ -11,3 +11,4 @@ export * from "./diff";
 export * from "./preset-store";
 export * from "./provider-sync";
 export * from "./token-manager";
+export * from "./manifest-manager";

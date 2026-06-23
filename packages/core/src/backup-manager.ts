@@ -1,5 +1,8 @@
+import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
+
+export const DEFAULT_BACKUP_RETENTION = 20;
 
 export interface BackupMetadata {
   reason: string;
@@ -22,6 +25,8 @@ export interface BackupInput {
   envPath: string;
   reason: string;
   beforeHash: string;
+  retentionLimit?: number;
+  protectedBackupDirs?: string[];
 }
 
 export function createBackup(input: BackupInput): string {
@@ -39,6 +44,7 @@ export function createBackup(input: BackupInput): string {
     sourceFiles: [basename(input.openclawPath), basename(input.envPath)],
     createdAt
   }, null, 2)}\n`);
+  pruneBackups(input.stateDir, input.retentionLimit ?? DEFAULT_BACKUP_RETENTION, input.protectedBackupDirs);
   return backupDir;
 }
 
@@ -66,6 +72,23 @@ export function listBackups(stateDir: string): BackupSummary[] {
   });
 }
 
+export function pruneBackups(
+  stateDir: string,
+  retentionLimit = DEFAULT_BACKUP_RETENTION,
+  protectedBackupDirs: string[] = []
+): void {
+  if (retentionLimit < 1) return;
+  const protectedPaths = new Set(protectedBackupDirs);
+  const backups = listBackups(stateDir);
+  let remaining = backups.length;
+  for (const backup of [...backups].reverse()) {
+    if (remaining <= retentionLimit) break;
+    if (protectedPaths.has(backup.path)) continue;
+    rmSync(backup.path, { recursive: true, force: true });
+    remaining -= 1;
+  }
+}
+
 export interface RestoreBackupInput {
   backupDir: string;
   openclawPath: string;
@@ -80,4 +103,30 @@ export function restoreBackup(input: RestoreBackupInput): void {
   } else {
     rmSync(input.envPath, { force: true });
   }
+}
+
+export interface SafeRestoreBackupInput extends RestoreBackupInput {
+  stateDir: string;
+}
+
+export interface SafeRestoreBackupResult {
+  safetyBackupDir: string;
+}
+
+function fileSha256(path: string): string {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+export function restoreBackupSafely(input: SafeRestoreBackupInput): SafeRestoreBackupResult {
+  const targetId = basename(input.backupDir);
+  const safetyBackupDir = createBackup({
+    stateDir: input.stateDir,
+    openclawPath: input.openclawPath,
+    envPath: input.envPath,
+    reason: `before restore ${targetId}`,
+    beforeHash: fileSha256(input.openclawPath),
+    protectedBackupDirs: [input.backupDir]
+  });
+  restoreBackup(input);
+  return { safetyBackupDir };
 }

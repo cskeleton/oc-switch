@@ -54,3 +54,53 @@ export function updateManagedEnv(content: string, updates: Record<string, string
     changedKeys: Object.keys(updates)
   };
 }
+
+export function readEnvValue(content: string, key: string): string | undefined {
+  for (const rawLine of content.split(/\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const normalized = line.startsWith("export ") ? line.slice("export ".length).trimStart() : line;
+    const match = normalized.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (match?.[1] !== key) continue;
+    const value = match[2] ?? "";
+    if (
+      (value.startsWith("\"") && value.endsWith("\"")) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      return value.slice(1, -1);
+    }
+    return value;
+  }
+  return undefined;
+}
+
+export function removeManagedEnvKeys(content: string, keys: string[]): EnvUpdateResult {
+  const removeSet = new Set(keys);
+  if (removeSet.size === 0) return { content, changedKeys: [] };
+
+  const lines = content.length ? content.split(/\n/) : [];
+  if (lines.at(-1) === "") lines.pop();
+  const startIndex = lines.indexOf(START);
+  const endIndex = lines.indexOf(END);
+  const hasBlock = startIndex >= 0 && endIndex > startIndex;
+  if (!hasBlock) return { content: content.endsWith("\n") || !content ? content : `${content}\n`, changedKeys: [] };
+
+  const changedKeys: string[] = [];
+  const keptBlockLines = lines.slice(startIndex + 1, endIndex).filter((line) => {
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=/);
+    if (!match?.[1] || !removeSet.has(match[1])) return true;
+    changedKeys.push(match[1]);
+    return false;
+  });
+
+  const nextLines = [
+    ...lines.slice(0, startIndex + 1),
+    ...keptBlockLines,
+    ...lines.slice(endIndex)
+  ];
+
+  return {
+    content: `${nextLines.join("\n")}\n`,
+    changedKeys
+  };
+}

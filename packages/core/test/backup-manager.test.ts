@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createBackup, listBackups, restoreBackup } from "../src/backup-manager";
+import { createBackup, listBackups, restoreBackup, restoreBackupSafely } from "../src/backup-manager";
 
 const tempDirs: string[] = [];
 
@@ -43,5 +43,36 @@ describe("backup manager", () => {
     expect(readFileSync(ws.openclawPath, "utf8")).toBe("{\"before\":true}\n");
     expect(readFileSync(ws.envPath, "utf8")).toBe("KEY=before\n");
     expect(existsSync(join(backupDir, "metadata.json"))).toBe(true);
+  });
+
+  test("keeps only the latest twenty backup packages by default", () => {
+    const ws = workspace();
+    for (let i = 0; i < 21; i += 1) {
+      writeFileSync(ws.openclawPath, `{"version":${i}}\n`);
+      createBackup({ ...ws, reason: `backup-${i}`, beforeHash: `hash-${i}` });
+    }
+
+    const backups = listBackups(ws.stateDir);
+    expect(backups).toHaveLength(20);
+    expect(backups.map((backup) => backup.metadata.reason)).not.toContain("backup-0");
+    expect(backups[0]?.metadata.reason).toBe("backup-20");
+  });
+
+  test("creates a safety backup of current files before restore", () => {
+    const ws = workspace();
+    const restoreTarget = createBackup({ ...ws, reason: "restore-target", beforeHash: "hash" });
+    writeFileSync(ws.openclawPath, "{\"current\":true}\n");
+    writeFileSync(ws.envPath, "KEY=current\n");
+
+    const result = restoreBackupSafely({
+      stateDir: ws.stateDir,
+      backupDir: restoreTarget,
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath
+    });
+
+    expect(readFileSync(ws.openclawPath, "utf8")).toBe("{\"before\":true}\n");
+    expect(readFileSync(join(result.safetyBackupDir, "openclaw.json"), "utf8")).toBe("{\"current\":true}\n");
+    expect(readFileSync(join(result.safetyBackupDir, ".env"), "utf8")).toBe("KEY=current\n");
   });
 });

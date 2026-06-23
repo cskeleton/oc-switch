@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { Command } from "commander";
 import JSON5 from "json5";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   addProviderModel,
@@ -18,7 +18,7 @@ import {
   loadPreset,
   removeProvider,
   removeProviderModel,
-  restoreBackup,
+  restoreBackupSafely,
   saveCustomPreset,
   setPrimaryModel,
   summarizeConfigDiff,
@@ -36,6 +36,16 @@ import type { OpenClawConfig } from "@oc-switch/core";
 function readConfig(): OpenClawConfig {
   const paths = defaultPaths();
   return JSON5.parse(readFileSync(paths.openclawPath, "utf8")) as OpenClawConfig;
+}
+
+function readEnvContent(): string | undefined {
+  const paths = defaultPaths();
+  return existsSync(paths.envPath) ? readFileSync(paths.envPath, "utf8") : undefined;
+}
+
+function providerEnvVar(config: OpenClawConfig, providerId: string): string | undefined {
+  const provider = config.models?.providers?.[providerId];
+  return provider?.apiKey?.id ?? provider?.authHeader?.id;
 }
 
 function presetDirs() {
@@ -90,6 +100,9 @@ provider.command("add")
       ...paths,
       reason: `add provider ${presetId}`,
       envUpdates: { [preset.provider.apiKeyEnv]: options.key },
+      manifestUpdates: [
+        { type: "upsert-provider-env", providerId: presetId, envVar: preset.provider.apiKeyEnv }
+      ],
       mutate(config) {
         return addProviderFromPreset(config, preset, enabledModels).config;
       }
@@ -115,6 +128,15 @@ provider.command("edit")
       ...paths,
       reason: `edit provider ${name}`,
       ...(Object.keys(envUpdates).length ? { envUpdates } : {}),
+      ...(Object.keys(envUpdates).length
+        ? {
+            manifestUpdates: Object.keys(envUpdates).map((envVar) => ({
+              type: "upsert-provider-env" as const,
+              providerId: name,
+              envVar
+            }))
+          }
+        : {}),
       mutate(config) {
         const changes: { baseUrl?: string } = {};
         if (options.baseUrl !== undefined) changes.baseUrl = options.baseUrl;
@@ -132,9 +154,14 @@ provider.command("delete")
     const paths = defaultPaths();
     const removeOptions: { force: boolean; newPrimary?: string } = { force: Boolean(options.force) };
     if (options.newPrimary !== undefined) removeOptions.newPrimary = options.newPrimary;
+    const config = readConfig();
+    const envVar = providerEnvVar(config, name);
     await writeOpenClawTransaction({
       ...paths,
       reason: `delete provider ${name}`,
+      ...(envVar
+        ? { manifestUpdates: [{ type: "mark-provider-orphan" as const, providerId: name, envVar }] }
+        : {}),
       mutate(config) {
         return removeProvider(config, name, removeOptions).config;
       }
@@ -148,7 +175,11 @@ provider.command("sync")
     const paths = defaultPaths();
     const config = readConfig();
     const fetchImpl = mockSyncFetch();
-    const result = await syncProviderModels(config, name, fetchImpl ?? fetch);
+    const envContent = readEnvContent();
+    const result = await syncProviderModels(config, name, {
+      fetchImpl: fetchImpl ?? fetch,
+      ...(envContent !== undefined ? { envContent } : {})
+    });
     if (result.unsupportedReason) {
       console.log(result.unsupportedReason);
       return;
@@ -269,7 +300,8 @@ backup.command("restore")
   .argument("<id>")
   .action((id: string) => {
     const paths = defaultPaths();
-    restoreBackup({
+    restoreBackupSafely({
+      stateDir: paths.stateDir,
       backupDir: join(paths.stateDir, "backups", id),
       openclawPath: paths.openclawPath,
       envPath: paths.envPath
@@ -330,8 +362,8 @@ program.command("serve")
       console.log(`Ephemeral token (localhost only): ${token}`);
     }
     const repoRoot = join(dirname(import.meta.path), "../../..");
-    const app = createApp({ token, paths, repoRoot });
     const port = Number(options.port);
+    const app = createApp({ token, paths, repoRoot, bindAddress: options.host, port });
     Bun.serve({
       port,
       hostname: options.host,

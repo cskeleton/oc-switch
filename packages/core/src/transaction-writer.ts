@@ -6,7 +6,12 @@ import { createBackup } from "./backup-manager";
 import { assertAllowedSemanticChange } from "./diff-guard";
 import { updateManagedEnv } from "./env-manager";
 import { withFileLock } from "./lock";
+import { markProviderEnvOrphan, upsertProviderEnvManifest } from "./manifest-manager";
 import type { OpenClawConfig } from "./types";
+
+export type ManifestUpdate =
+  | { type: "upsert-provider-env"; providerId: string; envVar: string }
+  | { type: "mark-provider-orphan"; providerId: string; envVar: string };
 
 export interface TransactionInput {
   openclawPath: string;
@@ -14,6 +19,7 @@ export interface TransactionInput {
   stateDir: string;
   reason: string;
   envUpdates?: Record<string, string>;
+  manifestUpdates?: ManifestUpdate[];
   mutate(config: OpenClawConfig): OpenClawConfig;
 }
 
@@ -32,6 +38,16 @@ function restoreFromBackup(backupDir: string, openclawPath: string, envPath: str
     copyFileSync(backupEnv, envPath);
   } else {
     rmSync(envPath, { force: true });
+  }
+}
+
+function applyManifestUpdates(stateDir: string, updates: ManifestUpdate[] | undefined): void {
+  for (const update of updates ?? []) {
+    if (update.type === "upsert-provider-env") {
+      upsertProviderEnvManifest(stateDir, update.providerId, update.envVar);
+    } else {
+      markProviderEnvOrphan(stateDir, update.providerId, update.envVar);
+    }
   }
 }
 
@@ -67,6 +83,7 @@ export async function writeOpenClawTransaction(input: TransactionInput): Promise
         renameSync(envTmp, input.envPath);
       }
       renameSync(configTmp, input.openclawPath);
+      applyManifestUpdates(input.stateDir, input.manifestUpdates);
     } catch (error) {
       restoreFromBackup(backupDir, input.openclawPath, input.envPath);
       rmSync(configTmp, { force: true });

@@ -16,6 +16,24 @@ function mockFetch(models: string[]): FetchImpl {
 }
 
 describe("syncProviderModels", () => {
+  test("sends bearer token resolved from provider apiKey env", async () => {
+    const config = structuredClone(sampleConfig);
+    const seen: { authorization?: string | null } = {};
+    const fetchImpl: FetchImpl = async (_input, init) => {
+      seen.authorization = new Headers(init?.headers).get("authorization");
+      return new Response(JSON.stringify({ data: [{ id: "remote-model" }] }), {
+        headers: { "content-type": "application/json" }
+      });
+    };
+
+    await syncProviderModels(config, "nvidia", {
+      fetchImpl,
+      envContent: "NVIDIA_API_KEY=sync-secret\n"
+    });
+
+    expect(seen.authorization).toBe("Bearer sync-secret");
+  });
+
   test("openai-completions normalizes baseUrl with trailing /v1", async () => {
     const config = structuredClone(sampleConfig);
     config.models!.providers!.nvidia!.baseUrl = "https://integrate.api.nvidia.com/v1";
