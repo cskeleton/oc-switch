@@ -64,6 +64,24 @@ async function jsonRequest(app: ReturnType<typeof createApp>, path: string, init
   };
 }
 
+function customProviderBody() {
+  return {
+    providerId: "custom-openai",
+    displayName: "Custom OpenAI",
+    notes: "Company account",
+    websiteUrl: "https://custom.example",
+    api: "openai-completions",
+    baseUrl: "https://api.custom.example",
+    isFullUrl: false,
+    apiKeyEnv: "CUSTOM_OPENAI_API_KEY",
+    models: [
+      { id: "model-a", alias: "a" },
+      { id: "vendor/model-b", alias: "b" }
+    ],
+    enableAllModels: true
+  };
+}
+
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -213,6 +231,64 @@ describe("server write endpoints", () => {
     expect(json.modelsEnabled).toEqual(["previewprov/vendor/model"]);
     const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
     expect(config.models.providers.previewprov).toBeUndefined();
+  });
+
+  test("POST /api/providers/custom/preview returns diff without writing", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+    const { response, json } = await jsonRequest(app, "/api/providers/custom/preview", {
+      method: "POST",
+      body: JSON.stringify(customProviderBody())
+    });
+
+    expect(response.status).toBe(200);
+    expect(json.providersAdded).toEqual(["custom-openai"]);
+    expect(json.modelsEnabled).toEqual(["custom-openai/model-a", "custom-openai/vendor/model-b"]);
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(config.models.providers["custom-openai"]).toBeUndefined();
+  });
+
+  test("POST /api/providers/custom writes provider env and manifest without leaking key", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+    const body = { ...customProviderBody(), apiKey: "sk-test-custom-secret" };
+    const { response, json } = await jsonRequest(app, "/api/providers/custom", {
+      method: "POST",
+      body: JSON.stringify(body)
+    });
+
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(json)).not.toContain("sk-test-custom-secret");
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(config.models.providers["custom-openai"]).toMatchObject({
+      baseUrl: "https://api.custom.example/v1",
+      api: "openai-completions",
+      apiKey: { source: "env", id: "CUSTOM_OPENAI_API_KEY" }
+    });
+    expect(config.agents.defaults.models["custom-openai/vendor/model-b"]).toEqual({ alias: "b" });
+    expect(readFileSync(ws.paths.envPath, "utf8")).toContain("CUSTOM_OPENAI_API_KEY=sk-test-custom-secret");
+    const manifest = JSON.parse(readFileSync(join(ws.paths.stateDir, "manifest.json"), "utf8"));
+    expect(manifest.providers["custom-openai"]).toMatchObject({
+      providerId: "custom-openai",
+      envVar: "CUSTOM_OPENAI_API_KEY",
+      displayName: "Custom OpenAI",
+      notes: "Company account",
+      websiteUrl: "https://custom.example",
+      isFullUrl: false,
+      orphan: false
+    });
+  });
+
+  test("POST /api/providers/custom rejects invalid provider id", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+    const { response, json } = await jsonRequest(app, "/api/providers/custom", {
+      method: "POST",
+      body: JSON.stringify({ ...customProviderBody(), providerId: "bad/id", apiKey: "sk-test-custom-secret" })
+    });
+
+    expect(response.status).toBe(400);
+    expect(String(json.error)).toContain("Provider ID must not contain /");
   });
 
   test("PUT /api/providers/:id updates baseUrl", async () => {

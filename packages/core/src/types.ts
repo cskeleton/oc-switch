@@ -87,3 +87,21 @@ export interface ProviderPreset {
   };
   models: Array<OpenClawModel & { alias?: string }>;
 }
+
+export interface CustomProviderModelInput {
+  id: string;
+  alias?: string;
+}
+
+export interface CustomProviderInput {
+  providerId: string;
+  displayName: string;
+  notes?: string;
+  websiteUrl?: string;
+  api: ApiType;
+  baseUrl: string;
+  isFullUrl: boolean;
+  apiKeyEnv: string;
+  models: CustomProviderModelInput[];
+  enableAllModels: boolean;
+}

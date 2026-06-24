@@ -100,6 +100,38 @@ async function main(): Promise<void> {
       "use 应确认 primary 已切换"
     );
 
+    result = await runCli([
+      "provider", "add-custom",
+      "--id", "acceptance-custom",
+      "--name", "Acceptance Custom",
+      "--api", "openai-completions",
+      "--base-url", "https://api.acceptance.example",
+      "--env", "ACCEPTANCE_CUSTOM_API_KEY",
+      "--key", "acceptance-secret-value",
+      "--models", "acceptance-model,vendor/acceptance-model",
+      "--aliases", "acceptance-model:acceptance,vendor/acceptance-model:vendor-acceptance"
+    ], cliEnv);
+    outputs.push(result.stdout, result.stderr);
+    assert(result.code === 0, "provider add-custom 应成功");
+    assert(result.stdout.includes("Added custom provider acceptance-custom"), "provider add-custom 应确认新增 provider");
+
+    const customConfig = JSON.parse(readFileSync(openclawPath, "utf8")) as {
+      models: { providers: Record<string, { baseUrl: string; models: Array<{ id: string }> }> };
+      agents: { defaults: { models: Record<string, { alias?: string }> } };
+    };
+    assert(
+      customConfig.models.providers["acceptance-custom"]?.baseUrl === "https://api.acceptance.example/v1",
+      "自定义 openai provider 应自动补 /v1"
+    );
+    assert(
+      customConfig.agents.defaults.models["acceptance-custom/vendor/acceptance-model"]?.alias === "vendor-acceptance",
+      "自定义 provider 应支持带斜杠的 model id"
+    );
+    assert(
+      readFileSync(envPath, "utf8").includes("ACCEPTANCE_CUSTOM_API_KEY=acceptance-secret-value"),
+      "自定义 provider API Key 应写入 .env managed block"
+    );
+
     // 验证备份包已创建
     const backups = listBackups(stateDir);
     assert(backups.length > 0, "写入后应存在至少一个备份包");
@@ -107,9 +139,9 @@ async function main(): Promise<void> {
     assert(existsSync(join(latestBackupDir, "openclaw.json")), "备份包应包含 openclaw.json");
     assert(existsSync(join(latestBackupDir, ".env")), "备份包应包含 .env");
 
-    // 未写入 Key 时 .env 内容应保持不变
     const envAfter = readFileSync(envPath, "utf8");
-    assert(envAfter === initialEnv, "未提供 --key 时 .env 不应被修改");
+    assert(envAfter.includes("USER_DEFINED_API_KEY=keep-me"), "用户自有 env 变量应保留");
+    assert(envAfter.includes("# oc-switch:start"), "自定义 provider 写入后应存在 managed block");
 
     // REST 服务鉴权测试
     const customDir = join(stateDir, "presets", "custom");

@@ -61,4 +61,19 @@ test.describe("WebGUI smoke", () => {
     await page.getByRole("button", { name: "取消" }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
   });
+
+  test("custom provider dialog opens and accepts slash model ids", async ({ page }) => {
+    await connect(page);
+    await page.getByRole("button", { name: "Providers" }).click();
+    await page.getByRole("button", { name: "添加 Provider" }).click();
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await page.getByLabel("供应商名称").fill("Custom OpenAI");
+    await page.getByLabel("Provider ID").fill("custom-openai");
+    await page.getByLabel("请求地址").fill("https://api.custom.example");
+    await page.getByLabel("API Key", { exact: true }).fill("sk-test-custom-secret");
+    await page.getByLabel("模型列表").fill("vendor/model-b | b");
+    await expect(page.getByText("vendor/model-b | b")).toBeVisible();
+    await page.getByRole("button", { name: "取消" }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+  });
 });

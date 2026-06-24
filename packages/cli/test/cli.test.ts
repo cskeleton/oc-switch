@@ -242,6 +242,85 @@ describe("cli provider crud", () => {
     expect(config.models.providers["minimax-portal"]).toBeUndefined();
     expect(config.agents.defaults.model).toBe("nvidia/deepseek-ai/deepseek-v4-flash");
   });
+
+  test("adds custom provider with slash-containing model id", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+    const result = await runCli([
+      "provider", "add-custom",
+      "--id", "custom-openai",
+      "--name", "Custom OpenAI",
+      "--api", "openai-completions",
+      "--base-url", "https://api.custom.example",
+      "--env", "CUSTOM_OPENAI_API_KEY",
+      "--key", "sk-test-custom-secret",
+      "--models", "model-a,vendor/model-b",
+      "--aliases", "model-a:a,vendor/model-b:b"
+    ], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Added custom provider custom-openai");
+    expect(result.stdout + result.stderr).not.toContain("sk-test-custom-secret");
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(config.models.providers["custom-openai"].baseUrl).toBe("https://api.custom.example/v1");
+    expect(config.agents.defaults.models["custom-openai/vendor/model-b"]).toEqual({ alias: "b" });
+    expect(readFileSync(join(dir, ".openclaw", ".env"), "utf8")).toContain("CUSTOM_OPENAI_API_KEY=sk-test-custom-secret");
+  });
+
+  test("adds custom provider without allowlist when disabled by default", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+    const result = await runCli([
+      "provider", "add-custom",
+      "--id", "custom-disabled",
+      "--name", "Custom Disabled",
+      "--api", "anthropic-messages",
+      "--base-url", "https://anthropic.custom.example",
+      "--env", "CUSTOM_DISABLED_API_KEY",
+      "--key", "sk-test-custom-secret",
+      "--models", "claude-4",
+      "--disable-by-default"
+    ], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    expect(result.code).toBe(0);
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(config.models.providers["custom-disabled"].authHeader).toEqual({ source: "env", id: "CUSTOM_DISABLED_API_KEY" });
+    expect(config.agents.defaults.models["custom-disabled/claude-4"]).toBeUndefined();
+  });
+
+  test("rejects custom provider with unsupported api type", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+    const result = await runCli([
+      "provider", "add-custom",
+      "--id", "bad-api",
+      "--name", "Bad API",
+      "--api", "bogus-api",
+      "--base-url", "https://api.bad.example",
+      "--key", "sk-test-custom-secret",
+      "--models", "model-a"
+    ], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("api must be a supported API type");
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(config.models.providers["bad-api"]).toBeUndefined();
+  });
 });
 
 describe("cli model crud", () => {

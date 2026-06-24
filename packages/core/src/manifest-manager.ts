@@ -5,7 +5,14 @@ import { createBackup } from "./backup-manager";
 import { removeManagedEnvKeys } from "./env-manager";
 import type { OcSwitchPaths } from "./paths";
 
-export interface ManifestProviderEntry {
+export interface ManifestProviderMetadata {
+  displayName?: string;
+  notes?: string;
+  websiteUrl?: string;
+  isFullUrl?: boolean;
+}
+
+export interface ManifestProviderEntry extends ManifestProviderMetadata {
   providerId: string;
   envVar: string;
   createdAt: string;
@@ -39,11 +46,14 @@ export function upsertProviderEnvManifest(
   stateDir: string,
   providerId: string,
   envVar: string,
-  now = new Date().toISOString()
+  now = new Date().toISOString(),
+  metadata: ManifestProviderMetadata = {}
 ): void {
   const manifest = readManifest(stateDir);
   const existing = manifest.providers[providerId];
   manifest.providers[providerId] = {
+    ...existing,
+    ...metadata,
     providerId,
     envVar,
     createdAt: existing?.createdAt ?? now,
@@ -62,6 +72,7 @@ export function markProviderEnvOrphan(
   const manifest = readManifest(stateDir);
   const existing = manifest.providers[providerId];
   manifest.providers[providerId] = {
+    ...existing,
     providerId,
     envVar,
     createdAt: existing?.createdAt ?? now,

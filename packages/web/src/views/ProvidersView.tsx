@@ -1,6 +1,7 @@
-import { RefreshCw, Trash2 } from "lucide-react";
+import { Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { CustomProviderDialog } from "../components/CustomProviderDialog";
 import { DataTable } from "../components/DataTable";
 import type { ApiClient, ModelSummary, ProviderSummary } from "../api";
 
@@ -13,6 +14,7 @@ interface ProvidersViewProps {
 export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [addingProvider, setAddingProvider] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ProviderSummary | null>(null);
   const [newPrimaryCandidates, setNewPrimaryCandidates] = useState<ModelSummary[]>([]);
   const [selectedNewPrimary, setSelectedNewPrimary] = useState("");
@@ -72,14 +74,24 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
     <section data-testid="providers-view">
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-xl font-semibold">Providers</h1>
-        <button
-          type="button"
-          aria-label="刷新"
-          onClick={() => void load()}
-          className="rounded-md border border-slate-600 p-2 hover:bg-slate-800"
-        >
-          <RefreshCw className="h-4 w-4" />
-        </button>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setAddingProvider(true)}
+            className="inline-flex items-center gap-1 rounded bg-sky-600 px-3 py-1.5 text-sm text-white hover:bg-sky-500"
+          >
+            <Plus className="h-4 w-4" />
+            添加 Provider
+          </button>
+          <button
+            type="button"
+            aria-label="刷新"
+            onClick={() => void load()}
+            className="rounded-md border border-slate-600 p-2 hover:bg-slate-800"
+          >
+            <RefreshCw className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
       {error ? <p className="mb-3 text-red-400">{error}</p> : null}
@@ -120,6 +132,17 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
             )
           }
         ]}
+      />
+
+      <CustomProviderDialog
+        open={addingProvider}
+        client={client}
+        onCancel={() => setAddingProvider(false)}
+        onSaved={() => {
+          setAddingProvider(false);
+          void load();
+          onRefresh?.();
+        }}
       />
 
       <ConfirmDialog

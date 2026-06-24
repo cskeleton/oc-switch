@@ -28,6 +28,14 @@ function isAllowedPath(path: Path): boolean {
 
 function collectChangedPaths(before: unknown, after: unknown, path: Path = []): Path[] {
   if (Object.is(before, after)) return [];
+
+  if (Array.isArray(before) && Array.isArray(after)) {
+    if (before.length !== after.length) return [path];
+    return before.flatMap((item, index) => collectChangedPaths(item, after[index], [...path, index]));
+  }
+
+  if (Array.isArray(before) || Array.isArray(after)) return [path];
+
   if (!isRecord(before) && isRecord(after)) return collectChangedPaths({}, after, path);
   if (isRecord(before) && !isRecord(after)) return collectChangedPaths(before, {}, path);
   if (!isRecord(before) || !isRecord(after)) return [path];

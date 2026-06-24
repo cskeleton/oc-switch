@@ -1,4 +1,5 @@
 import {
+  addCustomProvider,
   addProviderFromPreset,
   applySyncedModels,
   cleanupOrphanEnvKeys,
@@ -30,7 +31,7 @@ import { Hono } from "hono";
 import JSON5 from "json5";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { requireBoolean, requireString } from "./schemas";
+import { requireBoolean, requireCustomProviderInput, requireString } from "./schemas";
 
 export interface AppOptions {
   token: string;
@@ -149,6 +150,50 @@ export function createApp(options: AppOptions) {
       const enabledModels = models ?? preset.models.map((model) => model.id);
       const after = addProviderFromPreset(structuredClone(before), preset, enabledModels).config;
       return c.json(summarizeConfigDiff(before, after));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/providers/custom/preview", async (c) => {
+    try {
+      const body = await c.req.json() as Record<string, unknown>;
+      const input = requireCustomProviderInput(body);
+      const before = readConfig(paths);
+      const after = addCustomProvider(structuredClone(before), input).config;
+      return c.json(summarizeConfigDiff(before, after));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/providers/custom", async (c) => {
+    try {
+      const body = await c.req.json() as Record<string, unknown>;
+      const input = requireCustomProviderInput(body);
+      const apiKey = requireString(body.apiKey, "apiKey");
+      const result = await writeOpenClawTransaction({
+        ...paths,
+        reason: `add custom provider ${input.providerId}`,
+        envUpdates: { [input.apiKeyEnv]: apiKey },
+        manifestUpdates: [
+          {
+            type: "upsert-provider-env",
+            providerId: input.providerId,
+            envVar: input.apiKeyEnv,
+            metadata: {
+              displayName: input.displayName,
+              ...(input.notes !== undefined ? { notes: input.notes } : {}),
+              ...(input.websiteUrl !== undefined ? { websiteUrl: input.websiteUrl } : {}),
+              isFullUrl: input.isFullUrl
+            }
+          }
+        ],
+        mutate(config) {
+          return addCustomProvider(config, input).config;
+        }
+      });
+      return c.json({ ok: true, backupId: result.backupDir.split("/").pop() });
     } catch (error) {
       return jsonError(c, error);
     }

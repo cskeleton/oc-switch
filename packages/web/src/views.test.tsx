@@ -169,6 +169,105 @@ describe("ProvidersView", () => {
     });
     expect(deleteProvider).not.toHaveBeenCalledWith("minimax-portal", { force: true });
   });
+
+  test("adds custom provider through preview and confirm without rendering api key", async () => {
+    const previewCustomProvider = mock(async () => ({
+      providersAdded: ["custom-openai"],
+      providersRemoved: [],
+      providersChanged: [],
+      modelsEnabled: ["custom-openai/model-a", "custom-openai/vendor/model-b"],
+      modelsDisabled: [],
+      primaryChanged: null
+    }));
+    const addCustomProvider = mock(async () => ({ ok: true }));
+    const getProviders = mock(async () => ({
+      providers: [
+        {
+          id: "nvidia",
+          api: "openai-completions",
+          modelCount: 2,
+          enabledModelCount: 1,
+          containsPrimary: false
+        }
+      ]
+    }));
+
+    const { findByLabelText, findByText, getByText, queryByText } = render(
+      <ProvidersView client={mockClient({ getProviders, previewCustomProvider, addCustomProvider })} />
+    );
+
+    await userEvent.click(await findByText("添加 Provider"));
+    await userEvent.type(await findByLabelText("供应商名称"), "Custom OpenAI");
+    const providerIdInput = await findByLabelText("Provider ID");
+    await userEvent.clear(providerIdInput);
+    await userEvent.type(providerIdInput, "custom-openai");
+    await userEvent.type(await findByLabelText("官网链接"), "https://custom.example");
+    await userEvent.type(await findByLabelText("备注"), "Company account");
+    await userEvent.type(await findByLabelText("API Key"), "sk-test-custom-secret");
+    await userEvent.type(await findByLabelText("请求地址"), "https://api.custom.example");
+    await userEvent.type(await findByLabelText("模型列表"), "model-a | a\nvendor/model-b | b");
+    await userEvent.click(getByText("预览并添加"));
+    expect(await findByText("custom-openai/model-a")).toBeTruthy();
+    await userEvent.click(getByText("确认"));
+
+    expect(previewCustomProvider).toHaveBeenCalledWith({
+      providerId: "custom-openai",
+      displayName: "Custom OpenAI",
+      notes: "Company account",
+      websiteUrl: "https://custom.example",
+      api: "openai-completions",
+      baseUrl: "https://api.custom.example",
+      isFullUrl: false,
+      apiKeyEnv: "CUSTOM_OPENAI_API_KEY",
+      models: [
+        { id: "model-a", alias: "a" },
+        { id: "vendor/model-b", alias: "b" }
+      ],
+      enableAllModels: true
+    });
+    expect(addCustomProvider).toHaveBeenCalledWith({
+      providerId: "custom-openai",
+      displayName: "Custom OpenAI",
+      notes: "Company account",
+      websiteUrl: "https://custom.example",
+      api: "openai-completions",
+      baseUrl: "https://api.custom.example",
+      isFullUrl: false,
+      apiKeyEnv: "CUSTOM_OPENAI_API_KEY",
+      models: [
+        { id: "model-a", alias: "a" },
+        { id: "vendor/model-b", alias: "b" }
+      ],
+      enableAllModels: true
+    }, "sk-test-custom-secret");
+    expect(queryByText("sk-test-custom-secret")).toBeNull();
+  });
+
+  test("clears custom provider api key when dialog is cancelled", async () => {
+    const getProviders = mock(async () => ({
+      providers: [
+        {
+          id: "nvidia",
+          api: "openai-completions",
+          modelCount: 2,
+          enabledModelCount: 1,
+          containsPrimary: false
+        }
+      ]
+    }));
+
+    const { findByLabelText, findByText, getByText } = render(
+      <ProvidersView client={mockClient({ getProviders })} />
+    );
+
+    await userEvent.click(await findByText("添加 Provider"));
+    const keyInput = await findByLabelText("API Key", { exact: true }) as HTMLInputElement;
+    await userEvent.type(keyInput, "sk-test-custom-secret");
+    await userEvent.click(getByText("取消"));
+
+    await userEvent.click(getByText("添加 Provider"));
+    expect((await findByLabelText("API Key", { exact: true }) as HTMLInputElement).value).toBe("");
+  });
 });
 
 describe("PresetsView", () => {

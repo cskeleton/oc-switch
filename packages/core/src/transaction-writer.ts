@@ -6,11 +6,11 @@ import { createBackup } from "./backup-manager";
 import { assertAllowedSemanticChange } from "./diff-guard";
 import { updateManagedEnv } from "./env-manager";
 import { withFileLock } from "./lock";
-import { markProviderEnvOrphan, upsertProviderEnvManifest } from "./manifest-manager";
+import { markProviderEnvOrphan, upsertProviderEnvManifest, type ManifestProviderMetadata } from "./manifest-manager";
 import type { OpenClawConfig } from "./types";
 
 export type ManifestUpdate =
-  | { type: "upsert-provider-env"; providerId: string; envVar: string }
+  | { type: "upsert-provider-env"; providerId: string; envVar: string; metadata?: ManifestProviderMetadata }
   | { type: "mark-provider-orphan"; providerId: string; envVar: string };
 
 export interface TransactionInput {
@@ -44,7 +44,7 @@ function restoreFromBackup(backupDir: string, openclawPath: string, envPath: str
 function applyManifestUpdates(stateDir: string, updates: ManifestUpdate[] | undefined): void {
   for (const update of updates ?? []) {
     if (update.type === "upsert-provider-env") {
-      upsertProviderEnvManifest(stateDir, update.providerId, update.envVar);
+      upsertProviderEnvManifest(stateDir, update.providerId, update.envVar, new Date().toISOString(), update.metadata ?? {});
     } else {
       markProviderEnvOrphan(stateDir, update.providerId, update.envVar);
     }

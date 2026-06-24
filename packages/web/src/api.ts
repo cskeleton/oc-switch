@@ -58,6 +58,26 @@ export interface SettingsResponse {
   orphanEnvKeys: string[];
 }
 
+export type ApiType = "openai-completions" | "anthropic-messages" | "google-generative-ai";
+
+export interface CustomProviderModelInput {
+  id: string;
+  alias?: string;
+}
+
+export interface CustomProviderInput {
+  providerId: string;
+  displayName: string;
+  notes?: string;
+  websiteUrl?: string;
+  api: ApiType;
+  baseUrl: string;
+  isFullUrl: boolean;
+  apiKeyEnv: string;
+  models: CustomProviderModelInput[];
+  enableAllModels: boolean;
+}
+
 export type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 export interface ApiClientOptions {
@@ -113,6 +133,16 @@ export function createApiClient(options: ApiClientOptions) {
       request<{ ok: boolean }>("/api/providers", {
         method: "POST",
         body: JSON.stringify({ presetId, apiKey, models })
+      }),
+    previewCustomProvider: (input: CustomProviderInput) =>
+      request<ConfigDiffSummary>("/api/providers/custom/preview", {
+        method: "POST",
+        body: JSON.stringify(input)
+      }),
+    addCustomProvider: (input: CustomProviderInput, apiKey: string) =>
+      request<{ ok: boolean; backupId?: string }>("/api/providers/custom", {
+        method: "POST",
+        body: JSON.stringify({ ...input, apiKey })
       }),
     updateProvider: (id: string, changes: { baseUrl?: string; apiKey?: string }) =>
       request<{ ok: boolean }>(`/api/providers/${id}`, {

@@ -36,6 +36,30 @@ describe("assertAllowedSemanticChange", () => {
     expect(() => assertAllowedSemanticChange(before, after)).toThrow("Diff guard blocked change to models.mode");
   });
 
+  test("ignores unchanged array fields such as acp.allowedAgents", () => {
+    const before = cloneSample();
+    const after = cloneSample();
+    before.acp = {
+      enabled: true,
+      allowedAgents: ["gemini", "cursor", "codex"]
+    };
+    after.acp = structuredClone(before.acp);
+    after.agents!.defaults!.models!["nvidia/deepseek-ai/deepseek-v4-flash"] = { alias: "nv-ds-flash" };
+
+    expect(() => assertAllowedSemanticChange(before, after)).not.toThrow();
+  });
+
+  test("blocks changes inside non-whitelisted array fields", () => {
+    const before = cloneSample();
+    const after = cloneSample();
+    before.acp = { allowedAgents: ["gemini", "cursor"] };
+    after.acp = { allowedAgents: ["gemini", "cursor", "codex"] };
+
+    expect(() => assertAllowedSemanticChange(before, after)).toThrow(
+      "Diff guard blocked change to acp.allowedAgents"
+    );
+  });
+
   test("allows creating missing containers when only allowed child paths change", () => {
     const before: OpenClawConfig = {};
     const after: OpenClawConfig = {

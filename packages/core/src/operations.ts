@@ -1,5 +1,5 @@
 import { formatModelRef, parseModelRef } from "./model-ref";
-import type { AllowlistEntry, OpenClawConfig, OpenClawModel, ProviderPreset } from "./types";
+import type { AllowlistEntry, CustomProviderInput, OpenClawConfig, OpenClawModel, ProviderPreset } from "./types";
 
 export interface OperationResult {
   config: OpenClawConfig;
@@ -227,6 +227,73 @@ export function addProviderFromPreset(
         : existingEntry;
     } else {
       delete config.agents!.defaults!.models![ref];
+    }
+  }
+
+  return { config, warnings: [] };
+}
+
+const ENV_VAR_PATTERN = /^[A-Z_][A-Z0-9_]*$/;
+const CUSTOM_PROVIDER_API_TYPES = new Set<CustomProviderInput["api"]>([
+  "openai-completions",
+  "anthropic-messages",
+  "google-generative-ai"
+]);
+
+function normalizeCustomProviderBaseUrl(api: CustomProviderInput["api"], baseUrl: string, isFullUrl: boolean): string {
+  const trimmed = baseUrl.trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error("baseUrl must be an http or https URL");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("baseUrl must be an http or https URL");
+  }
+  if (isFullUrl) return trimmed;
+  if (api === "openai-completions") {
+    const normalized = trimmed.replace(/\/+$/, "");
+    return normalized.endsWith("/v1") ? normalized : `${normalized}/v1`;
+  }
+  return trimmed;
+}
+
+function assertCustomProviderInput(config: OpenClawConfig, input: CustomProviderInput): void {
+  if (!input.providerId.trim()) throw new Error("providerId must be a non-empty string");
+  if (input.providerId.includes("/")) throw new Error("Provider ID must not contain /");
+  if (config.models?.providers?.[input.providerId]) throw new Error(`Provider ${input.providerId} already exists`);
+  if (!CUSTOM_PROVIDER_API_TYPES.has(input.api)) throw new Error("api must be a supported API type");
+  if (!ENV_VAR_PATTERN.test(input.apiKeyEnv)) throw new Error("apiKeyEnv must be a valid env var name");
+  if (input.models.length === 0) throw new Error("models must contain at least one model");
+
+  const seen = new Set<string>();
+  for (const model of input.models) {
+    if (!model.id.trim()) throw new Error("model id must be a non-empty string");
+    if (seen.has(model.id)) throw new Error(`Duplicate model id ${model.id}`);
+    seen.add(model.id);
+  }
+}
+
+export function addCustomProvider(config: OpenClawConfig, input: CustomProviderInput): OperationResult {
+  ensureDefaults(config);
+  assertCustomProviderInput(config, input);
+
+  const baseUrl = normalizeCustomProviderBaseUrl(input.api, input.baseUrl, input.isFullUrl);
+  const models = input.models.map((model): OpenClawModel => ({ id: model.id }));
+  const envRef = { source: "env" as const, id: input.apiKeyEnv };
+
+  config.models!.providers![input.providerId] = {
+    baseUrl,
+    api: input.api,
+    ...(input.api === "anthropic-messages" ? { authHeader: envRef } : { apiKey: envRef }),
+    models
+  };
+
+  if (input.enableAllModels) {
+    for (const model of input.models) {
+      const ref = formatModelRef(input.providerId, model.id);
+      config.agents!.defaults!.models![ref] = model.alias ? { alias: model.alias } : {};
     }
   }
 

@@ -4,6 +4,7 @@ import JSON5 from "json5";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  addCustomProvider,
   addProviderModel,
   addProviderFromPreset,
   createConfigAdapter,
@@ -64,6 +65,25 @@ function mockSyncFetch(): FetchImpl | undefined {
     });
 }
 
+function defaultEnvName(providerId: string): string {
+  return `${providerId.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").toUpperCase()}_API_KEY`;
+}
+
+function parseModelIds(value: string): string[] {
+  return value.split(",").map((id) => id.trim()).filter(Boolean);
+}
+
+function parseAliasMap(value: string | undefined): Map<string, string> {
+  const aliases = new Map<string, string>();
+  if (!value) return aliases;
+  for (const pair of value.split(",")) {
+    const [id, alias] = pair.split(":").map((part) => part.trim());
+    if (!id || !alias) throw new Error(`Invalid alias mapping ${pair}`);
+    aliases.set(id, alias);
+  }
+  return aliases;
+}
+
 const program = new Command();
 
 program
@@ -108,6 +128,74 @@ provider.command("add")
       }
     });
     console.log(`Added provider ${presetId}`);
+  });
+
+provider.command("add-custom")
+  .requiredOption("--id <provider-id>")
+  .requiredOption("--name <display-name>")
+  .requiredOption("--api <api-type>")
+  .requiredOption("--base-url <url>")
+  .requiredOption("--key <api-key>")
+  .requiredOption("--models <ids>", "Comma-separated model ids")
+  .option("--aliases <pairs>", "Comma-separated model:alias pairs")
+  .option("--env <env-var>")
+  .option("--notes <text>")
+  .option("--website <url>")
+  .option("--full-url")
+  .option("--disable-by-default")
+  .action(async (options: {
+    id: string;
+    name: string;
+    api: "openai-completions" | "anthropic-messages" | "google-generative-ai";
+    baseUrl: string;
+    key: string;
+    models: string;
+    aliases?: string;
+    env?: string;
+    notes?: string;
+    website?: string;
+    fullUrl?: boolean;
+    disableByDefault?: boolean;
+  }) => {
+    const paths = defaultPaths();
+    const aliasMap = parseAliasMap(options.aliases);
+    const input = {
+      providerId: options.id,
+      displayName: options.name,
+      ...(options.notes !== undefined ? { notes: options.notes } : {}),
+      ...(options.website !== undefined ? { websiteUrl: options.website } : {}),
+      api: options.api,
+      baseUrl: options.baseUrl,
+      isFullUrl: Boolean(options.fullUrl),
+      apiKeyEnv: options.env ?? defaultEnvName(options.id),
+      models: parseModelIds(options.models).map((id) => ({
+        id,
+        ...(aliasMap.get(id) ? { alias: aliasMap.get(id)! } : {})
+      })),
+      enableAllModels: !options.disableByDefault
+    };
+    await writeOpenClawTransaction({
+      ...paths,
+      reason: `add custom provider ${input.providerId}`,
+      envUpdates: { [input.apiKeyEnv]: options.key },
+      manifestUpdates: [
+        {
+          type: "upsert-provider-env",
+          providerId: input.providerId,
+          envVar: input.apiKeyEnv,
+          metadata: {
+            displayName: input.displayName,
+            ...(input.notes !== undefined ? { notes: input.notes } : {}),
+            ...(input.websiteUrl !== undefined ? { websiteUrl: input.websiteUrl } : {}),
+            isFullUrl: input.isFullUrl
+          }
+        }
+      ],
+      mutate(config) {
+        return addCustomProvider(config, input).config;
+      }
+    });
+    console.log(`Added custom provider ${input.providerId}`);
   });
 
 provider.command("edit")

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import sampleJson from "./fixtures/openclaw.sample.json";
 import {
+  addCustomProvider,
   addProviderFromPreset,
   addProviderModel,
   deleteProvider,
@@ -227,5 +228,92 @@ describe("removeProviderModel", () => {
     });
     expect(withNewPrimary.config.agents?.defaults?.model).toBe("nvidia/deepseek-ai/deepseek-v4-flash");
     expect(withNewPrimary.config.models?.providers?.["minimax-portal"]?.models?.map((m) => m.id)).not.toContain("MiniMax-M3");
+  });
+});
+
+describe("addCustomProvider", () => {
+  test("adds openai-compatible provider, normalizes baseUrl, models, and allowlist", () => {
+    const config = cloneSample();
+    const result = addCustomProvider(config, {
+      providerId: "custom-openai",
+      displayName: "Custom OpenAI",
+      api: "openai-completions",
+      baseUrl: "https://api.custom.example",
+      isFullUrl: false,
+      apiKeyEnv: "CUSTOM_OPENAI_API_KEY",
+      models: [
+        { id: "model-a", alias: "a" },
+        { id: "vendor/model-b", alias: "b" }
+      ],
+      enableAllModels: true
+    });
+
+    expect(result.config.models?.providers?.["custom-openai"]).toMatchObject({
+      baseUrl: "https://api.custom.example/v1",
+      api: "openai-completions",
+      apiKey: { source: "env", id: "CUSTOM_OPENAI_API_KEY" },
+      models: [{ id: "model-a" }, { id: "vendor/model-b" }]
+    });
+    expect(result.config.agents?.defaults?.models?.["custom-openai/model-a"]).toEqual({ alias: "a" });
+    expect(result.config.agents?.defaults?.models?.["custom-openai/vendor/model-b"]).toEqual({ alias: "b" });
+  });
+
+  test("uses authHeader for anthropic provider and can skip allowlist", () => {
+    const config = cloneSample();
+    const result = addCustomProvider(config, {
+      providerId: "custom-anthropic",
+      displayName: "Custom Anthropic",
+      api: "anthropic-messages",
+      baseUrl: "https://anthropic.custom.example",
+      isFullUrl: false,
+      apiKeyEnv: "CUSTOM_ANTHROPIC_API_KEY",
+      models: [{ id: "claude-4" }],
+      enableAllModels: false
+    });
+
+    expect(result.config.models?.providers?.["custom-anthropic"]).toMatchObject({
+      baseUrl: "https://anthropic.custom.example",
+      api: "anthropic-messages",
+      authHeader: { source: "env", id: "CUSTOM_ANTHROPIC_API_KEY" },
+      models: [{ id: "claude-4" }]
+    });
+    expect(result.config.agents?.defaults?.models?.["custom-anthropic/claude-4"]).toBeUndefined();
+  });
+
+  test("preserves full URL input exactly after trimming surrounding whitespace", () => {
+    const config = cloneSample();
+    const result = addCustomProvider(config, {
+      providerId: "custom-full-url",
+      displayName: "Custom Full URL",
+      api: "openai-completions",
+      baseUrl: "  https://api.custom.example/v1/  ",
+      isFullUrl: true,
+      apiKeyEnv: "CUSTOM_FULL_URL_API_KEY",
+      models: [{ id: "model-a" }],
+      enableAllModels: true
+    });
+
+    expect(result.config.models?.providers?.["custom-full-url"]?.baseUrl).toBe("https://api.custom.example/v1/");
+  });
+
+  test("rejects invalid custom provider input", () => {
+    const base = {
+      providerId: "custom-invalid",
+      displayName: "Custom Invalid",
+      api: "openai-completions" as const,
+      baseUrl: "https://valid.example",
+      isFullUrl: true,
+      apiKeyEnv: "CUSTOM_INVALID_API_KEY",
+      models: [{ id: "model-a" }],
+      enableAllModels: true
+    };
+
+    expect(() => addCustomProvider(cloneSample(), { ...base, providerId: "bad/id" })).toThrow("Provider ID must not contain /");
+    expect(() => addCustomProvider(cloneSample(), { ...base, providerId: "nvidia" })).toThrow("Provider nvidia already exists");
+    expect(() => addCustomProvider(cloneSample(), { ...base, api: "bogus-api" as never })).toThrow("api must be a supported API type");
+    expect(() => addCustomProvider(cloneSample(), { ...base, apiKeyEnv: "bad-key" })).toThrow("apiKeyEnv must be a valid env var name");
+    expect(() => addCustomProvider(cloneSample(), { ...base, baseUrl: "ftp://bad.example" })).toThrow("baseUrl must be an http or https URL");
+    expect(() => addCustomProvider(cloneSample(), { ...base, models: [] })).toThrow("models must contain at least one model");
+    expect(() => addCustomProvider(cloneSample(), { ...base, models: [{ id: "dup" }, { id: "dup" }] })).toThrow("Duplicate model id dup");
   });
 });
