@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBackup, listBackups, restoreBackup, restoreBackupSafely } from "../src/backup-manager";
@@ -74,5 +74,66 @@ describe("backup manager", () => {
     expect(readFileSync(ws.openclawPath, "utf8")).toBe("{\"before\":true}\n");
     expect(readFileSync(join(result.safetyBackupDir, "openclaw.json"), "utf8")).toBe("{\"current\":true}\n");
     expect(readFileSync(join(result.safetyBackupDir, ".env"), "utf8")).toBe("KEY=current\n");
+  });
+
+  test("rejects restore when backup paths do not match active paths", () => {
+    const ws = workspace();
+    const backupDir = createBackup({ ...ws, reason: "path-bound", beforeHash: "hash" });
+    const otherOpenclaw = join(ws.dir, "other-openclaw.json");
+    const otherEnv = join(ws.dir, "other.env");
+    writeFileSync(otherOpenclaw, "{\"other\":true}\n");
+    writeFileSync(otherEnv, "KEY=other\n");
+
+    expect(() => restoreBackupSafely({
+      stateDir: ws.stateDir,
+      backupDir,
+      openclawPath: otherOpenclaw,
+      envPath: otherEnv
+    })).toThrow(/备份路径与当前 active 路径不一致/);
+
+    expect(readFileSync(otherOpenclaw, "utf8")).toBe("{\"other\":true}\n");
+  });
+
+  test("rejects restore when backup metadata is missing", () => {
+    const ws = workspace();
+    const backupDir = createBackup({ ...ws, reason: "missing-metadata", beforeHash: "hash" });
+    rmSync(join(backupDir, "metadata.json"));
+    writeFileSync(ws.openclawPath, "{\"current\":true}\n");
+
+    expect(() => restoreBackupSafely({
+      stateDir: ws.stateDir,
+      backupDir,
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath
+    })).toThrow(/metadata/);
+
+    expect(readFileSync(ws.openclawPath, "utf8")).toBe("{\"current\":true}\n");
+  });
+
+  test("records path sources and writes private backup permissions", () => {
+    const ws = workspace();
+    const backupDir = createBackup({
+      ...ws,
+      reason: "path metadata",
+      beforeHash: "hash",
+      pathSources: {
+        openclawPath: "running-instance",
+        envPath: "openclaw-default"
+      }
+    });
+
+    const metadata = JSON.parse(readFileSync(join(backupDir, "metadata.json"), "utf8")) as {
+      openclawPath: string;
+      envPath: string;
+      pathSources: { openclawPath: string; envPath: string };
+    };
+    expect(metadata.openclawPath).toBe(ws.openclawPath);
+    expect(metadata.envPath).toBe(ws.envPath);
+    expect(metadata.pathSources).toEqual({
+      openclawPath: "running-instance",
+      envPath: "openclaw-default"
+    });
+    expect(statSync(backupDir).mode & 0o777).toBe(0o700);
+    expect(statSync(join(backupDir, ".env")).mode & 0o777).toBe(0o600);
   });
 });

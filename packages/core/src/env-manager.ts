@@ -104,3 +104,54 @@ export function removeManagedEnvKeys(content: string, keys: string[]): EnvUpdate
     changedKeys
   };
 }
+
+export function removeEnvVarLines(content: string, key: string): EnvUpdateResult {
+  const lines = content.length ? content.split(/\n/) : [];
+  if (lines.at(-1) === "") lines.pop();
+  const changedKeys: string[] = [];
+  const nextLines = lines.filter((line) => {
+    const normalized = line.trimStart().startsWith("export ")
+      ? line.trimStart().slice("export ".length).trimStart()
+      : line.trimStart();
+    const match = normalized.match(/^([A-Za-z_][A-Za-z0-9_]*)=/);
+    if (match?.[1] !== key) return true;
+    changedKeys.push(key);
+    return false;
+  });
+  return { content: `${nextLines.join("\n")}${nextLines.length ? "\n" : ""}`, changedKeys };
+}
+
+export function migrateEnvVarToManagedBlock(content: string, key: string, value: string): EnvUpdateResult {
+  const removed = removeEnvVarLines(content, key);
+  const updated = updateManagedEnv(removed.content, { [key]: value });
+  return {
+    content: updated.content,
+    changedKeys: Array.from(new Set([...removed.changedKeys, ...updated.changedKeys]))
+  };
+}
+
+export function renameManagedEnvKey(content: string, fromKey: string, toKey: string): EnvUpdateResult {
+  const lines = content.length ? content.split(/\n/) : [];
+  if (lines.at(-1) === "") lines.pop();
+  const startIndex = lines.indexOf(START);
+  const endIndex = lines.indexOf(END);
+  const hasBlock = startIndex >= 0 && endIndex > startIndex;
+  if (!hasBlock) throw new Error("managed env block is required for rename");
+
+  let renamed = false;
+  const nextLines = lines.map((line, index) => {
+    const insideBlock = index > startIndex && index < endIndex;
+    if (!insideBlock) return line;
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (match?.[1] === toKey) throw new Error(`target env var already exists: ${toKey}`);
+    if (match?.[1] !== fromKey) return line;
+    renamed = true;
+    return `${toKey}=${match[2] ?? ""}`;
+  });
+
+  if (!renamed) throw new Error(`managed env var not found: ${fromKey}`);
+  return {
+    content: `${nextLines.join("\n")}\n`,
+    changedKeys: [fromKey, toKey]
+  };
+}

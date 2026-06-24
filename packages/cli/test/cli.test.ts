@@ -1,8 +1,14 @@
-import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sample from "../../core/test/fixtures/openclaw.sample.json";
+
+const tempDirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 
 async function runCli(args: string[], env: Record<string, string>) {
   const proc = Bun.spawn(["bun", "run", "packages/cli/src/index.ts", ...args], {
@@ -136,6 +142,34 @@ describe("cli write commands", () => {
 
     const config = JSON.parse(readFileSync(configPath, "utf8"));
     expect(config.agents.defaults.model).toBe("minimax-portal/MiniMax-M3");
+  });
+
+  test("rejects restore when backup paths mismatch active paths", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+    await runCli(["use", "nvidia/deepseek-ai/deepseek-v4-flash"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    const listResult = await runCli(["backup", "list"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+    const backupId = listResult.stdout.trim().split("\t")[0];
+    expect(backupId).toBeTruthy();
+
+    const otherConfig = join(dir, "other-openclaw.json");
+    writeFileSync(otherConfig, `${JSON.stringify(sample, null, 2)}\n`);
+
+    const restoreResult = await runCli(["backup", "restore", backupId!], {
+      OPENCLAW_CONFIG_PATH: otherConfig,
+      HOME: dir
+    });
+    expect(restoreResult.code).not.toBe(0);
+    expect(restoreResult.stderr).toContain("备份路径与当前 active 路径不一致");
   });
 });
 
@@ -416,4 +450,24 @@ describe("cli serve and token", () => {
     expect(mode).toBe(0o600);
     expect(result.stdout + result.stderr).not.toMatch(/sk-[a-zA-Z0-9]{10,}/);
   });
+});
+
+test("uses persisted oc-switch env path when OPENCLAW_CONFIG_PATH overrides only config", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-active-paths-"));
+  tempDirs.push(dir);
+  const openclawPath = join(dir, "openclaw.json");
+  const envPath = join(dir, "custom.env");
+  const stateDir = join(dir, ".oc-switch");
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(openclawPath, `${JSON.stringify(sample, null, 2)}\n`);
+  writeFileSync(envPath, "");
+  writeFileSync(join(stateDir, "settings.json"), JSON.stringify({ envPath }, null, 2));
+
+  const result = await runCli([
+    "provider", "edit", "nvidia",
+    "--key", "persisted-env-secret"
+  ], { OPENCLAW_CONFIG_PATH: openclawPath, HOME: dir });
+
+  expect(result.code).toBe(0);
+  expect(readFileSync(envPath, "utf8")).toContain("NVIDIA_API_KEY=persisted-env-secret");
 });

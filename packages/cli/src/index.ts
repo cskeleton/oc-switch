@@ -8,12 +8,12 @@ import {
   addProviderModel,
   addProviderFromPreset,
   createConfigAdapter,
-  defaultPaths,
   defaultPresetDirs,
   disableModel,
   editProvider,
   enableModel,
   exportProviderPreset,
+  getActivePaths,
   listBackups,
   listPresets,
   loadPreset,
@@ -34,13 +34,17 @@ import {
 import { createApp } from "@oc-switch/server";
 import type { OpenClawConfig } from "@oc-switch/core";
 
+function activePaths() {
+  return getActivePaths();
+}
+
 function readConfig(): OpenClawConfig {
-  const paths = defaultPaths();
+  const paths = activePaths();
   return JSON5.parse(readFileSync(paths.openclawPath, "utf8")) as OpenClawConfig;
 }
 
 function readEnvContent(): string | undefined {
-  const paths = defaultPaths();
+  const paths = activePaths();
   return existsSync(paths.envPath) ? readFileSync(paths.envPath, "utf8") : undefined;
 }
 
@@ -50,7 +54,7 @@ function providerEnvVar(config: OpenClawConfig, providerId: string): string | un
 }
 
 function presetDirs() {
-  const paths = defaultPaths();
+  const paths = activePaths();
   const repoRoot = join(dirname(import.meta.path), "../../..");
   return defaultPresetDirs(paths.stateDir, repoRoot);
 }
@@ -113,7 +117,7 @@ provider.command("add")
   .requiredOption("--key <api-key>", "API key value")
   .option("--models <ids>", "Comma-separated model ids to enable", (value: string) => value.split(",").map((id) => id.trim()).filter(Boolean))
   .action(async (presetId: string, options: { key: string; models?: string[] }) => {
-    const paths = defaultPaths();
+    const paths = activePaths();
     const preset = loadPreset(presetDirs(), presetId);
     const enabledModels = options.models ?? preset.models.map((model) => model.id);
     await writeOpenClawTransaction({
@@ -157,7 +161,7 @@ provider.command("add-custom")
     fullUrl?: boolean;
     disableByDefault?: boolean;
   }) => {
-    const paths = defaultPaths();
+    const paths = activePaths();
     const aliasMap = parseAliasMap(options.aliases);
     const input = {
       providerId: options.id,
@@ -203,7 +207,7 @@ provider.command("edit")
   .option("--base-url <url>")
   .option("--key <api-key>", "API key value")
   .action(async (name: string, options: { baseUrl?: string; key?: string }) => {
-    const paths = defaultPaths();
+    const paths = activePaths();
     const envUpdates: Record<string, string> = {};
     if (options.key) {
       const config = readConfig();
@@ -239,7 +243,7 @@ provider.command("delete")
   .option("--force")
   .option("--new-primary <ref>")
   .action(async (name: string, options: { force?: boolean; newPrimary?: string }) => {
-    const paths = defaultPaths();
+    const paths = activePaths();
     const removeOptions: { force: boolean; newPrimary?: string } = { force: Boolean(options.force) };
     if (options.newPrimary !== undefined) removeOptions.newPrimary = options.newPrimary;
     const config = readConfig();
@@ -260,7 +264,7 @@ provider.command("delete")
 provider.command("sync")
   .argument("<name>")
   .action(async (name: string) => {
-    const paths = defaultPaths();
+    const paths = activePaths();
     const config = readConfig();
     const fetchImpl = mockSyncFetch();
     const envContent = readEnvContent();
@@ -299,7 +303,7 @@ models.command("list").option("--provider <name>").action((options: { provider?:
 program.command("use")
   .argument("<ref>")
   .action(async (ref: string) => {
-    const paths = defaultPaths();
+    const paths = activePaths();
     await writeOpenClawTransaction({
       ...paths,
       reason: `set primary model ${ref}`,
@@ -314,7 +318,7 @@ const model = program.command("model");
 model.command("disable")
   .argument("<ref>")
   .action(async (ref: string) => {
-    const paths = defaultPaths();
+    const paths = activePaths();
     await writeOpenClawTransaction({
       ...paths,
       reason: `disable model ${ref}`,
@@ -329,7 +333,7 @@ model.command("enable")
   .argument("<ref>")
   .option("--alias <alias>")
   .action(async (ref: string, options: { alias?: string }) => {
-    const paths = defaultPaths();
+    const paths = activePaths();
     await writeOpenClawTransaction({
       ...paths,
       reason: `enable model ${ref}`,
@@ -345,7 +349,7 @@ model.command("add")
   .option("--alias <alias>")
   .option("--enable", "Add model to allowlist")
   .action(async (ref: string, options: { alias?: string; enable?: boolean }) => {
-    const paths = defaultPaths();
+    const paths = activePaths();
     const input: { enabled: boolean; alias?: string } = { enabled: Boolean(options.enable) };
     if (options.alias !== undefined) input.alias = options.alias;
     await writeOpenClawTransaction({
@@ -363,7 +367,7 @@ model.command("remove")
   .option("--force")
   .option("--new-primary <ref>")
   .action(async (ref: string, options: { force?: boolean; newPrimary?: string }) => {
-    const paths = defaultPaths();
+    const paths = activePaths();
     const removeOptions: { force: boolean; newPrimary?: string } = { force: Boolean(options.force) };
     if (options.newPrimary !== undefined) removeOptions.newPrimary = options.newPrimary;
     await writeOpenClawTransaction({
@@ -378,7 +382,7 @@ model.command("remove")
 
 const backup = program.command("backup");
 backup.command("list").action(() => {
-  const paths = defaultPaths();
+  const paths = activePaths();
   for (const entry of listBackups(paths.stateDir)) {
     console.log(`${entry.id}\t${entry.metadata.createdAt}\t${entry.metadata.reason}`);
   }
@@ -387,18 +391,23 @@ backup.command("list").action(() => {
 backup.command("restore")
   .argument("<id>")
   .action((id: string) => {
-    const paths = defaultPaths();
-    restoreBackupSafely({
-      stateDir: paths.stateDir,
-      backupDir: join(paths.stateDir, "backups", id),
-      openclawPath: paths.openclawPath,
-      envPath: paths.envPath
-    });
-    console.log(`Restored backup ${id}`);
+    const paths = activePaths();
+    try {
+      restoreBackupSafely({
+        stateDir: paths.stateDir,
+        backupDir: join(paths.stateDir, "backups", id),
+        openclawPath: paths.openclawPath,
+        envPath: paths.envPath
+      });
+      console.log(`Restored backup ${id}`);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
   });
 
 program.command("diff").action(() => {
-  const paths = defaultPaths();
+  const paths = activePaths();
   const [latest] = listBackups(paths.stateDir);
   if (!latest) throw new Error("No backups found");
   const before = JSON5.parse(readFileSync(join(latest.path, "openclaw.json"), "utf8")) as OpenClawConfig;
@@ -440,7 +449,7 @@ program.command("serve")
   .option("--host <host>", "Bind address", "127.0.0.1")
   .option("--token <secret>", "Bearer token for API auth")
   .action((options: { port: string; host: string; token?: string }) => {
-    const paths = defaultPaths();
+    const paths = activePaths();
     const { token, ephemeral } = resolveServeToken({
       host: options.host,
       ...(options.token !== undefined ? { token: options.token } : {}),
@@ -464,7 +473,7 @@ const tokenCmd = program.command("token");
 tokenCmd.command("rotate")
   .description("Rotate persisted API access token")
   .action(() => {
-    const paths = defaultPaths();
+    const paths = activePaths();
     const token = rotatePersistedToken(paths.stateDir);
     console.log(`Rotated token. New token: ${token}`);
   });

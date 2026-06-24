@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { markProviderEnvOrphan, readManifest, upsertProviderEnvManifest } from "../src/manifest-manager";
+import { markProviderEnvOrphan, readManifest, upsertExtraEnvManifest, upsertProviderEnvManifest } from "../src/manifest-manager";
 
 const tempDirs: string[] = [];
 
@@ -68,5 +68,24 @@ describe("manifest manager metadata", () => {
       updatedAt: "2026-06-24T02:00:00.000Z"
     });
     expect(readFileSync(join(dir, "manifest.json"), "utf8")).not.toContain("sk-");
+  });
+
+  test("stores extra env metadata without secret values", () => {
+    const dir = stateDir();
+
+    upsertExtraEnvManifest(dir, "SOME_MCP_EPID", {
+      note: "MCP endpoint id",
+      managed: true
+    }, "2026-06-25T00:00:00.000Z");
+
+    const manifest = readManifest(dir);
+    expect(manifest.extraEnv?.SOME_MCP_EPID).toEqual({
+      envVar: "SOME_MCP_EPID",
+      note: "MCP endpoint id",
+      managed: true,
+      createdAt: "2026-06-25T00:00:00.000Z",
+      updatedAt: "2026-06-25T00:00:00.000Z"
+    });
+    expect(JSON.stringify(manifest)).not.toContain("secret");
   });
 });

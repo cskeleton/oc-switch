@@ -34,6 +34,54 @@ export function requireBooleanDefault(value: unknown, name: string, fallback: bo
   return requireBoolean(value, name);
 }
 
+export function requireEnvPreviewOperation(body: Record<string, unknown>) {
+  if (body.value !== undefined) throw new Error("preview must not include value");
+  const type = requireString(body.type, "type");
+  if (type !== "upsert" && type !== "delete" && type !== "rename") throw new Error("type must be upsert, delete, or rename");
+  if (type === "rename") {
+    return {
+      type,
+      fromEnvVar: requireString(body.fromEnvVar, "fromEnvVar"),
+      toEnvVar: requireString(body.toEnvVar, "toEnvVar"),
+      ...(body.confirmComplex !== undefined ? { confirmComplex: requireBoolean(body.confirmComplex, "confirmComplex") } : {}),
+      ...(body.note !== undefined ? { note: requireString(body.note, "note") } : {})
+    };
+  }
+  return {
+    type,
+    envVar: requireString(body.envVar, "envVar"),
+    ...(body.confirmMigration !== undefined ? { confirmMigration: requireBoolean(body.confirmMigration, "confirmMigration") } : {}),
+    ...(body.confirmComplex !== undefined ? { confirmComplex: requireBoolean(body.confirmComplex, "confirmComplex") } : {}),
+    ...(type === "upsert" && body.note !== undefined ? { note: requireString(body.note, "note") } : {})
+  };
+}
+
+export function requireEnvOperation(body: Record<string, unknown>) {
+  const type = requireString(body.type, "type");
+  if (type !== "upsert" && type !== "delete" && type !== "rename") throw new Error("type must be upsert, delete, or rename");
+  if (type === "rename") {
+    return {
+      type,
+      fromEnvVar: requireString(body.fromEnvVar, "fromEnvVar"),
+      toEnvVar: requireString(body.toEnvVar, "toEnvVar"),
+      ...(body.confirmComplex !== undefined ? { confirmComplex: requireBoolean(body.confirmComplex, "confirmComplex") } : {}),
+      ...(body.note !== undefined ? { note: requireString(body.note, "note") } : {})
+    };
+  }
+  const base = {
+    type,
+    envVar: requireString(body.envVar, "envVar"),
+    ...(body.confirmMigration !== undefined ? { confirmMigration: requireBoolean(body.confirmMigration, "confirmMigration") } : {}),
+    ...(body.confirmComplex !== undefined ? { confirmComplex: requireBoolean(body.confirmComplex, "confirmComplex") } : {})
+  };
+  if (type === "delete") return base;
+  return {
+    ...base,
+    value: requireString(body.value, "value"),
+    ...(body.note !== undefined ? { note: requireString(body.note, "note") } : {})
+  };
+}
+
 export function requireCustomProviderInput(body: Record<string, unknown>): CustomProviderInput {
   const modelsValue = body.models;
   if (!Array.isArray(modelsValue)) throw new Error("models must be an array");

@@ -164,6 +164,34 @@ async function main(): Promise<void> {
     try {
       const baseUrl = `http://127.0.0.1:${SERVER_PORT}`;
 
+      const appEnvUpdate = await fetch(`${baseUrl}/api/env`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          type: "upsert",
+          envVar: "USER_DEFINED_API_KEY",
+          value: "new-managed-value",
+          confirmMigration: true
+        })
+      });
+      const appEnvUpdateJson = await appEnvUpdate.json() as Record<string, unknown>;
+      outputs.push(JSON.stringify(appEnvUpdateJson));
+      assert(appEnvUpdate.status === 200, "env update 应成功");
+      assert(!JSON.stringify(appEnvUpdateJson).includes("new-managed-value"), "env update 响应不得回显新值");
+
+      const latestAfterEnvUpdate = listBackups(stateDir)[0];
+      assert(latestAfterEnvUpdate !== undefined, "env update 后应存在备份");
+      const latestBackupDirAfterEnvUpdate = join(stateDir, "backups", latestAfterEnvUpdate.id);
+      const latestMetadata = JSON.parse(readFileSync(join(latestBackupDirAfterEnvUpdate, "metadata.json"), "utf8")) as {
+        openclawPath?: string;
+        envPath?: string;
+      };
+      assert(latestMetadata.openclawPath === openclawPath, "备份 metadata 应记录 openclawPath");
+      assert(latestMetadata.envPath === envPath, "备份 metadata 应记录 envPath");
+
       const unauth = await fetch(`${baseUrl}/api/status`);
       const unauthBody = await unauth.text();
       outputs.push(unauthBody);

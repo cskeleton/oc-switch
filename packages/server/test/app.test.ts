@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sample from "../../core/test/fixtures/openclaw.sample.json";
@@ -39,13 +39,14 @@ function workspace(): Workspace {
   };
 }
 
-function createTestApp(ws: Workspace, fetchImpl?: FetchImpl) {
+function createTestApp(ws: Workspace, fetchImpl?: FetchImpl, extra?: { runningInstances?: Array<{ pid: number; openclawPath?: string; envPath?: string }> }) {
   return createApp({
     token: TOKEN,
     paths: ws.paths,
     presetDirs: ws.presetDirs,
     repoRoot,
-    ...(fetchImpl ? { fetchImpl } : {})
+    ...(fetchImpl ? { fetchImpl } : {}),
+    ...(extra?.runningInstances ? { runningInstances: extra.runningInstances } : {})
   });
 }
 
@@ -409,5 +410,184 @@ describe("server write endpoints", () => {
       after: "nvidia/deepseek-ai/deepseek-v4-flash"
     });
     expect(JSON.stringify(json)).not.toContain("sk-");
+  });
+});
+
+describe("server path settings", () => {
+  test("PUT /api/settings/paths switches subsequent reads immediately", async () => {
+    const ws = workspace();
+    const nextDir = mkdtempSync(join(tmpdir(), "oc-switch-server-next-"));
+    tempDirs.push(nextDir);
+    const nextOpenclawPath = join(nextDir, "openclaw.json");
+    const nextEnvPath = join(nextDir, ".env");
+    writeFileSync(nextOpenclawPath, JSON.stringify({
+      models: { providers: { switched: { models: [{ id: "model-a" }] } } },
+      agents: { defaults: { models: {} } }
+    }, null, 2));
+    writeFileSync(nextEnvPath, "SWITCHED_API_KEY=value\n");
+    const app = createTestApp(ws);
+
+    const switched = await jsonRequest(app, "/api/settings/paths", {
+      method: "PUT",
+      body: JSON.stringify({ openclawPath: nextOpenclawPath, envPath: nextEnvPath })
+    });
+    expect(switched.response.status).toBe(200);
+
+    const providers = await jsonRequest(app, "/api/providers");
+    expect((providers.json.providers as Array<{ id: string }>).map((item) => item.id)).toEqual(["switched"]);
+  });
+
+  test("PUT /api/settings/paths rejects invalid env path", async () => {
+    const ws = workspace();
+    const nextDir = mkdtempSync(join(tmpdir(), "oc-switch-server-bad-env-"));
+    tempDirs.push(nextDir);
+    const nextOpenclawPath = join(nextDir, "openclaw.json");
+    const missingEnvPath = join(nextDir, "missing", ".env");
+    writeFileSync(nextOpenclawPath, JSON.stringify({
+      models: { providers: {} },
+      agents: { defaults: { models: {} } }
+    }, null, 2));
+    const app = createTestApp(ws);
+
+    const rejected = await jsonRequest(app, "/api/settings/paths", {
+      method: "PUT",
+      body: JSON.stringify({ openclawPath: nextOpenclawPath, envPath: missingEnvPath })
+    });
+    expect(rejected.response.status).toBe(400);
+    expect(String((rejected.json as { error?: string }).error)).toContain("父目录不可写");
+  });
+
+  test("PUT /api/settings/paths rejects symlink openclaw path", async () => {
+    const ws = workspace();
+    const nextDir = mkdtempSync(join(tmpdir(), "oc-switch-server-bad-openclaw-"));
+    tempDirs.push(nextDir);
+    const realOpenclawPath = join(nextDir, "real-openclaw.json");
+    const symlinkOpenclawPath = join(nextDir, "openclaw-link.json");
+    const nextEnvPath = join(nextDir, ".env");
+    writeFileSync(realOpenclawPath, JSON.stringify({
+      models: { providers: {} },
+      agents: { defaults: { models: {} } }
+    }, null, 2));
+    writeFileSync(nextEnvPath, "KEY=value\n");
+    symlinkSync(realOpenclawPath, symlinkOpenclawPath);
+    const app = createTestApp(ws);
+
+    const rejected = await jsonRequest(app, "/api/settings/paths", {
+      method: "PUT",
+      body: JSON.stringify({ openclawPath: symlinkOpenclawPath, envPath: nextEnvPath })
+    });
+    expect(rejected.response.status).toBe(400);
+    expect(String((rejected.json as { error?: string }).error)).toContain("openclaw.json 路径为符号链接");
+  });
+
+  test("PUT /api/settings/paths accepts valid env path including non-existent file", async () => {
+    const ws = workspace();
+    const nextDir = mkdtempSync(join(tmpdir(), "oc-switch-server-good-env-"));
+    tempDirs.push(nextDir);
+    const nextOpenclawPath = join(nextDir, "openclaw.json");
+    const futureEnvPath = join(nextDir, "future.env");
+    writeFileSync(nextOpenclawPath, JSON.stringify({
+      models: { providers: { ok: { models: [{ id: "m" }] } } },
+      agents: { defaults: { models: {} } }
+    }, null, 2));
+    const app = createTestApp(ws);
+
+    const accepted = await jsonRequest(app, "/api/settings/paths", {
+      method: "PUT",
+      body: JSON.stringify({ openclawPath: nextOpenclawPath, envPath: futureEnvPath })
+    });
+    expect(accepted.response.status).toBe(200);
+  });
+
+  test("GET /api/settings/paths includes running-instance candidates when injected", async () => {
+    const ws = workspace();
+    const runningConfig = join(ws.dir, "running-openclaw.json");
+    const runningEnv = join(ws.dir, "running.env");
+    writeFileSync(runningConfig, "{}");
+    writeFileSync(runningEnv, "RUNNING=1\n");
+    const app = createTestApp(ws, undefined, {
+      runningInstances: [{
+        pid: 4242,
+        openclawPath: runningConfig,
+        envPath: runningEnv
+      }]
+    });
+
+    const { response, json } = await jsonRequest(app, "/api/settings/paths");
+    expect(response.status).toBe(200);
+    expect((json.openclawPaths as Array<{ path: string; source: string }>).find((item) => item.path === runningConfig)).toMatchObject({
+      source: "running-instance",
+      recommended: true
+    });
+    expect((json.envPaths as Array<{ path: string; source: string }>).find((item) => item.path === runningEnv)).toMatchObject({
+      source: "running-instance",
+      recommended: true
+    });
+  });
+});
+
+describe("server env APIs", () => {
+  test("GET /api/env indexes variables without secret values", async () => {
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, "NVIDIA_API_KEY=sk-test-secret\n");
+    const app = createTestApp(ws);
+
+    const { response, json } = await jsonRequest(app, "/api/env");
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(json)).toContain("NVIDIA_API_KEY");
+    expect(JSON.stringify(json)).not.toContain("sk-test-secret");
+  });
+
+  test("POST /api/env updates unmanaged var only with confirmation and never echoes value", async () => {
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, "SOME_MCP_EPID=old-secret\n");
+    const app = createTestApp(ws);
+
+    const rejected = await jsonRequest(app, "/api/env", {
+      method: "POST",
+      body: JSON.stringify({ type: "upsert", envVar: "SOME_MCP_EPID", value: "new-secret" })
+    });
+    expect(rejected.response.status).toBe(400);
+
+    const accepted = await jsonRequest(app, "/api/env", {
+      method: "POST",
+      body: JSON.stringify({
+        type: "upsert",
+        envVar: "SOME_MCP_EPID",
+        value: "new-secret",
+        confirmMigration: true
+      })
+    });
+    expect(accepted.response.status).toBe(200);
+    expect(JSON.stringify(accepted.json)).not.toContain("new-secret");
+    expect(readFileSync(ws.paths.envPath, "utf8")).toContain("SOME_MCP_EPID=new-secret");
+  });
+
+  test("POST /api/env/preview accepts upsert without value", async () => {
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, "SOME_MCP_EPID=old-secret\n");
+    const app = createTestApp(ws);
+
+    const { response, json } = await jsonRequest(app, "/api/env/preview", {
+      method: "POST",
+      body: JSON.stringify({ type: "upsert", envVar: "SOME_MCP_EPID" })
+    });
+    expect(response.status).toBe(200);
+    expect(json).toMatchObject({
+      affectedKeys: ["SOME_MCP_EPID"],
+      requiresConfirmation: true
+    });
+    expect(JSON.stringify(json)).not.toContain("old-secret");
+  });
+
+  test("POST /api/env/preview rejects value in request body", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+
+    const { response } = await jsonRequest(app, "/api/env/preview", {
+      method: "POST",
+      body: JSON.stringify({ type: "upsert", envVar: "SOME_KEY", value: "secret" })
+    });
+    expect(response.status).toBe(400);
   });
 });

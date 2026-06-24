@@ -286,7 +286,7 @@ describe("PresetsView", () => {
     }));
     const getDiff = mock(async () => { throw new Error("getDiff should not be used for preset preview"); });
 
-    const { findByLabelText, getByText, queryByText } = render(
+    const { findByLabelText, findByText, getByText, queryByText } = render(
       <PresetsView client={mockClient({ getPresets, getDiff, previewAddProvider, addProvider })} />
     );
 
@@ -345,6 +345,12 @@ describe("DiffSummary", () => {
 });
 
 describe("SettingsView", () => {
+  const defaultPathSettings = {
+    active: { openclawPath: "/default/openclaw.json", envPath: "/default/.env", stateDir: "/state" },
+    openclawPaths: [],
+    envPaths: []
+  };
+
   test("shows non-secret settings", async () => {
     const { findByText } = render(
       <SettingsView
@@ -357,7 +363,9 @@ describe("SettingsView", () => {
             backupRetention: 20,
             gatewayRestartCommand: "openclaw gateway restart",
             orphanEnvKeys: []
-          })
+          }),
+          getPathSettings: async () => defaultPathSettings,
+          getEnvIndex: async () => ({ variables: [], warnings: [] })
         })}
       />
     );
@@ -383,6 +391,8 @@ describe("SettingsView", () => {
             gatewayRestartCommand: "openclaw gateway restart",
             orphanEnvKeys: ["OLD_API_KEY"]
           }),
+          getPathSettings: async () => defaultPathSettings,
+          getEnvIndex: async () => ({ variables: [], warnings: [] }),
           cleanupOrphanEnvKeys
         })}
       />
@@ -391,5 +401,288 @@ describe("SettingsView", () => {
     expect(await findByText("OLD_API_KEY")).toBeTruthy();
     await userEvent.click(getByText("清理 orphan keys"));
     expect(cleanupOrphanEnvKeys).toHaveBeenCalled();
+  });
+
+  test("shows path candidates and switches selected paths", async () => {
+    const putPaths = mock(async () => ({ ok: true, paths: { openclawPath: "/next/openclaw.json", envPath: "/next/.env", stateDir: "/state" } }));
+    const { findByText, getByLabelText, getByText } = render(
+      <SettingsView
+        baseUrl="http://127.0.0.1:7420"
+        client={mockClient({
+          getSettings: async () => ({
+            configPath: "/default/openclaw.json",
+            envPath: "/default/.env",
+            bindAddress: "127.0.0.1",
+            port: 7420,
+            backupRetention: 20,
+            gatewayRestartCommand: "openclaw gateway restart",
+            orphanEnvKeys: []
+          }),
+          getPathSettings: async () => ({
+            active: { openclawPath: "/default/openclaw.json", envPath: "/default/.env", stateDir: "/state" },
+            openclawPaths: [{ path: "/next/openclaw.json", source: "running-instance", label: "运行中 OpenClaw", recommended: true, exists: true, readable: true, writable: true, parentWritable: true }],
+            envPaths: [{ path: "/next/.env", source: "running-instance", label: "运行中 OpenClaw", recommended: true, exists: true, readable: true, writable: true, parentWritable: true }]
+          }),
+          updatePathSettings: putPaths,
+          getEnvIndex: async () => ({ variables: [], warnings: [] })
+        })}
+      />
+    );
+
+    expect(await findByText(/\/next\/openclaw\.json/)).toBeTruthy();
+    await userEvent.selectOptions(getByLabelText("openclaw.json 路径"), "/next/openclaw.json");
+    await userEvent.selectOptions(getByLabelText(".env 路径"), "/next/.env");
+    await userEvent.click(getByText("切换路径"));
+    expect(putPaths).toHaveBeenCalledWith("/next/openclaw.json", "/next/.env");
+  });
+
+  test("renders env variables without secret values", async () => {
+    const { findByText, queryByText } = render(
+      <SettingsView
+        baseUrl="http://127.0.0.1:7420"
+        client={mockClient({
+          getSettings: async () => ({
+            configPath: "/default/openclaw.json",
+            envPath: "/default/.env",
+            bindAddress: "127.0.0.1",
+            port: 7420,
+            backupRetention: 20,
+            gatewayRestartCommand: "openclaw gateway restart",
+            orphanEnvKeys: []
+          }),
+          getPathSettings: async () => ({
+            active: { openclawPath: "/default/openclaw.json", envPath: "/default/.env", stateDir: "/state" },
+            openclawPaths: [],
+            envPaths: []
+          }),
+          getEnvIndex: async () => ({
+            variables: [{
+              envVar: "NVIDIA_API_KEY",
+              present: true,
+              managed: false,
+              providerRef: true,
+              providerIds: ["nvidia"],
+              extraManaged: false,
+              orphan: false,
+              missing: false,
+              duplicate: false,
+              complex: false
+            }],
+            warnings: []
+          })
+        })}
+      />
+    );
+
+    expect(await findByText("NVIDIA_API_KEY")).toBeTruthy();
+    expect(queryByText("sk-test-secret")).toBeNull();
+  });
+
+  test("advanced env section is collapsed by default", async () => {
+    const { findByText, queryByText } = render(
+      <SettingsView
+        baseUrl="http://127.0.0.1:7420"
+        client={mockClient({
+          getSettings: async () => ({
+            configPath: "/default/openclaw.json",
+            envPath: "/default/.env",
+            bindAddress: "127.0.0.1",
+            port: 7420,
+            backupRetention: 20,
+            gatewayRestartCommand: "openclaw gateway restart",
+            orphanEnvKeys: []
+          }),
+          getPathSettings: async () => defaultPathSettings,
+          getEnvIndex: async () => ({
+            variables: [{
+              envVar: "SOME_MCP_EPID",
+              present: true,
+              managed: true,
+              providerRef: false,
+              providerIds: [],
+              extraManaged: true,
+              orphan: false,
+              missing: false,
+              duplicate: false,
+              complex: false
+            }],
+            warnings: []
+          })
+        })}
+      />
+    );
+
+    expect(await findByText(/高级：额外托管变量/)).toBeTruthy();
+    expect(queryByText("SOME_MCP_EPID")).toBeNull();
+  });
+
+  test("updates provider env var and clears input after submit", async () => {
+    const previewEnvVar = mock(async () => ({
+      affectedKeys: ["NVIDIA_API_KEY"],
+      requiresConfirmation: false,
+      warnings: [],
+      backupWillIncludeSecrets: true
+    }));
+    const updateEnvVar = mock(async () => ({ ok: true as const, affectedKeys: ["NVIDIA_API_KEY"] }));
+    const getEnvIndex = mock(async () => ({
+      variables: [{
+        envVar: "NVIDIA_API_KEY",
+        present: true,
+        managed: true,
+        providerRef: true,
+        providerIds: ["nvidia"],
+        extraManaged: false,
+        orphan: false,
+        missing: false,
+        duplicate: false,
+        complex: false
+      }],
+      warnings: []
+    }));
+
+    const { findByLabelText, getByText } = render(
+      <SettingsView
+        baseUrl="http://127.0.0.1:7420"
+        client={mockClient({
+          getSettings: async () => ({
+            configPath: "/default/openclaw.json",
+            envPath: "/default/.env",
+            bindAddress: "127.0.0.1",
+            port: 7420,
+            backupRetention: 20,
+            gatewayRestartCommand: "openclaw gateway restart",
+            orphanEnvKeys: []
+          }),
+          getPathSettings: async () => defaultPathSettings,
+          getEnvIndex,
+          previewEnvVar,
+          updateEnvVar
+        })}
+      />
+    );
+
+    const input = await findByLabelText("NVIDIA_API_KEY 新值");
+    await userEvent.type(input, "brand-new-secret");
+    await userEvent.click(getByText("重填"));
+    await waitFor(() => expect(updateEnvVar).toHaveBeenCalled());
+    expect(updateEnvVar).toHaveBeenCalledWith({
+      type: "upsert",
+      envVar: "NVIDIA_API_KEY",
+      value: "brand-new-secret"
+    });
+    await waitFor(() => expect((input as HTMLInputElement).value).toBe(""));
+  });
+
+  test("shows migration confirmation for unmanaged provider env var", async () => {
+    const previewEnvVar = mock(async () => ({
+      affectedKeys: ["NVIDIA_API_KEY"],
+      requiresConfirmation: true,
+      warnings: ["NVIDIA_API_KEY will be migrated into the oc-switch managed block"],
+      backupWillIncludeSecrets: true
+    }));
+    const updateEnvVar = mock(async () => ({ ok: true as const, affectedKeys: ["NVIDIA_API_KEY"] }));
+
+    const { findByLabelText, findByText, getByText } = render(
+      <SettingsView
+        baseUrl="http://127.0.0.1:7420"
+        client={mockClient({
+          getSettings: async () => ({
+            configPath: "/default/openclaw.json",
+            envPath: "/default/.env",
+            bindAddress: "127.0.0.1",
+            port: 7420,
+            backupRetention: 20,
+            gatewayRestartCommand: "openclaw gateway restart",
+            orphanEnvKeys: []
+          }),
+          getPathSettings: async () => defaultPathSettings,
+          getEnvIndex: async () => ({
+            variables: [{
+              envVar: "NVIDIA_API_KEY",
+              present: true,
+              managed: false,
+              providerRef: true,
+              providerIds: ["nvidia"],
+              extraManaged: false,
+              orphan: false,
+              missing: false,
+              duplicate: false,
+              complex: false
+            }],
+            warnings: []
+          }),
+          previewEnvVar,
+          updateEnvVar
+        })}
+      />
+    );
+
+    await userEvent.type(await findByLabelText("NVIDIA_API_KEY 新值"), "new-secret");
+    await userEvent.click(getByText("重填"));
+    expect(await findByText(/不在 oc-switch 托管区/)).toBeTruthy();
+    await userEvent.click(getByText("确认"));
+    await waitFor(() => expect(updateEnvVar).toHaveBeenCalledWith({
+      type: "upsert",
+      envVar: "NVIDIA_API_KEY",
+      value: "new-secret",
+      confirmMigration: true
+    }));
+  });
+
+  test("renames advanced managed env var without rendering its secret", async () => {
+    const previewEnvVar = mock(async () => ({
+      affectedKeys: ["SOME_MCP_EPID", "SOME_MCP_EPID_NEXT"],
+      requiresConfirmation: false,
+      warnings: [],
+      backupWillIncludeSecrets: true
+    }));
+    const renameEnvVar = mock(async () => ({ ok: true as const, affectedKeys: ["SOME_MCP_EPID", "SOME_MCP_EPID_NEXT"] }));
+
+    const { findByLabelText, findByText, getByText, queryByText } = render(
+      <SettingsView
+        baseUrl="http://127.0.0.1:7420"
+        client={mockClient({
+          getSettings: async () => ({
+            configPath: "/default/openclaw.json",
+            envPath: "/default/.env",
+            bindAddress: "127.0.0.1",
+            port: 7420,
+            backupRetention: 20,
+            gatewayRestartCommand: "openclaw gateway restart",
+            orphanEnvKeys: []
+          }),
+          getPathSettings: async () => defaultPathSettings,
+          getEnvIndex: async () => ({
+            variables: [{
+              envVar: "SOME_MCP_EPID",
+              present: true,
+              managed: true,
+              providerRef: false,
+              providerIds: [],
+              extraManaged: true,
+              orphan: false,
+              missing: false,
+              duplicate: false,
+              complex: false,
+              note: "MCP endpoint id"
+            }],
+            warnings: []
+          }),
+          previewEnvVar,
+          renameEnvVar
+        })}
+      />
+    );
+
+    await userEvent.click(await findByText(/高级：额外托管变量/));
+    await userEvent.type(await findByLabelText("SOME_MCP_EPID 新变量名"), "SOME_MCP_EPID_NEXT");
+    await userEvent.click(getByText("重命名"));
+    await waitFor(() => expect(renameEnvVar).toHaveBeenCalledWith({
+      type: "rename",
+      fromEnvVar: "SOME_MCP_EPID",
+      toEnvVar: "SOME_MCP_EPID_NEXT",
+      note: "MCP endpoint id"
+    }));
+    expect(queryByText("epid-secret")).toBeNull();
   });
 });

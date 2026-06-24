@@ -51,11 +51,49 @@ export interface ConfigDiffSummary {
 
 export interface SettingsResponse {
   configPath: string;
+  envPath?: string;
   bindAddress: string;
   port: number;
   backupRetention: number;
   gatewayRestartCommand: string;
   orphanEnvKeys: string[];
+}
+
+export interface PathCandidate {
+  path: string;
+  source: string;
+  label: string;
+  recommended: boolean;
+  exists: boolean;
+  readable: boolean;
+  writable: boolean;
+  parentWritable: boolean;
+}
+
+export interface PathSettingsResponse {
+  active: { openclawPath: string; envPath: string; stateDir: string };
+  openclawPaths: PathCandidate[];
+  envPaths: PathCandidate[];
+}
+
+export interface EnvVariableSummary {
+  envVar: string;
+  present: boolean;
+  managed: boolean;
+  providerRef: boolean;
+  providerIds: string[];
+  extraManaged: boolean;
+  orphan: boolean;
+  missing: boolean;
+  duplicate: boolean;
+  complex: boolean;
+  note?: string;
+  updatedAt?: string;
+}
+
+export interface EnvIndexResponse {
+  variables: EnvVariableSummary[];
+  warnings: string[];
 }
 
 export type ApiType = "openai-completions" | "anthropic-messages" | "google-generative-ai";
@@ -164,6 +202,36 @@ export function createApiClient(options: ApiClientOptions) {
       request<{ ok: boolean; id: string; safetyBackupId?: string }>(`/api/backups/${id}/restore`, { method: "POST" }),
     getDiff: () => request<ConfigDiffSummary>("/api/diff"),
     getSettings: () => request<SettingsResponse>("/api/settings"),
+    getPathSettings: () => request<PathSettingsResponse>("/api/settings/paths"),
+    updatePathSettings: (openclawPath: string, envPath: string) =>
+      request<{ ok: boolean; paths: { openclawPath: string; envPath: string; stateDir: string } }>("/api/settings/paths", {
+        method: "PUT",
+        body: JSON.stringify({ openclawPath, envPath })
+      }),
+    getEnvIndex: () => request<EnvIndexResponse>("/api/env"),
+    updateEnvVar: (body: { type: "upsert"; envVar: string; value: string; note?: string; confirmMigration?: boolean; confirmComplex?: boolean }) =>
+      request<{ ok: true; affectedKeys: string[]; backupId?: string }>("/api/env", {
+        method: "POST",
+        body: JSON.stringify(body)
+      }),
+    deleteEnvVar: (body: { type: "delete"; envVar: string; confirmComplex?: boolean }) =>
+      request<{ ok: true; affectedKeys: string[]; backupId?: string }>("/api/env", {
+        method: "POST",
+        body: JSON.stringify(body)
+      }),
+    renameEnvVar: (body: { type: "rename"; fromEnvVar: string; toEnvVar: string; note?: string; confirmComplex?: boolean }) =>
+      request<{ ok: true; affectedKeys: string[]; backupId?: string }>("/api/env", {
+        method: "POST",
+        body: JSON.stringify(body)
+      }),
+    previewEnvVar: (body:
+      | { type: "upsert" | "delete"; envVar: string; note?: string }
+      | { type: "rename"; fromEnvVar: string; toEnvVar: string; note?: string }
+    ) =>
+      request<{ affectedKeys: string[]; requiresConfirmation: boolean; warnings: string[]; backupWillIncludeSecrets: boolean }>("/api/env/preview", {
+        method: "POST",
+        body: JSON.stringify(body)
+      }),
     cleanupOrphanEnvKeys: () =>
       request<{ ok: boolean; removedKeys: string[]; backupId?: string }>("/api/settings/orphans/cleanup", {
         method: "POST"

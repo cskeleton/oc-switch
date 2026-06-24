@@ -1,37 +1,49 @@
 import {
   addCustomProvider,
   addProviderFromPreset,
+  applyEnvOperation,
   applySyncedModels,
   cleanupOrphanEnvKeys,
   createConfigAdapter,
   DEFAULT_BACKUP_RETENTION,
-  defaultPaths,
   defaultPresetDirs,
+  discoverRunningOpenClawInstances,
   disableModel,
   editProvider,
   enableModel,
   exportProviderPreset,
+  getActivePaths,
+  inspectEnvFile,
   listBackups,
   listOrphanEnvKeys,
   listPresets,
+  listProviderEnvRefs,
   loadPreset,
+  previewEnvOperation,
+  readManifest,
   removeProvider,
+  resolveOpenClawPathCandidates,
   restoreBackupSafely,
   saveCustomPreset,
   setPrimaryModel,
   summarizeConfigDiff,
   syncProviderModels,
+  validateBackupPathMatch,
+  validateEnvPathForSwitch,
+  validateOpenClawPathForSwitch,
+  writeOcSwitchSettings,
   writeOpenClawTransaction,
   type FetchImpl,
   type OcSwitchPaths,
   type OpenClawConfig,
-  type PresetDirs
+  type PresetDirs,
+  type RunningOpenClawInstance
 } from "@oc-switch/core";
 import { Hono } from "hono";
 import JSON5 from "json5";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { requireBoolean, requireCustomProviderInput, requireString } from "./schemas";
+import { requireBoolean, requireCustomProviderInput, requireEnvOperation, requireEnvPreviewOperation, requireString } from "./schemas";
 
 export interface AppOptions {
   token: string;
@@ -41,6 +53,8 @@ export interface AppOptions {
   fetchImpl?: FetchImpl;
   bindAddress?: string;
   port?: number;
+  /** 测试注入：覆盖运行实例发现 */
+  runningInstances?: RunningOpenClawInstance[];
 }
 
 function readConfig(paths: OcSwitchPaths): OpenClawConfig {
@@ -75,8 +89,9 @@ function jsonError(c: { json: (body: unknown, status: number) => Response }, err
 
 /** 创建带 Bearer 认证的 Hono REST 应用 */
 export function createApp(options: AppOptions) {
-  const paths = options.paths ?? defaultPaths();
-  const presetDirs = options.presetDirs ?? defaultPresetDirs(paths.stateDir, options.repoRoot);
+  let activePaths = options.paths ?? getActivePaths();
+  const currentPaths = () => activePaths;
+  const presetDirs = options.presetDirs ?? defaultPresetDirs(currentPaths().stateDir, options.repoRoot);
   const fetchImpl = options.fetchImpl ?? fetch;
 
   const app = new Hono();
@@ -101,13 +116,13 @@ export function createApp(options: AppOptions) {
   });
 
   app.get("/api/status", (c) => {
-    const adapter = createConfigAdapter(readConfig(paths));
+    const adapter = createConfigAdapter(readConfig(currentPaths()));
     const status = adapter.getStatus();
     return c.json({ ok: true, ...status });
   });
 
   app.get("/api/providers", (c) => {
-    const adapter = createConfigAdapter(readConfig(paths));
+    const adapter = createConfigAdapter(readConfig(currentPaths()));
     return c.json({ providers: adapter.listProviders() });
   });
 
@@ -122,7 +137,7 @@ export function createApp(options: AppOptions) {
       const preset = loadPreset(presetDirs, presetId);
       const enabledModels = models ?? preset.models.map((model) => model.id);
       const result = await writeOpenClawTransaction({
-        ...paths,
+        ...currentPaths(),
         reason: `add provider ${presetId}`,
         envUpdates: { [preset.provider.apiKeyEnv]: apiKey },
         manifestUpdates: [
@@ -146,7 +161,7 @@ export function createApp(options: AppOptions) {
         ? body.models.filter((id: unknown): id is string => typeof id === "string" && id.length > 0)
         : undefined;
       const preset = loadPreset(presetDirs, presetId);
-      const before = readConfig(paths);
+      const before = readConfig(currentPaths());
       const enabledModels = models ?? preset.models.map((model) => model.id);
       const after = addProviderFromPreset(structuredClone(before), preset, enabledModels).config;
       return c.json(summarizeConfigDiff(before, after));
@@ -159,7 +174,7 @@ export function createApp(options: AppOptions) {
     try {
       const body = await c.req.json() as Record<string, unknown>;
       const input = requireCustomProviderInput(body);
-      const before = readConfig(paths);
+      const before = readConfig(currentPaths());
       const after = addCustomProvider(structuredClone(before), input).config;
       return c.json(summarizeConfigDiff(before, after));
     } catch (error) {
@@ -173,7 +188,7 @@ export function createApp(options: AppOptions) {
       const input = requireCustomProviderInput(body);
       const apiKey = requireString(body.apiKey, "apiKey");
       const result = await writeOpenClawTransaction({
-        ...paths,
+        ...currentPaths(),
         reason: `add custom provider ${input.providerId}`,
         envUpdates: { [input.apiKeyEnv]: apiKey },
         manifestUpdates: [
@@ -205,14 +220,14 @@ export function createApp(options: AppOptions) {
       const body = await c.req.json();
       const envUpdates: Record<string, string> = {};
       if (body.apiKey !== undefined) {
-        const config = readConfig(paths);
+        const config = readConfig(currentPaths());
         const providerConfig = config.models?.providers?.[providerId];
         const envId = providerConfig?.apiKey?.id ?? providerConfig?.authHeader?.id;
         if (!envId) throw new Error(`Provider ${providerId} has no env key reference`);
         envUpdates[envId] = requireString(body.apiKey, "apiKey");
       }
       const result = await writeOpenClawTransaction({
-        ...paths,
+        ...currentPaths(),
         reason: `edit provider ${providerId}`,
         ...(Object.keys(envUpdates).length ? { envUpdates } : {}),
         ...(Object.keys(envUpdates).length
@@ -246,10 +261,10 @@ export function createApp(options: AppOptions) {
       if (body.newPrimary !== undefined) {
         removeOptions.newPrimary = requireString(body.newPrimary, "newPrimary");
       }
-      const config = readConfig(paths);
+      const config = readConfig(currentPaths());
       const envVar = providerEnvVar(config, providerId);
       const result = await writeOpenClawTransaction({
-        ...paths,
+        ...currentPaths(),
         reason: `delete provider ${providerId}`,
         ...(envVar
           ? { manifestUpdates: [{ type: "mark-provider-orphan" as const, providerId, envVar }] }
@@ -267,8 +282,8 @@ export function createApp(options: AppOptions) {
   app.post("/api/providers/:id/sync", async (c) => {
     try {
       const providerId = c.req.param("id");
-      const config = readConfig(paths);
-      const envContent = readEnvContent(paths);
+      const config = readConfig(currentPaths());
+      const envContent = readEnvContent(currentPaths());
       const syncResult = await syncProviderModels(config, providerId, {
         fetchImpl,
         ...(envContent !== undefined ? { envContent } : {})
@@ -289,7 +304,7 @@ export function createApp(options: AppOptions) {
         });
       }
       const result = await writeOpenClawTransaction({
-        ...paths,
+        ...currentPaths(),
         reason: `sync provider ${providerId}`,
         mutate(current) {
           return applySyncedModels(current, providerId, syncResult.addedModelIds);
@@ -307,7 +322,7 @@ export function createApp(options: AppOptions) {
   });
 
   app.get("/api/models", (c) => {
-    const adapter = createConfigAdapter(readConfig(paths));
+    const adapter = createConfigAdapter(readConfig(currentPaths()));
     return c.json({ models: adapter.listModels() });
   });
 
@@ -316,7 +331,7 @@ export function createApp(options: AppOptions) {
       const body = await c.req.json();
       const ref = requireString(body.ref, "ref");
       const result = await writeOpenClawTransaction({
-        ...paths,
+        ...currentPaths(),
         reason: `set primary model ${ref}`,
         mutate(config) {
           return setPrimaryModel(config, ref).config;
@@ -334,7 +349,7 @@ export function createApp(options: AppOptions) {
       const ref = requireString(body.ref, "ref");
       const enabled = requireBoolean(body.enabled, "enabled");
       const result = await writeOpenClawTransaction({
-        ...paths,
+        ...currentPaths(),
         reason: enabled ? `enable model ${ref}` : `disable model ${ref}`,
         mutate(config) {
           return enabled ? enableModel(config, ref, body.alias).config : disableModel(config, ref).config;
@@ -362,7 +377,7 @@ export function createApp(options: AppOptions) {
 
   app.post("/api/presets/import", (c) => {
     try {
-      const config = readConfig(paths);
+      const config = readConfig(currentPaths());
       const providerIds = Object.keys(config.models?.providers ?? {});
       const imported: string[] = [];
       for (const providerId of providerIds) {
@@ -379,7 +394,7 @@ export function createApp(options: AppOptions) {
   app.post("/api/presets/export/:id", (c) => {
     try {
       const providerId = c.req.param("id");
-      const preset = exportProviderPreset(readConfig(paths), providerId);
+      const preset = exportProviderPreset(readConfig(currentPaths()), providerId);
       const written = saveCustomPreset(presetDirs.customDir, preset);
       return c.json({ ok: true, id: preset.id, path: written });
     } catch (error) {
@@ -388,7 +403,7 @@ export function createApp(options: AppOptions) {
   });
 
   app.get("/api/backups", (c) => {
-    const backups = listBackups(paths.stateDir).map((entry) => ({
+    const backups = listBackups(currentPaths().stateDir).map((entry) => ({
       id: entry.id,
       createdAt: entry.metadata.createdAt,
       reason: entry.metadata.reason
@@ -399,9 +414,19 @@ export function createApp(options: AppOptions) {
   app.post("/api/backups/:id/restore", (c) => {
     try {
       const id = c.req.param("id");
+      const paths = currentPaths();
+      const backupDir = join(paths.stateDir, "backups", id);
+      const mismatch = validateBackupPathMatch({
+        backupDir,
+        openclawPath: paths.openclawPath,
+        envPath: paths.envPath
+      });
+      if (mismatch) {
+        return c.json({ error: "backup path mismatch" }, 409);
+      }
       const result = restoreBackupSafely({
         stateDir: paths.stateDir,
-        backupDir: join(paths.stateDir, "backups", id),
+        backupDir,
         openclawPath: paths.openclawPath,
         envPath: paths.envPath
       });
@@ -413,28 +438,103 @@ export function createApp(options: AppOptions) {
 
   app.get("/api/diff", (c) => {
     try {
-      const [latest] = listBackups(paths.stateDir);
+      const [latest] = listBackups(currentPaths().stateDir);
       if (!latest) throw new Error("No backups found");
       const before = JSON5.parse(readFileSync(join(latest.path, "openclaw.json"), "utf8")) as OpenClawConfig;
-      const after = readConfig(paths);
+      const after = readConfig(currentPaths());
       return c.json(summarizeConfigDiff(before, after));
     } catch (error) {
       return jsonError(c, error);
     }
   });
 
+  app.get("/api/settings/paths", (c) => {
+    const runningInstances = options.runningInstances ?? discoverRunningOpenClawInstances();
+    return c.json(resolveOpenClawPathCandidates({
+      stateDir: currentPaths().stateDir,
+      runningInstances,
+      manualOpenClawPaths: [currentPaths().openclawPath],
+      manualEnvPaths: [currentPaths().envPath]
+    }));
+  });
+
+  app.put("/api/settings/paths", async (c) => {
+    try {
+      const body = await c.req.json() as Record<string, unknown>;
+      const next = {
+        openclawPath: requireString(body.openclawPath, "openclawPath"),
+        envPath: requireString(body.envPath, "envPath"),
+        stateDir: currentPaths().stateDir
+      };
+      validateOpenClawPathForSwitch(next.openclawPath);
+      readConfig(next);
+      validateEnvPathForSwitch(next.envPath);
+      writeOcSwitchSettings(next.stateDir, {
+        openclawPath: next.openclawPath,
+        envPath: next.envPath
+      });
+      activePaths = next;
+      return c.json({ ok: true, paths: next });
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.get("/api/env", (c) => {
+    try {
+      const paths = currentPaths();
+      const config = readConfig(paths);
+      const envContent = readEnvContent(paths) ?? "";
+      return c.json(inspectEnvFile({
+        content: envContent,
+        providerRefs: listProviderEnvRefs(config),
+        manifest: readManifest(paths.stateDir)
+      }));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/env/preview", async (c) => {
+    try {
+      const body = await c.req.json() as Record<string, unknown>;
+      const operation = requireEnvPreviewOperation(body);
+      return c.json(previewEnvOperation({
+        paths: currentPaths(),
+        operation: operation as never
+      }));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/env", async (c) => {
+    try {
+      const body = await c.req.json() as Record<string, unknown>;
+      const operation = requireEnvOperation(body);
+      const result = await applyEnvOperation({
+        paths: currentPaths(),
+        operation: operation as never
+      });
+      return c.json(result);
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
   app.get("/api/settings", (c) => c.json({
-    configPath: paths.openclawPath,
+    configPath: currentPaths().openclawPath,
+    envPath: currentPaths().envPath,
     bindAddress: options.bindAddress ?? "127.0.0.1",
     port: options.port ?? 7420,
     backupRetention: DEFAULT_BACKUP_RETENTION,
     gatewayRestartCommand: "openclaw gateway restart",
-    orphanEnvKeys: listOrphanEnvKeys(paths.stateDir)
+    orphanEnvKeys: listOrphanEnvKeys(currentPaths().stateDir)
   }));
 
   app.post("/api/settings/orphans/cleanup", (c) => {
     try {
-      const result = cleanupOrphanEnvKeys(paths);
+      const result = cleanupOrphanEnvKeys(currentPaths());
       return c.json({
         ok: true,
         removedKeys: result.removedKeys,

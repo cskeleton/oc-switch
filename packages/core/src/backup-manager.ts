@@ -1,8 +1,13 @@
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
 export const DEFAULT_BACKUP_RETENTION = 20;
+
+export interface BackupPathSources {
+  openclawPath?: string;
+  envPath?: string;
+}
 
 export interface BackupMetadata {
   reason: string;
@@ -11,6 +16,7 @@ export interface BackupMetadata {
   beforeHash: string;
   sourceFiles: string[];
   createdAt: string;
+  pathSources?: BackupPathSources;
 }
 
 export interface BackupSummary {
@@ -27,23 +33,40 @@ export interface BackupInput {
   beforeHash: string;
   retentionLimit?: number;
   protectedBackupDirs?: string[];
+  pathSources?: BackupPathSources;
+}
+
+function safeChmod(path: string, mode: number): void {
+  try {
+    chmodSync(path, mode);
+  } catch {
+    // 尽力收紧权限
+  }
 }
 
 export function createBackup(input: BackupInput): string {
   const createdAt = new Date().toISOString();
   const timestamp = `${createdAt.replace(/[:.]/g, "-")}-${process.hrtime.bigint()}`;
   const backupDir = join(input.stateDir, "backups", timestamp);
-  mkdirSync(backupDir, { recursive: true });
+  mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+  safeChmod(join(input.stateDir, "backups"), 0o700);
+  safeChmod(backupDir, 0o700);
   copyFileSync(input.openclawPath, join(backupDir, "openclaw.json"));
-  if (existsSync(input.envPath)) copyFileSync(input.envPath, join(backupDir, ".env"));
+  safeChmod(join(backupDir, "openclaw.json"), 0o600);
+  if (existsSync(input.envPath)) {
+    copyFileSync(input.envPath, join(backupDir, ".env"));
+    safeChmod(join(backupDir, ".env"), 0o600);
+  }
   writeFileSync(join(backupDir, "metadata.json"), `${JSON.stringify({
     reason: input.reason,
     openclawPath: input.openclawPath,
     envPath: input.envPath,
+    ...(input.pathSources ? { pathSources: input.pathSources } : {}),
     beforeHash: input.beforeHash,
     sourceFiles: [basename(input.openclawPath), basename(input.envPath)],
     createdAt
-  }, null, 2)}\n`);
+  }, null, 2)}\n`, { mode: 0o600 });
+  safeChmod(join(backupDir, "metadata.json"), 0o600);
   pruneBackups(input.stateDir, input.retentionLimit ?? DEFAULT_BACKUP_RETENTION, input.protectedBackupDirs);
   return backupDir;
 }
@@ -113,11 +136,52 @@ export interface SafeRestoreBackupResult {
   safetyBackupDir: string;
 }
 
+export interface BackupPathMismatch {
+  backupOpenclawPath: string;
+  backupEnvPath: string;
+  currentOpenclawPath: string;
+  currentEnvPath: string;
+}
+
+/** 读取备份 metadata 并校验与当前 active 路径是否一致 */
+export function validateBackupPathMatch(input: {
+  backupDir: string;
+  openclawPath: string;
+  envPath: string;
+}): BackupPathMismatch | null {
+  const metadataPath = join(input.backupDir, "metadata.json");
+  if (!existsSync(metadataPath)) {
+    throw new Error("backup metadata missing; refusing restore");
+  }
+  const metadata = JSON.parse(readFileSync(metadataPath, "utf8")) as BackupMetadata;
+  if (metadata.openclawPath === input.openclawPath && metadata.envPath === input.envPath) {
+    return null;
+  }
+  return {
+    backupOpenclawPath: metadata.openclawPath,
+    backupEnvPath: metadata.envPath,
+    currentOpenclawPath: input.openclawPath,
+    currentEnvPath: input.envPath
+  };
+}
+
+export function formatBackupPathMismatchError(mismatch: BackupPathMismatch): string {
+  return [
+    "备份路径与当前 active 路径不一致，拒绝恢复。",
+    `备份 openclaw: ${mismatch.backupOpenclawPath}`,
+    `备份 env: ${mismatch.backupEnvPath}`,
+    `当前 openclaw: ${mismatch.currentOpenclawPath}`,
+    `当前 env: ${mismatch.currentEnvPath}`
+  ].join("\n");
+}
+
 function fileSha256(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
 export function restoreBackupSafely(input: SafeRestoreBackupInput): SafeRestoreBackupResult {
+  const mismatch = validateBackupPathMatch(input);
+  if (mismatch) throw new Error(formatBackupPathMismatchError(mismatch));
   const targetId = basename(input.backupDir);
   const safetyBackupDir = createBackup({
     stateDir: input.stateDir,

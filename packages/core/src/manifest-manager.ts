@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createBackup } from "./backup-manager";
 import { removeManagedEnvKeys } from "./env-manager";
@@ -20,8 +20,20 @@ export interface ManifestProviderEntry extends ManifestProviderMetadata {
   orphan: boolean;
 }
 
+export interface ManifestExtraEnvMetadata {
+  note?: string;
+  managed?: boolean;
+}
+
+export interface ManifestExtraEnvEntry extends ManifestExtraEnvMetadata {
+  envVar: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface OcSwitchManifest {
   providers: Record<string, ManifestProviderEntry>;
+  extraEnv?: Record<string, ManifestExtraEnvEntry>;
 }
 
 export const MANIFEST_FILE = "manifest.json";
@@ -32,14 +44,47 @@ function manifestPath(stateDir: string): string {
 
 export function readManifest(stateDir: string): OcSwitchManifest {
   const path = manifestPath(stateDir);
-  if (!existsSync(path)) return { providers: {} };
+  if (!existsSync(path)) return { providers: {}, extraEnv: {} };
   const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<OcSwitchManifest>;
-  return { providers: parsed.providers ?? {} };
+  return { providers: parsed.providers ?? {}, extraEnv: parsed.extraEnv ?? {} };
 }
 
 export function writeManifest(stateDir: string, manifest: OcSwitchManifest): void {
   mkdirSync(stateDir, { recursive: true });
-  writeFileSync(manifestPath(stateDir), `${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileSync(manifestPath(stateDir), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+  try {
+    chmodSync(manifestPath(stateDir), 0o600);
+  } catch {
+    // 尽力收紧权限
+  }
+}
+
+export function upsertExtraEnvManifest(
+  stateDir: string,
+  envVar: string,
+  metadata: ManifestExtraEnvMetadata = {},
+  now = new Date().toISOString()
+): void {
+  const manifest = readManifest(stateDir);
+  const existing = manifest.extraEnv?.[envVar];
+  manifest.extraEnv = {
+    ...(manifest.extraEnv ?? {}),
+    [envVar]: {
+      ...existing,
+      ...metadata,
+      envVar,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now
+    }
+  };
+  writeManifest(stateDir, manifest);
+}
+
+export function removeExtraEnvManifest(stateDir: string, envVar: string): void {
+  const manifest = readManifest(stateDir);
+  if (!manifest.extraEnv?.[envVar]) return;
+  delete manifest.extraEnv[envVar];
+  writeManifest(stateDir, manifest);
 }
 
 export function upsertProviderEnvManifest(

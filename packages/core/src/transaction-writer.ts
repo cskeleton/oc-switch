@@ -94,3 +94,45 @@ export async function writeOpenClawTransaction(input: TransactionInput): Promise
     return { backupDir };
   });
 }
+
+export interface EnvTransactionInput {
+  openclawPath: string;
+  envPath: string;
+  stateDir: string;
+  reason: string;
+  pathSources?: { openclawPath?: string; envPath?: string };
+  mutateEnv(content: string): string;
+  afterWrite?: () => void;
+}
+
+export async function writeEnvTransaction(input: EnvTransactionInput): Promise<TransactionResult> {
+  return withFileLock(join(input.stateDir, "write.lock"), async () => {
+    const beforeRaw = readFileSync(input.openclawPath, "utf8");
+    const beforeHash = sha256(beforeRaw);
+    const beforeEnv = existsSync(input.envPath) ? readFileSync(input.envPath, "utf8") : "";
+    const afterEnv = input.mutateEnv(beforeEnv);
+
+    const backupDir = createBackup({
+      stateDir: input.stateDir,
+      openclawPath: input.openclawPath,
+      envPath: input.envPath,
+      reason: input.reason,
+      beforeHash,
+      ...(input.pathSources ? { pathSources: input.pathSources } : {})
+    });
+
+    mkdirSync(dirname(input.envPath), { recursive: true });
+    const envTmp = `${input.envPath}.tmp`;
+    try {
+      writeFileSync(envTmp, afterEnv, { mode: 0o600 });
+      renameSync(envTmp, input.envPath);
+      input.afterWrite?.();
+    } catch (error) {
+      restoreFromBackup(backupDir, input.openclawPath, input.envPath);
+      rmSync(envTmp, { force: true });
+      throw error;
+    }
+
+    return { backupDir };
+  });
+}
