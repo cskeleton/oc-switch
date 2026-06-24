@@ -36,8 +36,9 @@
 - 优先用 **backup/restore**、**`presets export <provider-id>`**、**`import`（全量导出到 `~/.oc-switch/presets/custom/`）**，或直接拷贝 `openclaw.json` + 相关 `.env` Key。
 - 这类「配置快照」比维护 builtin 模板更贴近真实需求；export/import 不含 API Key 明文。
 
-### Preset 的定位（次要、可选）
+### Preset 的定位（次要、可选，**待改进**）
 
+- **状态：待改进**——当前 preset 流程价值有限，后续优先强化 provider/整配置 import·export，并考虑将本页弱化为「高级：从模板添加」。
 - **builtin**（`presets/builtin/`）：仓库内静态模板，供「从模板添加 provider」时少打字；会过时，不等于用户本机配置。
 - **custom**（`~/.oc-switch/presets/custom/`）：由 `import` / `presets export` 从当前配置生成，才反映本机或共享用的真实形态。
 - WebGUI「预设」页展示的是上述 JSON 文件，**不是**实时读取 `openclaw.json`。

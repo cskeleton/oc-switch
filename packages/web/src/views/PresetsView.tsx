@@ -85,9 +85,19 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
 
   return (
     <section data-testid="presets-view">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+      <div className="mb-4 flex flex-wrap items-center gap-2">
         <h1 className="text-xl font-semibold">预设</h1>
-        <div className="flex gap-2">
+        <span
+          className="rounded border border-amber-600/50 bg-amber-950/40 px-2 py-0.5 text-xs font-medium text-amber-200"
+          title="预设流程计划重构：迁移与共享优先使用导入/导出与备份"
+        >
+          待改进
+        </span>
+      </div>
+      <p className="mb-4 text-sm text-slate-400">
+        列表来自内置/自定义模板文件，不是当前 openclaw.json 的实时镜像。日常管理请用 Providers 与模型页；迁移与共享请优先使用「导入当前配置」或备份恢复。
+      </p>
+      <div className="mb-4 flex flex-wrap items-center justify-end gap-2">
           <button
             type="button"
             onClick={() => void handleImport()}
@@ -104,7 +114,6 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
           >
             <RefreshCw className="h-4 w-4" />
           </button>
-        </div>
       </div>
 
       {error ? <p className="mb-3 text-red-400">{error}</p> : null}
