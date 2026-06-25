@@ -5,6 +5,7 @@ import { join } from "node:path";
 import sample from "../../core/test/fixtures/openclaw.sample.json";
 import { createApp } from "../src/app";
 import type { FetchImpl, OcSwitchPaths, PresetDirs } from "@oc-switch/core";
+import { upsertDisabledProviderState } from "@oc-switch/core";
 
 const tempDirs: string[] = [];
 const TOKEN = "test-secret";
@@ -850,5 +851,117 @@ describe("server env APIs", () => {
       body: JSON.stringify({ type: "upsert", envVar: "SOME_KEY", value: "secret" })
     });
     expect(response.status).toBe(400);
+  });
+
+  test("PATCH /api/providers/:id/state disables and restores provider with state snapshot", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+
+    const disabled = await jsonRequest(app, "/api/providers/nvidia/state", {
+      method: "PATCH",
+      body: JSON.stringify({ enabled: false })
+    });
+    expect(disabled.response.status).toBe(200);
+    expect(disabled.json).toMatchObject({ ok: true, providerId: "nvidia", enabled: false, disabledModelCount: 2 });
+
+    let config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(config.models.providers.nvidia.models.map((model: { id: string }) => model.id)).toContain("deepseek-ai/deepseek-v4-flash");
+    expect(config.agents.defaults.models["nvidia/deepseek-ai/deepseek-v4-flash"]).toBeUndefined();
+    const states = JSON.parse(readFileSync(join(ws.paths.stateDir, "provider-states.json"), "utf8"));
+    expect(states.disabledProviders.nvidia.allowlistEntries["nvidia/deepseek-ai/deepseek-v4-flash"]).toEqual({
+      alias: "nv-ds-flash",
+      agentRuntime: { id: "codex" }
+    });
+
+    const providers = await jsonRequest(app, "/api/providers");
+    const nvidia = (providers.json.providers as Array<{ id: string; disabled: boolean }>).find((provider) => provider.id === "nvidia");
+    expect(nvidia?.disabled).toBe(true);
+
+    const restored = await jsonRequest(app, "/api/providers/nvidia/state", {
+      method: "PATCH",
+      body: JSON.stringify({ enabled: true })
+    });
+    expect(restored.response.status).toBe(200);
+    expect(restored.json).toMatchObject({ ok: true, providerId: "nvidia", enabled: true, restoredModelCount: 2 });
+    config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(config.agents.defaults.models["nvidia/deepseek-ai/deepseek-v4-flash"]).toEqual({
+      alias: "nv-ds-flash",
+      agentRuntime: { id: "codex" }
+    });
+    const afterStates = JSON.parse(readFileSync(join(ws.paths.stateDir, "provider-states.json"), "utf8"));
+    expect(afterStates.disabledProviders.nvidia).toBeUndefined();
+  });
+
+  test("PATCH /api/providers/:id/state refuses provider containing primary model", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+    const { response, json } = await jsonRequest(app, "/api/providers/minimax-portal/state", {
+      method: "PATCH",
+      body: JSON.stringify({ enabled: false })
+    });
+
+    expect(response.status).toBe(400);
+    expect(String(json.error)).toContain("contains the primary model");
+  });
+
+  test("PATCH /api/providers/:id/state refuses restore when snapshot path differs", async () => {
+    const ws = workspace();
+    upsertDisabledProviderState(ws.paths.stateDir, {
+      providerId: "nvidia",
+      openclawPath: join(ws.dir, "other-openclaw.json"),
+      disabledAt: "2026-06-25T12:00:00.000Z",
+      allowlistEntries: {
+        "nvidia/deepseek-ai/deepseek-v4-flash": { alias: "nv-ds-flash" }
+      }
+    });
+    const app = createTestApp(ws);
+    const { response, json } = await jsonRequest(app, "/api/providers/nvidia/state", {
+      method: "PATCH",
+      body: JSON.stringify({ enabled: true })
+    });
+
+    expect(response.status).toBe(400);
+    expect(String(json.error)).toContain("belongs to another OpenClaw config");
+  });
+
+  test("model enable endpoints reject disabled providers", async () => {
+    const ws = workspace();
+    upsertDisabledProviderState(ws.paths.stateDir, {
+      providerId: "nvidia",
+      openclawPath: ws.paths.openclawPath,
+      disabledAt: "2026-06-25T12:00:00.000Z",
+      allowlistEntries: {}
+    });
+    const app = createTestApp(ws);
+
+    const patch = await jsonRequest(app, "/api/models", {
+      method: "PATCH",
+      body: JSON.stringify({ ref: "nvidia/deepseek-ai/deepseek-v4-flash", enabled: true })
+    });
+    expect(patch.response.status).toBe(400);
+    expect(String(patch.json.error)).toContain("Provider nvidia is disabled");
+
+    const create = await jsonRequest(app, "/api/models", {
+      method: "POST",
+      body: JSON.stringify({ providerId: "nvidia", model: { id: "new-model", enabled: true } })
+    });
+    expect(create.response.status).toBe(400);
+    expect(String(create.json.error)).toContain("Provider nvidia is disabled");
+  });
+
+  test("DELETE /api/providers/:id cleans disabled provider state", async () => {
+    const ws = workspace();
+    upsertDisabledProviderState(ws.paths.stateDir, {
+      providerId: "DeepSeek",
+      openclawPath: ws.paths.openclawPath,
+      disabledAt: "2026-06-25T12:00:00.000Z",
+      allowlistEntries: { "DeepSeek/deepseek-chat": { alias: "ds-chat" } }
+    });
+    const app = createTestApp(ws);
+
+    const { response } = await jsonRequest(app, "/api/providers/DeepSeek", { method: "DELETE" });
+    expect(response.status).toBe(200);
+    const states = JSON.parse(readFileSync(join(ws.paths.stateDir, "provider-states.json"), "utf8"));
+    expect(states.disabledProviders.DeepSeek).toBeUndefined();
   });
 });

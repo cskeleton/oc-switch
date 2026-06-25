@@ -61,6 +61,30 @@ describe("writeOpenClawTransaction", () => {
     expect(readFileSync(ws.openclawPath, "utf8")).toContain("minimax-portal/MiniMax-M3");
   });
 
+  test("restores openclaw.json when afterWrite fails", async () => {
+    const ws = makeWorkspace();
+
+    await expect(writeOpenClawTransaction({
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath,
+      stateDir: ws.stateDir,
+      reason: "afterWrite failure test",
+      mutate(config) {
+        delete config.agents!.defaults!.models!["nvidia/deepseek-ai/deepseek-v4-flash"];
+        return config;
+      },
+      afterWrite() {
+        throw new Error("state write failed");
+      }
+    })).rejects.toThrow("state write failed");
+
+    const restored = JSON.parse(readFileSync(ws.openclawPath, "utf8"));
+    expect(restored.agents.defaults.models["nvidia/deepseek-ai/deepseek-v4-flash"]).toEqual({
+      alias: "nv-ds-flash",
+      agentRuntime: { id: "codex" }
+    });
+  });
+
   test("does not create env file when no env updates are requested", async () => {
     const ws = makeWorkspace();
     rmSync(ws.envPath, { force: true });

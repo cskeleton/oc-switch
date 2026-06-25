@@ -80,3 +80,21 @@ test("health 与合并方法使用正确的方法与 JSON body", async () => {
   expect(calls[2]!.url).toBe("http://localhost:7420/api/providers/merge-case-duplicates");
   expect(calls[2]!.init.method).toBe("POST");
 });
+
+test("patchProviderState sends enabled flag to provider state route", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const client = createApiClient({
+    baseUrl: "http://localhost:7420",
+    token: "test",
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url: String(url), init });
+      return new Response(JSON.stringify({ ok: true, providerId: "nvidia", enabled: false }), { status: 200 });
+    }
+  });
+
+  await client.patchProviderState("nvidia", false);
+
+  expect(calls[0]!.url).toBe("http://localhost:7420/api/providers/nvidia/state");
+  expect(calls[0]!.init.method).toBe("PATCH");
+  expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ enabled: false });
+});

@@ -37,14 +37,15 @@ describe("cli read commands", () => {
     expect(result.stdout).toContain("Allowlist models: 4");
   });
 
-  test("prints providers", async () => {
+  test("prints providers with status column", async () => {
     const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
     const configPath = join(dir, "openclaw.json");
     writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
 
-    const result = await runCli(["providers", "list"], { OPENCLAW_CONFIG_PATH: configPath });
+    const result = await runCli(["providers", "list"], { OPENCLAW_CONFIG_PATH: configPath, HOME: dir });
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("nvidia");
+    expect(result.stdout).toContain("enabled");
     expect(result.stdout).toContain("minimax-portal");
   });
 });
@@ -470,4 +471,67 @@ test("uses persisted oc-switch env path when OPENCLAW_CONFIG_PATH overrides only
 
   expect(result.code).toBe(0);
   expect(readFileSync(envPath, "utf8")).toContain("NVIDIA_API_KEY=persisted-env-secret");
+});
+
+describe("cli provider disable/enable", () => {
+  test("disables and restores provider from CLI", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+    const disable = await runCli(["provider", "disable", "nvidia"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+    expect(disable.code).toBe(0);
+    expect(disable.stdout).toContain("Disabled provider nvidia (2 model(s) hidden)");
+    let config = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(config.models.providers.nvidia).toBeDefined();
+    expect(config.agents.defaults.models["nvidia/deepseek-ai/deepseek-v4-flash"]).toBeUndefined();
+
+    const list = await runCli(["providers", "list"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+    expect(list.stdout).toContain("nvidia");
+    expect(list.stdout).toContain("disabled");
+
+    const enable = await runCli(["provider", "enable", "nvidia"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+    expect(enable.code).toBe(0);
+    expect(enable.stdout).toContain("Enabled provider nvidia (2 model(s) restored)");
+    config = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(config.agents.defaults.models["nvidia/deepseek-ai/deepseek-v4-flash"]).toEqual({
+      alias: "nv-ds-flash",
+      agentRuntime: { id: "codex" }
+    });
+  });
+
+  test("refuses disabling primary provider and enabling model inside disabled provider", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+    const primary = await runCli(["provider", "disable", "minimax-portal"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+    expect(primary.code).not.toBe(0);
+    expect(primary.stderr).toContain("contains the primary model");
+
+    await runCli(["provider", "disable", "nvidia"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+    const enableModel = await runCli(["model", "enable", "nvidia/deepseek-ai/deepseek-v4-flash"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+    expect(enableModel.code).not.toBe(0);
+    expect(enableModel.stderr).toContain("Provider nvidia is disabled");
+  });
 });

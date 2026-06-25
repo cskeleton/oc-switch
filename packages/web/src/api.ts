@@ -15,6 +15,7 @@ export interface ProviderSummary {
   modelCount: number;
   enabledModelCount: number;
   containsPrimary: boolean;
+  disabled: boolean;
 }
 
 export interface ModelSummary {
@@ -262,6 +263,14 @@ export function createApiClient(options: ApiClientOptions) {
         method: "DELETE",
         body: JSON.stringify(body)
       }),
+    patchProviderState: (id: string, enabled: boolean) =>
+      request<{ ok: boolean; providerId: string; enabled: boolean; disabledModelCount?: number; restoredModelCount?: number; backupId?: string }>(
+        `/api/providers/${id}/state`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ enabled })
+        }
+      ),
     syncProvider: (id: string) =>
       request<{ ok: boolean; addedModelIds?: string[]; unsupportedReason?: string }>(
         `/api/providers/${id}/sync`,

@@ -1,4 +1,4 @@
-import { Cpu, Edit3, Plus, RefreshCw, RotateCw, Trash2 } from "lucide-react";
+import { Cpu, Edit3, Plus, Power, PowerOff, RefreshCw, RotateCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { CustomProviderDialog } from "../components/CustomProviderDialog";
@@ -28,6 +28,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
   const [syncing, setSyncing] = useState<string | null>(null);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [modelTarget, setModelTarget] = useState<ProviderSummary | null>(null);
+  const [stateTarget, setStateTarget] = useState<ProviderSummary | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -115,6 +116,21 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
       onRefresh?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "保存失败");
+    }
+  }
+
+  async function confirmProviderStateChange() {
+    if (!stateTarget) return;
+    setError(null);
+    try {
+      // stateTarget.disabled 为 true 时恢复（enabled: true），为 false 时关闭（enabled: false）
+      await client.patchProviderState(stateTarget.id, stateTarget.disabled);
+      setStateTarget(null);
+      await load();
+      onRefresh?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "更新 Provider 状态失败");
+      setStateTarget(null);
     }
   }
 
@@ -207,6 +223,15 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
             render: (row) => `${row.modelCount} / ${row.enabledModelCount}`
           },
           {
+            key: "status",
+            header: "状态",
+            render: (row) => row.disabled ? (
+              <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">已关闭</span>
+            ) : (
+              <span className="rounded bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-600 dark:text-emerald-400">已启用</span>
+            )
+          },
+          {
             key: "actions",
             header: "操作",
             render: (row) => (
@@ -219,6 +244,17 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
                 >
                   <Cpu className="h-3 w-3" />
                   模型
+                </button>
+                <button
+                  type="button"
+                  aria-label={`${row.disabled ? "恢复" : "关闭"} Provider ${row.id}`}
+                  disabled={!row.disabled && row.containsPrimary}
+                  title={!row.disabled && row.containsPrimary ? "该 Provider 包含当前主模型，请先切换主模型后再关闭" : undefined}
+                  onClick={() => setStateTarget(row)}
+                  className="inline-flex items-center gap-1 rounded border border-input px-2 py-1 text-xs hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {row.disabled ? <Power className="h-3 w-3" /> : <PowerOff className="h-3 w-3" />}
+                  {row.disabled ? "恢复" : "关闭"}
                 </button>
                 <button
                   type="button"
@@ -307,6 +343,18 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
           </label>
         ) : null}
       </ConfirmDialog>
+
+      <ConfirmDialog
+        open={Boolean(stateTarget)}
+        title={`${stateTarget?.disabled ? "恢复" : "关闭"} ${stateTarget?.id ?? ""}？`}
+        message={
+          stateTarget?.disabled
+            ? `将恢复关闭前保存的 ${stateTarget.modelCount} 个模型启用状态。`
+            : `该 Provider 的 ${stateTarget?.enabledModelCount ?? 0} 个已启用模型将从 OpenClaw 菜单中隐藏。Provider 配置和模型目录会保留，可稍后恢复。`
+        }
+        onCancel={() => setStateTarget(null)}
+        onConfirm={() => void confirmProviderStateChange()}
+      />
 
       {editTarget ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true">

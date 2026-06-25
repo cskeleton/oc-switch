@@ -92,11 +92,18 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
               <div className="flex flex-col space-y-1.5">
                 <DialogTitle>{provider.id} 模型</DialogTitle>
                 <DialogDescription>
-                  管理 {provider.id} 下的模型
+                  {provider.disabled ? "该 Provider 已关闭，请先恢复 Provider 后再启用模型。" : `管理 ${provider.id} 下的模型`}
                 </DialogDescription>
               </div>
               <div className="flex gap-2 mr-6">
-                <button type="button" onClick={() => setCreating(true)} className="inline-flex items-center gap-1 rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 font-medium shadow-sm">
+                <button
+                  type="button"
+                  aria-label="添加模型"
+                  disabled={provider.disabled}
+                  title={provider.disabled ? "该 Provider 已关闭，请先恢复 Provider 后再启用模型" : undefined}
+                  onClick={() => setCreating(true)}
+                  className="inline-flex items-center gap-1 rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 font-medium shadow-sm disabled:cursor-not-allowed disabled:opacity-40"
+                >
                   <Plus className="h-4 w-4" />
                   添加模型
                 </button>

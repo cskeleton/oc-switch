@@ -57,6 +57,7 @@ export interface ProviderSummary {
   modelCount: number;
   enabledModelCount: number;
   containsPrimary: boolean;
+  disabled: boolean;
 }
 
 export interface ModelSummary {

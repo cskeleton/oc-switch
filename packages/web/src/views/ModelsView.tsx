@@ -166,6 +166,7 @@ export function ModelsView({ client }: ModelsViewProps) {
   const activeDisabledModels = useMemo(() => activeModels.filter(m => !m.enabled), [activeModels]);
 
   const activeProvider = providers.find(p => p.id === selectedProviderId);
+  const activeProviderDisabled = Boolean(activeProvider?.disabled);
 
   function renderModelTable(list: ModelSummary[], opacityClass: string = "") {
     return (
@@ -213,9 +214,10 @@ export function ModelsView({ client }: ModelsViewProps) {
                   </button>
                   <Switch
                     checked={row.enabled}
-                    disabled={busy === row.ref}
+                    disabled={busy === row.ref || activeProviderDisabled}
                     onCheckedChange={() => void handleToggle(row.ref, row.enabled)}
                     aria-label={`${row.enabled ? "禁用" : "启用"} ${row.ref}`}
+                    title={activeProviderDisabled ? "该 Provider 已关闭，请先恢复 Provider 后再启用模型" : undefined}
                   />
                   <button
                     type="button"
@@ -288,6 +290,9 @@ export function ModelsView({ client }: ModelsViewProps) {
                       {dupIdInfo.get(pId)!.isCanonical ? `（推荐）` : `（重复）`}
                     </span>
                   ) : null}
+                  {providers.find((provider) => provider.id === pId)?.disabled ? (
+                    <span className="text-[10px] text-muted-foreground">（已关闭）</span>
+                  ) : null}
                 </span>
                 <Badge variant="secondary" className="px-1.5 py-0 text-[10px] leading-none shrink-0 font-normal">
                   {providerCounts[pId] || 0}
@@ -313,8 +318,11 @@ export function ModelsView({ client }: ModelsViewProps) {
           </div>
           <button
             type="button"
+            aria-label="添加模型"
+            disabled={activeProviderDisabled}
+            title={activeProviderDisabled ? "该 Provider 已关闭，请先恢复 Provider 后再启用模型" : undefined}
             onClick={() => setCreating(true)}
-            className="inline-flex items-center gap-1 rounded bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 shadow-sm"
+            className="inline-flex items-center gap-1 rounded bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 shadow-sm disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Plus className="h-4 w-4" />
             添加模型
@@ -322,6 +330,10 @@ export function ModelsView({ client }: ModelsViewProps) {
         </div>
 
         {error ? <p className="text-sm font-medium text-destructive">{error}</p> : null}
+
+        {activeProviderDisabled ? (
+          <p className="text-sm text-muted-foreground">该 Provider 已关闭，请先在 Providers 页恢复后再启用模型。</p>
+        ) : null}
 
         {selectedProviderId ? (
           <>

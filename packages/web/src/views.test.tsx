@@ -149,8 +149,8 @@ describe("ModelsView", () => {
   test("filters models by search and provider while marking current primary", async () => {
     const getProviders = mock(async () => ({
       providers: [
-        { id: "minimax-portal", api: "anthropic-messages", baseUrl: "https://api.minimax.io", modelCount: 1, enabledModelCount: 1, containsPrimary: true },
-        { id: "nvidia", api: "openai-completions", baseUrl: "https://nvidia.example/v1", modelCount: 2, enabledModelCount: 1, containsPrimary: false }
+        { id: "minimax-portal", api: "anthropic-messages", baseUrl: "https://api.minimax.io", modelCount: 1, enabledModelCount: 1, containsPrimary: true, disabled: false },
+        { id: "nvidia", api: "openai-completions", baseUrl: "https://nvidia.example/v1", modelCount: 2, enabledModelCount: 1, containsPrimary: false, disabled: false }
       ]
     }));
     const getModels = mock(async () => ({
@@ -205,7 +205,7 @@ describe("ModelsView", () => {
   test("matches revamp styling for selected provider, disabled models, and keyboard focus actions", async () => {
     const getProviders = mock(async () => ({
       providers: [
-        { id: "nvidia", api: "openai-completions", baseUrl: "https://nvidia.example/v1", modelCount: 2, enabledModelCount: 1, containsPrimary: false }
+        { id: "nvidia", api: "openai-completions", baseUrl: "https://nvidia.example/v1", modelCount: 2, enabledModelCount: 1, containsPrimary: false, disabled: false }
       ]
     }));
     const getModels = mock(async () => ({
@@ -244,7 +244,7 @@ describe("ModelsView", () => {
     const createModel = mock(async () => ({ ok: true, ref: "nvidia/deepseek-ai/deepseek-v4-pro" }));
     const getProviders = mock(async () => ({
       providers: [
-        { id: "nvidia", api: "openai-completions", baseUrl: "https://nvidia.example/v1", modelCount: 1, enabledModelCount: 1, containsPrimary: false }
+        { id: "nvidia", api: "openai-completions", baseUrl: "https://nvidia.example/v1", modelCount: 1, enabledModelCount: 1, containsPrimary: false, disabled: false }
       ]
     }));
     const getModels = mock(async () => ({ models: [] }));
@@ -282,7 +282,7 @@ describe("ModelsView", () => {
     const updateModel = mock(async () => ({ ok: true, ref: "nvidia/deepseek-ai/deepseek-v4-pro" }));
     const getProviders = mock(async () => ({
       providers: [
-        { id: "nvidia", api: "openai-completions", baseUrl: "https://nvidia.example/v1", modelCount: 1, enabledModelCount: 1, containsPrimary: false }
+        { id: "nvidia", api: "openai-completions", baseUrl: "https://nvidia.example/v1", modelCount: 1, enabledModelCount: 1, containsPrimary: false, disabled: false }
       ]
     }));
     const getModels = mock(async () => ({
@@ -326,7 +326,7 @@ describe("ModelsView", () => {
     const createModel = mock(async () => ({ ok: true, ref: "nvidia/bad-window" }));
     const getProviders = mock(async () => ({
       providers: [
-        { id: "nvidia", api: "openai-completions", baseUrl: "https://nvidia.example/v1", modelCount: 1, enabledModelCount: 1, containsPrimary: false }
+        { id: "nvidia", api: "openai-completions", baseUrl: "https://nvidia.example/v1", modelCount: 1, enabledModelCount: 1, containsPrimary: false, disabled: false }
       ]
     }));
     const getModels = mock(async () => ({ models: [] }));
@@ -346,7 +346,7 @@ describe("ModelsView", () => {
 
   test("侧栏对大小写重复 Provider 标注推荐/重复而非并列两项", async () => {
     const getProviders = mock(async () => ({ providers: [
-      { id: "9R", api: "openai-completions", baseUrl: "http://h/v1", modelCount: 2, enabledModelCount: 0, containsPrimary: false }
+      { id: "9R", api: "openai-completions", baseUrl: "http://h/v1", modelCount: 2, enabledModelCount: 0, containsPrimary: false, disabled: false }
     ] }));
     const getModels = mock(async () => ({ models: [
       { ref: "9R/v3", providerId: "9R", modelId: "v3", name: undefined, alias: undefined, enabled: false, isPrimary: false },
@@ -364,6 +364,44 @@ describe("ModelsView", () => {
     expect(await findByText("（推荐）")).toBeTruthy();
     expect(await findByText("（重复）")).toBeTruthy();
   });
+
+  test("marks disabled provider and disables model enable controls", async () => {
+    const patchModel = mock(async () => ({ ok: true, ref: "nvidia/llama-3", enabled: true }));
+    const getProviders = mock(async () => ({
+      providers: [
+        {
+          id: "nvidia",
+          api: "openai-completions",
+          baseUrl: "https://nvidia.example/v1",
+          modelCount: 1,
+          enabledModelCount: 0,
+          containsPrimary: false,
+          disabled: true
+        }
+      ]
+    }));
+    const getModels = mock(async () => ({
+      models: [
+        {
+          ref: "nvidia/llama-3",
+          providerId: "nvidia",
+          modelId: "llama-3",
+          name: undefined,
+          alias: undefined,
+          enabled: false,
+          isPrimary: false
+        }
+      ]
+    }));
+
+    const { findByLabelText, findAllByText } = render(
+      <ModelsView client={mockClient({ getProviders, getModels, patchModel })} />
+    );
+
+    expect((await findAllByText(/已关闭/)).length).toBeGreaterThan(0);
+    expect((await findByLabelText("启用 nvidia/llama-3") as HTMLButtonElement).disabled).toBe(true);
+    expect((await findByLabelText("添加模型") as HTMLButtonElement).disabled).toBe(true);
+  });
 });
 
 describe("ProvidersView", () => {
@@ -379,7 +417,7 @@ describe("ProvidersView", () => {
                 baseUrl: "https://integrate.api.nvidia.com/v1",
                 modelCount: 2,
                 enabledModelCount: 1,
-                containsPrimary: true
+                containsPrimary: true, disabled: false
               }
             ]
           })
@@ -402,7 +440,7 @@ describe("ProvidersView", () => {
           baseUrl: "https://api.minimax.io",
           modelCount: 1,
           enabledModelCount: 1,
-          containsPrimary: true
+          containsPrimary: true, disabled: false
         }
       ]
     }));
@@ -453,7 +491,7 @@ describe("ProvidersView", () => {
           baseUrl: "https://integrate.api.nvidia.com/v1",
           modelCount: 1,
           enabledModelCount: 1,
-          containsPrimary: false
+          containsPrimary: false, disabled: false
         }
       ]
     }));
@@ -499,7 +537,7 @@ describe("ProvidersView", () => {
           baseUrl: "https://integrate.api.nvidia.com/v1",
           modelCount: 1,
           enabledModelCount: 1,
-          containsPrimary: true
+          containsPrimary: true, disabled: false
         }
       ]
     }));
@@ -557,7 +595,7 @@ describe("ProvidersView", () => {
           baseUrl: "https://integrate.api.nvidia.com/v1",
           modelCount: 2,
           enabledModelCount: 1,
-          containsPrimary: false
+          containsPrimary: false, disabled: false
         }
       ]
     }));
@@ -622,7 +660,7 @@ describe("ProvidersView", () => {
           baseUrl: "https://integrate.api.nvidia.com/v1",
           modelCount: 2,
           enabledModelCount: 1,
-          containsPrimary: false
+          containsPrimary: false, disabled: false
         }
       ]
     }));
@@ -650,7 +688,7 @@ describe("ProvidersView", () => {
           baseUrl: "https://integrate.api.nvidia.com/v1",
           modelCount: 2,
           enabledModelCount: 1,
-          containsPrimary: false
+          containsPrimary: false, disabled: false
         }
       ]
     }));
@@ -683,7 +721,7 @@ describe("ProvidersView", () => {
           baseUrl: "https://integrate.api.nvidia.com/v1",
           modelCount: 2,
           enabledModelCount: 1,
-          containsPrimary: false
+          containsPrimary: false, disabled: false
         }
       ]
     }));
@@ -700,8 +738,8 @@ describe("ProvidersView", () => {
 
   test("重复组 Provider 显示⚠重复徽章与合并入口", async () => {
     const getProviders = mock(async () => ({ providers: [
-      { id: "deepseek", api: "openai-completions", baseUrl: "https://api.deepseek.com/v1", modelCount: 2, enabledModelCount: 2, containsPrimary: false },
-      { id: "DeepSeek", api: "openai-completions", baseUrl: "https://api.deepseek.com/v1", modelCount: 2, enabledModelCount: 0, containsPrimary: false }
+      { id: "deepseek", api: "openai-completions", baseUrl: "https://api.deepseek.com/v1", modelCount: 2, enabledModelCount: 2, containsPrimary: false, disabled: false },
+      { id: "DeepSeek", api: "openai-completions", baseUrl: "https://api.deepseek.com/v1", modelCount: 2, enabledModelCount: 0, containsPrimary: false, disabled: false }
     ] }));
     const getHealth = mock(async (): Promise<ConfigHealthReport> => ({
       caseDuplicateGroups: [{
@@ -714,6 +752,73 @@ describe("ProvidersView", () => {
     const { findAllByText, findAllByLabelText } = render(<ProvidersView client={mockClient({ getProviders, getHealth })} />);
     expect((await findAllByText("⚠ 重复")).length).toBeGreaterThanOrEqual(1);
     expect((await findAllByLabelText("合并 deepseek")).length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("closes and restores provider from provider list", async () => {
+    const patchProviderState = mock(async () => ({ ok: true, providerId: "nvidia", enabled: false }));
+    const getProviders = mock(async () => ({
+      providers: [
+        {
+          id: "nvidia",
+          api: "openai-completions",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          modelCount: 2,
+          enabledModelCount: 1,
+          containsPrimary: false,
+          disabled: false
+        }
+      ]
+    }));
+
+    const { findByLabelText, findByText, getByText } = render(
+      <ProvidersView client={mockClient({ getProviders, patchProviderState })} />
+    );
+
+    expect(await findByText("已启用")).toBeTruthy();
+    await userEvent.click(await findByLabelText("关闭 Provider nvidia"));
+    expect(await findByText("关闭 nvidia？")).toBeTruthy();
+    await userEvent.click(getByText("确认"));
+
+    expect(patchProviderState).toHaveBeenCalledWith("nvidia", false);
+  });
+
+  test("shows restore action for disabled provider and blocks closing primary provider", async () => {
+    const patchProviderState = mock(async () => ({ ok: true, providerId: "nvidia", enabled: true }));
+    const getProviders = mock(async () => ({
+      providers: [
+        {
+          id: "nvidia",
+          api: "openai-completions",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          modelCount: 2,
+          enabledModelCount: 0,
+          containsPrimary: false,
+          disabled: true
+        },
+        {
+          id: "minimax-portal",
+          api: "anthropic-messages",
+          baseUrl: "https://api.minimax.io",
+          modelCount: 1,
+          enabledModelCount: 1,
+          containsPrimary: true,
+          disabled: false
+        }
+      ]
+    }));
+
+    const { findByLabelText, findByText, getByText } = render(
+      <ProvidersView client={mockClient({ getProviders, patchProviderState })} />
+    );
+
+    expect(await findByText("已关闭")).toBeTruthy();
+    await userEvent.click(await findByLabelText("恢复 Provider nvidia"));
+    expect(await findByText("恢复 nvidia？")).toBeTruthy();
+    await userEvent.click(getByText("确认"));
+    expect(patchProviderState).toHaveBeenCalledWith("nvidia", true);
+
+    const closePrimary = await findByLabelText("关闭 Provider minimax-portal");
+    expect((closePrimary as HTMLButtonElement).disabled).toBe(true);
   });
 });
 

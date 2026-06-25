@@ -21,6 +21,8 @@ export interface TransactionInput {
   envUpdates?: Record<string, string>;
   manifestUpdates?: ManifestUpdate[];
   mutate(config: OpenClawConfig): OpenClawConfig;
+  /** openclaw.json 写入成功后、写锁释放前的钩子，失败时事务回滚 */
+  afterWrite?: () => void;
 }
 
 export interface TransactionResult {
@@ -84,6 +86,7 @@ export async function writeOpenClawTransaction(input: TransactionInput): Promise
       }
       renameSync(configTmp, input.openclawPath);
       applyManifestUpdates(input.stateDir, input.manifestUpdates);
+      input.afterWrite?.();
     } catch (error) {
       restoreFromBackup(backupDir, input.openclawPath, input.envPath);
       rmSync(configTmp, { force: true });

@@ -15,7 +15,8 @@ describe("ConfigAdapter", () => {
         baseUrl: "https://integrate.api.nvidia.com/v1",
         modelCount: 2,
         enabledModelCount: 2,
-        containsPrimary: false
+        containsPrimary: false,
+        disabled: false
       },
       {
         id: "DeepSeek",
@@ -23,7 +24,8 @@ describe("ConfigAdapter", () => {
         baseUrl: "https://api.deepseek.com/v1",
         modelCount: 1,
         enabledModelCount: 1,
-        containsPrimary: false
+        containsPrimary: false,
+        disabled: false
       },
       {
         id: "minimax-portal",
@@ -31,7 +33,8 @@ describe("ConfigAdapter", () => {
         baseUrl: "https://api.minimax.io/anthropic",
         modelCount: 1,
         enabledModelCount: 1,
-        containsPrimary: true
+        containsPrimary: true,
+        disabled: false
       }
     ]);
   });

@@ -10,18 +10,24 @@ import {
   createConfigAdapter,
   defaultPresetDirs,
   disableModel,
+  disableProvider,
   editProvider,
   enableModel,
   exportProviderPreset,
   getActivePaths,
   inspectConfigHealth,
+  isProviderDisabled,
   mergeProviderCaseDuplicates,
   listBackups,
   listPresets,
   loadPreset,
+  parseModelRef,
+  readProviderStates,
+  removeDisabledProviderState,
   removeProvider,
   removeProviderModel,
   restoreBackupSafely,
+  restoreDisabledProvider,
   saveCustomPreset,
   setPrimaryModel,
   summarizeConfigDiff,
@@ -29,6 +35,7 @@ import {
   applySyncedModels,
   rotatePersistedToken,
   resolveServeToken,
+  upsertDisabledProviderState,
   version,
   writeOpenClawTransaction,
   type FetchImpl
@@ -48,6 +55,13 @@ function readConfig(): OpenClawConfig {
 function readEnvContent(): string | undefined {
   const paths = activePaths();
   return existsSync(paths.envPath) ? readFileSync(paths.envPath, "utf8") : undefined;
+}
+
+function assertProviderCanEnable(providerId: string): void {
+  const paths = activePaths();
+  if (isProviderDisabled(paths.stateDir, providerId)) {
+    throw new Error(`Provider ${providerId} is disabled. Restore the provider before enabling models.`);
+  }
 }
 
 function providerEnvVar(config: OpenClawConfig, providerId: string): string | undefined {
@@ -126,9 +140,12 @@ program.command("health").action(() => {
 
 const providers = program.command("providers");
 providers.command("list").action(() => {
+  const paths = activePaths();
+  const states = readProviderStates(paths.stateDir);
   const rows = createConfigAdapter(readConfig()).listProviders();
   for (const row of rows) {
-    console.log(`${row.id}\t${row.api ?? "unknown"}\t${row.enabledModelCount}/${row.modelCount}`);
+    const status = states.disabledProviders[row.id] ? "disabled" : "enabled";
+    console.log(`${row.id}\t${row.api ?? "unknown"}\t${status}\t${row.enabledModelCount}/${row.modelCount}`);
   }
 });
 
@@ -307,6 +324,54 @@ provider.command("delete")
     console.log(`Deleted provider ${name}`);
   });
 
+provider.command("disable")
+  .argument("<name>")
+  .action(async (name: string) => {
+    const paths = activePaths();
+    let disabledState: { allowlistEntries: Record<string, unknown> } | undefined;
+    await writeOpenClawTransaction({
+      ...paths,
+      reason: `disable provider ${name}`,
+      mutate(config) {
+        const result = disableProvider(config, name);
+        disabledState = result.disabledState;
+        return result.config;
+      },
+      afterWrite() {
+        if (!disabledState) throw new Error(`Provider ${name} disable state was not produced`);
+        upsertDisabledProviderState(paths.stateDir, {
+          providerId: name,
+          openclawPath: paths.openclawPath,
+          disabledAt: new Date().toISOString(),
+          allowlistEntries: disabledState.allowlistEntries as never
+        });
+      }
+    });
+    console.log(`Disabled provider ${name} (${Object.keys(disabledState?.allowlistEntries ?? {}).length} model(s) hidden)`);
+  });
+
+provider.command("enable")
+  .argument("<name>")
+  .action(async (name: string) => {
+    const paths = activePaths();
+    const snapshot = readProviderStates(paths.stateDir).disabledProviders[name];
+    if (!snapshot) throw new Error(`Provider ${name} has no disabled state snapshot`);
+    if (snapshot.openclawPath !== paths.openclawPath) {
+      throw new Error(`Provider ${name} disabled snapshot belongs to another OpenClaw config`);
+    }
+    await writeOpenClawTransaction({
+      ...paths,
+      reason: `enable provider ${name}`,
+      mutate(config) {
+        return restoreDisabledProvider(config, name, snapshot.allowlistEntries).config;
+      },
+      afterWrite() {
+        removeDisabledProviderState(paths.stateDir, name);
+      }
+    });
+    console.log(`Enabled provider ${name} (${Object.keys(snapshot.allowlistEntries).length} model(s) restored)`);
+  });
+
 provider.command("sync")
   .argument("<name>")
   .action(async (name: string) => {
@@ -379,6 +444,7 @@ model.command("enable")
   .argument("<ref>")
   .option("--alias <alias>")
   .action(async (ref: string, options: { alias?: string }) => {
+    assertProviderCanEnable(parseModelRef(ref).providerId);
     const paths = activePaths();
     await writeOpenClawTransaction({
       ...paths,
@@ -398,6 +464,9 @@ model.command("add")
     const paths = activePaths();
     const input: { enabled: boolean; alias?: string } = { enabled: Boolean(options.enable) };
     if (options.alias !== undefined) input.alias = options.alias;
+    if (input.enabled) {
+      assertProviderCanEnable(parseModelRef(ref).providerId);
+    }
     await writeOpenClawTransaction({
       ...paths,
       reason: `add model ${ref}`,

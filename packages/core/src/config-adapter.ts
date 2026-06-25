@@ -26,7 +26,8 @@ export function createConfigAdapter(config: OpenClawConfig) {
           baseUrl: provider.baseUrl,
           modelCount: refs.length,
           enabledModelCount: Object.keys(allowlist).filter((ref) => parseModelRef(ref).providerId === id).length,
-          containsPrimary: primaryModel ? parseModelRef(primaryModel).providerId === id : false
+          containsPrimary: primaryModel ? parseModelRef(primaryModel).providerId === id : false,
+          disabled: false
         };
       });
     },
