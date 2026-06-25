@@ -25,6 +25,11 @@ export interface ModelSummary {
   alias: string | undefined;
   enabled: boolean;
   isPrimary: boolean;
+  api?: ApiType;
+  reasoning?: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+  input?: string[];
 }
 
 export interface PresetEntry {
@@ -107,6 +112,18 @@ export interface CustomProviderModelInput {
   alias?: string;
 }
 
+export interface ProviderModelInput {
+  id: string;
+  name?: string;
+  alias?: string;
+  enabled: boolean;
+  api?: ApiType;
+  reasoning?: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+  input?: string[];
+}
+
 export interface CustomProviderInput {
   providerId: string;
   displayName: string;
@@ -161,6 +178,21 @@ export function createApiClient(options: ApiClientOptions) {
       request<{ ok: boolean; ref: string; enabled: boolean }>("/api/models", {
         method: "PATCH",
         body: JSON.stringify({ ref, enabled })
+      }),
+    createModel: (providerId: string, model: ProviderModelInput) =>
+      request<{ ok: boolean; ref: string; backupId?: string }>("/api/models", {
+        method: "POST",
+        body: JSON.stringify({ providerId, model })
+      }),
+    updateModel: (ref: string, model: ProviderModelInput) =>
+      request<{ ok: boolean; ref: string; backupId?: string }>("/api/models", {
+        method: "PUT",
+        body: JSON.stringify({ ref, model })
+      }),
+    deleteModel: (ref: string, body: { force?: boolean; newPrimary?: string } = {}) =>
+      request<{ ok: boolean; ref: string; backupId?: string }>("/api/models", {
+        method: "DELETE",
+        body: JSON.stringify({ ref, ...body })
       }),
     getPresets: () => request<{ presets: PresetEntry[] }>("/api/presets"),
     importPresets: () => request<{ ok: boolean; imported: string[] }>("/api/presets/import", { method: "POST" }),

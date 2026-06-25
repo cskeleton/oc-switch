@@ -1,15 +1,19 @@
-import { RefreshCw, Search, Star, ToggleLeft, ToggleRight } from "lucide-react";
+import { Edit3, Plus, RefreshCw, Search, Star, ToggleLeft, ToggleRight } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { DataTable } from "../components/DataTable";
-import type { ApiClient, ModelSummary } from "../api";
+import { ModelDialog } from "../components/ModelDialog";
+import type { ApiClient, ModelSummary, ProviderModelInput, ProviderSummary } from "../api";
 
 interface ModelsViewProps {
   client: ApiClient;
 }
 
-/** 模型列表：设主模型、启用/禁用 */
+/** 模型列表：设主模型、启用/禁用、新增与编辑 */
 export function ModelsView({ client }: ModelsViewProps) {
   const [models, setModels] = useState<ModelSummary[]>([]);
+  const [providers, setProviders] = useState<ProviderSummary[]>([]);
+  const [creating, setCreating] = useState(false);
+  const [editTarget, setEditTarget] = useState<ModelSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -18,8 +22,12 @@ export function ModelsView({ client }: ModelsViewProps) {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const { models: list } = await client.getModels();
+      const [{ models: list }, { providers: providerList }] = await Promise.all([
+        client.getModels(),
+        client.getProviders()
+      ]);
       setModels(list);
+      setProviders(providerList ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载失败");
     }
@@ -53,7 +61,23 @@ export function ModelsView({ client }: ModelsViewProps) {
     }
   }
 
-  const providers = [...new Set(models.map((model) => model.providerId))].sort((a, b) => a.localeCompare(b));
+  async function handleCreate(providerId: string, model: ProviderModelInput) {
+    await client.createModel(providerId, model);
+    setCreating(false);
+    await load();
+  }
+
+  async function handleEdit(_providerId: string, model: ProviderModelInput) {
+    if (!editTarget) return;
+    await client.updateModel(editTarget.ref, model);
+    setEditTarget(null);
+    await load();
+  }
+
+  const providerIds = [...new Set([
+    ...providers.map((provider) => provider.id),
+    ...models.map((model) => model.providerId)
+  ])].sort((a, b) => a.localeCompare(b));
   const normalizedQuery = query.trim().toLowerCase();
   const filteredModels = models.filter((model) => {
     const matchesProvider = providerFilter === "all" || model.providerId === providerFilter;
@@ -71,14 +95,24 @@ export function ModelsView({ client }: ModelsViewProps) {
     <section data-testid="models-view">
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-xl font-semibold">模型</h1>
-        <button
-          type="button"
-          aria-label="刷新"
-          onClick={() => void load()}
-          className="rounded-md border border-slate-600 p-2 hover:bg-slate-800"
-        >
-          <RefreshCw className="h-4 w-4" />
-        </button>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setCreating(true)}
+            className="inline-flex items-center gap-1 rounded bg-sky-600 px-3 py-1.5 text-sm text-white hover:bg-sky-500"
+          >
+            <Plus className="h-4 w-4" />
+            添加模型
+          </button>
+          <button
+            type="button"
+            aria-label="刷新"
+            onClick={() => void load()}
+            className="rounded-md border border-slate-600 p-2 hover:bg-slate-800"
+          >
+            <RefreshCw className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
       {error ? <p className="mb-3 text-red-400">{error}</p> : null}
@@ -104,7 +138,7 @@ export function ModelsView({ client }: ModelsViewProps) {
             className="w-full rounded border border-slate-600 bg-slate-950 px-3 py-2 text-sm"
           >
             <option value="all">全部 Provider</option>
-            {providers.map((providerId) => (
+            {providerIds.map((providerId) => (
               <option key={providerId} value={providerId}>{providerId}</option>
             ))}
           </select>
@@ -147,6 +181,16 @@ export function ModelsView({ client }: ModelsViewProps) {
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
+                  aria-label={`编辑模型 ${row.ref}`}
+                  disabled={busy === row.ref}
+                  onClick={() => setEditTarget(row)}
+                  className="inline-flex items-center gap-1 rounded border border-slate-600 px-2 py-1 text-xs hover:bg-slate-800 disabled:opacity-40"
+                >
+                  <Edit3 className="h-3 w-3" />
+                  编辑
+                </button>
+                <button
+                  type="button"
                   aria-label={`设为主模型 ${row.ref}`}
                   disabled={busy === row.ref || row.isPrimary}
                   onClick={() => void handleSetPrimary(row.ref)}
@@ -169,6 +213,22 @@ export function ModelsView({ client }: ModelsViewProps) {
             )
           }
         ]}
+      />
+
+      <ModelDialog
+        open={creating}
+        mode="create"
+        providers={providers}
+        onCancel={() => setCreating(false)}
+        onSave={handleCreate}
+      />
+      <ModelDialog
+        open={Boolean(editTarget)}
+        mode="edit"
+        providers={providers}
+        {...(editTarget ? { model: editTarget } : {})}
+        onCancel={() => setEditTarget(null)}
+        onSave={handleEdit}
       />
     </section>
   );

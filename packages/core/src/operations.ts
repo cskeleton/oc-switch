@@ -1,5 +1,12 @@
 import { formatModelRef, parseModelRef } from "./model-ref";
-import type { AllowlistEntry, CustomProviderInput, OpenClawConfig, OpenClawModel, ProviderPreset } from "./types";
+import type {
+  AllowlistEntry,
+  CustomProviderInput,
+  OpenClawConfig,
+  OpenClawModel,
+  ProviderModelInput,
+  ProviderPreset
+} from "./types";
 
 export interface OperationResult {
   config: OpenClawConfig;
@@ -129,33 +136,113 @@ export function editProvider(
   return { config, warnings: [] };
 }
 
+const MODEL_API_TYPES = new Set<NonNullable<ProviderModelInput["api"]>>([
+  "openai-completions",
+  "anthropic-messages",
+  "google-generative-ai"
+]);
+
+function assertPositiveInteger(value: number | undefined, name: string): void {
+  if (value === undefined) return;
+  if (!Number.isInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer`);
+}
+
+function assertProviderModelInput(input: ProviderModelInput): void {
+  if (!input.id.trim()) throw new Error("model id must be a non-empty string");
+  if (input.api !== undefined && !MODEL_API_TYPES.has(input.api)) throw new Error("api must be a supported API type");
+  assertPositiveInteger(input.contextWindow, "contextWindow");
+  assertPositiveInteger(input.maxTokens, "maxTokens");
+}
+
+function applyProviderModelInput(existing: OpenClawModel | undefined, input: ProviderModelInput): OpenClawModel {
+  const next: OpenClawModel = { ...(existing ?? {}), id: input.id };
+  for (const key of ["name", "api", "reasoning", "contextWindow", "maxTokens", "input"] as const) {
+    const value = input[key];
+    if (value === undefined || value === "" || (Array.isArray(value) && value.length === 0)) {
+      delete next[key];
+    } else {
+      next[key] = value as never;
+    }
+  }
+  return next;
+}
+
+function upsertAllowlistEntry(config: OpenClawConfig, ref: string, alias: string | undefined): void {
+  const existing = config.agents!.defaults!.models![ref] ?? {};
+  const next: AllowlistEntry = { ...existing };
+  if (alias === undefined || alias === "") {
+    delete next.alias;
+  } else {
+    next.alias = alias;
+  }
+  config.agents!.defaults!.models![ref] = next;
+}
+
 export function addProviderModel(
   config: OpenClawConfig,
-  ref: string,
-  input: { name?: string; alias?: string; enabled: boolean }
+  providerIdOrRef: string,
+  input: ProviderModelInput | { name?: string; alias?: string; enabled: boolean }
 ): OperationResult {
   ensureDefaults(config);
+  const refInput = "id" in input
+    ? { providerId: providerIdOrRef, modelId: input.id, input }
+    : (() => {
+        const { providerId, modelId } = parseModelRef(providerIdOrRef);
+        return { providerId, modelId, input: { ...input, id: modelId } };
+      })();
+  assertProviderModelInput(refInput.input);
+  const provider = config.models!.providers![refInput.providerId];
+  if (!provider) throw new Error(`Provider ${refInput.providerId} not found`);
+
+  const ref = formatModelRef(refInput.providerId, refInput.modelId);
+  const models = provider.models ?? [];
+  if (models.some((model) => model.id === refInput.modelId)) {
+    throw new Error(`Model ${ref} already exists`);
+  }
+
+  provider.models = [...models, applyProviderModelInput(undefined, refInput.input)];
+
+  if (refInput.input.enabled) {
+    upsertAllowlistEntry(config, ref, refInput.input.alias);
+  }
+
+  return { config, warnings: [] };
+}
+
+export function updateProviderModel(config: OpenClawConfig, ref: string, input: ProviderModelInput): OperationResult {
+  ensureDefaults(config);
+  assertProviderModelInput(input);
   const { providerId, modelId } = parseModelRef(ref);
   const provider = config.models!.providers![providerId];
   if (!provider) throw new Error(`Provider ${providerId} not found`);
 
   const models = provider.models ?? [];
-  const existing = models.find((model) => model.id === modelId);
-  const nextModel: OpenClawModel = existing
-    ? { ...existing, ...(input.name !== undefined ? { name: input.name } : {}) }
-    : { id: modelId, ...(input.name !== undefined ? { name: input.name } : {}) };
+  const existingIndex = models.findIndex((model) => model.id === modelId);
+  if (existingIndex === -1) throw new Error(`Model ${ref} not found`);
 
-  if (existing) {
-    provider.models = models.map((model) => (model.id === modelId ? nextModel : model));
-  } else {
-    provider.models = [...models, nextModel];
+  const nextRef = formatModelRef(providerId, input.id);
+  if (input.id !== modelId && models.some((model) => model.id === input.id)) {
+    throw new Error(`Model ${nextRef} already exists`);
+  }
+
+  const existingModel = models[existingIndex];
+  provider.models = models.map((model, index) =>
+    index === existingIndex ? applyProviderModelInput(existingModel, input) : model
+  );
+
+  const existingAllowlist = config.agents!.defaults!.models![ref];
+  if (input.id !== modelId) {
+    delete config.agents!.defaults!.models![ref];
+    if (config.agents!.defaults!.model === ref) {
+      config.agents!.defaults!.model = nextRef;
+    }
   }
 
   if (input.enabled) {
-    const entry: AllowlistEntry = input.alias
-      ? { ...(config.agents!.defaults!.models![ref] ?? {}), alias: input.alias }
-      : (config.agents!.defaults!.models![ref] ?? {});
-    config.agents!.defaults!.models![ref] = entry;
+    config.agents!.defaults!.models![nextRef] = existingAllowlist ?? config.agents!.defaults!.models![nextRef] ?? {};
+    upsertAllowlistEntry(config, nextRef, input.alias);
+  } else {
+    delete config.agents!.defaults!.models![nextRef];
   }
 
   return { config, warnings: [] };

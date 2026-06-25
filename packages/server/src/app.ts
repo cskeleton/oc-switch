@@ -1,6 +1,7 @@
 import {
   addCustomProvider,
   addProviderFromPreset,
+  addProviderModel,
   applyEnvOperation,
   applySyncedModels,
   cleanupOrphanEnvKeys,
@@ -23,12 +24,14 @@ import {
   readBackupMetadata,
   readManifest,
   removeProvider,
+  removeProviderModel,
   resolveOpenClawPathCandidates,
   restoreBackupSafely,
   saveCustomPreset,
   setPrimaryModel,
   summarizeConfigDiff,
   syncProviderModels,
+  updateProviderModel,
   validateBackupPathMatch,
   validateEnvPathForSwitch,
   validateOpenClawPathForSwitch,
@@ -44,7 +47,7 @@ import { Hono } from "hono";
 import JSON5 from "json5";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { optionalRestoreBackupTarget, requireBoolean, requireCustomProviderInput, requireEnvOperation, requireEnvPreviewOperation, requireString } from "./schemas";
+import { optionalRestoreBackupTarget, requireBoolean, requireCustomProviderInput, requireEnvOperation, requireEnvPreviewOperation, requireProviderModelInput, requireString } from "./schemas";
 
 export interface AppOptions {
   token: string;
@@ -357,6 +360,66 @@ export function createApp(options: AppOptions) {
         }
       });
       return c.json({ ok: true, ref, enabled, backupId: result.backupDir.split("/").pop() });
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/models", async (c) => {
+    try {
+      const body = await c.req.json() as Record<string, unknown>;
+      const providerId = requireString(body.providerId, "providerId");
+      const model = requireProviderModelInput(body.model);
+      const ref = `${providerId}/${model.id}`;
+      const result = await writeOpenClawTransaction({
+        ...currentPaths(),
+        reason: `add model ${ref}`,
+        mutate(config) {
+          return addProviderModel(config, providerId, model).config;
+        }
+      });
+      return c.json({ ok: true, ref, backupId: result.backupDir.split("/").pop() });
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.put("/api/models", async (c) => {
+    try {
+      const body = await c.req.json() as Record<string, unknown>;
+      const ref = requireString(body.ref, "ref");
+      const model = requireProviderModelInput(body.model);
+      const result = await writeOpenClawTransaction({
+        ...currentPaths(),
+        reason: `edit model ${ref}`,
+        mutate(config) {
+          return updateProviderModel(config, ref, model).config;
+        }
+      });
+      return c.json({ ok: true, ref, backupId: result.backupDir.split("/").pop() });
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.delete("/api/models", async (c) => {
+    try {
+      const body = await c.req.json() as Record<string, unknown>;
+      const ref = requireString(body.ref, "ref");
+      const removeOptions: { force: boolean; newPrimary?: string } = {
+        force: Boolean(body.force)
+      };
+      if (body.newPrimary !== undefined) {
+        removeOptions.newPrimary = requireString(body.newPrimary, "newPrimary");
+      }
+      const result = await writeOpenClawTransaction({
+        ...currentPaths(),
+        reason: `remove model ${ref}`,
+        mutate(config) {
+          return removeProviderModel(config, ref, removeOptions).config;
+        }
+      });
+      return c.json({ ok: true, ref, backupId: result.backupDir.split("/").pop() });
     } catch (error) {
       return jsonError(c, error);
     }

@@ -67,6 +67,11 @@ export interface ModelSummary {
   alias: string | undefined;
   enabled: boolean;
   isPrimary: boolean;
+  api?: ApiType;
+  reasoning?: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+  input?: string[];
 }
 
 export interface StatusSummary {
@@ -92,6 +97,18 @@ export interface ProviderPreset {
 export interface CustomProviderModelInput {
   id: string;
   alias?: string;
+}
+
+export interface ProviderModelInput {
+  id: string;
+  name?: string;
+  alias?: string;
+  enabled: boolean;
+  api?: ApiType;
+  reasoning?: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+  input?: string[];
 }
 
 export interface CustomProviderInput {

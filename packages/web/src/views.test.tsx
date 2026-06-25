@@ -81,6 +81,7 @@ describe("Dashboard", () => {
 describe("ModelsView", () => {
   test("calls setPrimary with slash-containing ref", async () => {
     const setPrimary = mock(async () => ({ ok: true, ref: "nvidia/deepseek-ai/deepseek-v4-flash" }));
+    const getProviders = mock(async () => ({ providers: [] }));
     const getModels = mock(async () => ({
       models: [
         {
@@ -95,7 +96,7 @@ describe("ModelsView", () => {
       ]
     }));
 
-    const { findByLabelText } = render(<ModelsView client={mockClient({ getModels, setPrimary })} />);
+    const { findByLabelText } = render(<ModelsView client={mockClient({ getModels, getProviders, setPrimary })} />);
 
     const btn = await findByLabelText("设为主模型 nvidia/deepseek-ai/deepseek-v4-flash");
     await userEvent.click(btn);
@@ -105,6 +106,7 @@ describe("ModelsView", () => {
 
   test("enables/disables via PATCH body not URL path", async () => {
     const patchModel = mock(async () => ({ ok: true, ref: "a/b/c", enabled: false }));
+    const getProviders = mock(async () => ({ providers: [] }));
     const getModels = mock(async () => ({
       models: [
         {
@@ -119,7 +121,7 @@ describe("ModelsView", () => {
       ]
     }));
 
-    const { findByLabelText } = render(<ModelsView client={mockClient({ getModels, patchModel })} />);
+    const { findByLabelText } = render(<ModelsView client={mockClient({ getModels, getProviders, patchModel })} />);
 
     const btn = await findByLabelText("禁用 a/b/c");
     await userEvent.click(btn);
@@ -128,53 +130,160 @@ describe("ModelsView", () => {
   });
 
   test("filters models by search and provider while marking current primary", async () => {
-    const { findByLabelText, findByText, queryByText } = render(
-      <ModelsView
-        client={mockClient({
-          getModels: async () => ({
-            models: [
-              {
-                ref: "minimax-portal/MiniMax-M3",
-                providerId: "minimax-portal",
-                modelId: "MiniMax-M3",
-                name: "MiniMax M3",
-                alias: "mm3",
-                enabled: true,
-                isPrimary: true
-              },
-              {
-                ref: "nvidia/deepseek-ai/deepseek-v4-flash",
-                providerId: "nvidia",
-                modelId: "deepseek-ai/deepseek-v4-flash",
-                name: "DeepSeek",
-                alias: undefined,
-                enabled: true,
-                isPrimary: false
-              },
-              {
-                ref: "nvidia/llama-3",
-                providerId: "nvidia",
-                modelId: "llama-3",
-                name: "Llama 3",
-                alias: undefined,
-                enabled: false,
-                isPrimary: false
-              }
-            ]
-          })
-        })}
-      />
+    const getProviders = mock(async () => ({
+      providers: [
+        { id: "minimax-portal", api: "anthropic-messages", baseUrl: "https://api.minimax.io", modelCount: 1, enabledModelCount: 1, containsPrimary: true },
+        { id: "nvidia", api: "openai-completions", baseUrl: "https://nvidia.example/v1", modelCount: 2, enabledModelCount: 1, containsPrimary: false }
+      ]
+    }));
+    const getModels = mock(async () => ({
+      models: [
+        {
+          ref: "minimax-portal/MiniMax-M3",
+          providerId: "minimax-portal",
+          modelId: "MiniMax-M3",
+          name: "MiniMax M3",
+          alias: "mm3",
+          enabled: true,
+          isPrimary: true
+        },
+        {
+          ref: "nvidia/deepseek-ai/deepseek-v4-flash",
+          providerId: "nvidia",
+          modelId: "deepseek-ai/deepseek-v4-flash",
+          name: "DeepSeek",
+          alias: undefined,
+          enabled: true,
+          isPrimary: false
+        },
+        {
+          ref: "nvidia/llama-3",
+          providerId: "nvidia",
+          modelId: "llama-3",
+          name: "Llama 3",
+          alias: undefined,
+          enabled: false,
+          isPrimary: false
+        }
+      ]
+    }));
+    const client = mockClient({ getProviders, getModels });
+
+    const searchView = render(<ModelsView client={client} />);
+    expect(await searchView.findByText("当前主模型")).toBeTruthy();
+    await userEvent.type(await searchView.findByLabelText("搜索模型"), "deepseek");
+    expect(await searchView.findByText("nvidia/deepseek-ai/deepseek-v4-flash")).toBeTruthy();
+    await waitFor(() => expect(searchView.queryByText("minimax-portal/MiniMax-M3")).toBeNull());
+    searchView.unmount();
+
+    const filterView = render(<ModelsView client={client} />);
+    await userEvent.selectOptions(await filterView.findByLabelText("Provider 筛选"), "minimax-portal");
+    expect(await filterView.findByText("minimax-portal/MiniMax-M3")).toBeTruthy();
+    await waitFor(() => expect(filterView.queryByText("nvidia/llama-3")).toBeNull());
+  });
+
+  test("adds model from global Models page with structured fields", async () => {
+    const createModel = mock(async () => ({ ok: true, ref: "nvidia/deepseek-ai/deepseek-v4-pro" }));
+    const getProviders = mock(async () => ({
+      providers: [
+        { id: "nvidia", api: "openai-completions", baseUrl: "https://nvidia.example/v1", modelCount: 1, enabledModelCount: 1, containsPrimary: false }
+      ]
+    }));
+    const getModels = mock(async () => ({ models: [] }));
+
+    const { findByLabelText, findByText, getByText } = render(
+      <ModelsView client={mockClient({ getModels, getProviders, createModel })} />
     );
 
-    expect(await findByText("当前主模型")).toBeTruthy();
-    await userEvent.type(await findByLabelText("搜索模型"), "deepseek");
-    expect(await findByText("nvidia/deepseek-ai/deepseek-v4-flash")).toBeTruthy();
-    await waitFor(() => expect(queryByText("minimax-portal/MiniMax-M3")).toBeNull());
+    await userEvent.click(await findByText("添加模型"));
+    await userEvent.selectOptions(await findByLabelText("Provider"), "nvidia");
+    await userEvent.type(await findByLabelText("Model ID"), "deepseek-ai/deepseek-v4-pro");
+    await userEvent.type(await findByLabelText("Name"), "DeepSeek V4 Pro");
+    await userEvent.type(await findByLabelText("Alias"), "ds-pro");
+    await userEvent.selectOptions(await findByLabelText("API"), "openai-completions");
+    await userEvent.selectOptions(await findByLabelText("Reasoning"), "true");
+    await userEvent.type(await findByLabelText("Context Window"), "128000");
+    await userEvent.type(await findByLabelText("Max Tokens"), "8192");
+    await userEvent.type(await findByLabelText("Input"), "text\nimage");
+    await userEvent.click(getByText("保存模型"));
 
-    await userEvent.clear(await findByLabelText("搜索模型"));
-    await userEvent.selectOptions(await findByLabelText("Provider 筛选"), "minimax-portal");
-    expect(await findByText("minimax-portal/MiniMax-M3")).toBeTruthy();
-    await waitFor(() => expect(queryByText("nvidia/llama-3")).toBeNull());
+    expect(createModel).toHaveBeenCalledWith("nvidia", {
+      id: "deepseek-ai/deepseek-v4-pro",
+      name: "DeepSeek V4 Pro",
+      alias: "ds-pro",
+      enabled: true,
+      api: "openai-completions",
+      reasoning: true,
+      contextWindow: 128000,
+      maxTokens: 8192,
+      input: ["text", "image"]
+    });
+  });
+
+  test("edits model from global Models page", async () => {
+    const updateModel = mock(async () => ({ ok: true, ref: "nvidia/deepseek-ai/deepseek-v4-pro" }));
+    const getProviders = mock(async () => ({
+      providers: [
+        { id: "nvidia", api: "openai-completions", baseUrl: "https://nvidia.example/v1", modelCount: 1, enabledModelCount: 1, containsPrimary: false }
+      ]
+    }));
+    const getModels = mock(async () => ({
+      models: [
+        {
+          ref: "nvidia/deepseek-ai/deepseek-v4-flash",
+          providerId: "nvidia",
+          modelId: "deepseek-ai/deepseek-v4-flash",
+          name: "DeepSeek Flash",
+          alias: "flash",
+          enabled: true,
+          isPrimary: false,
+          reasoning: false
+        }
+      ]
+    }));
+
+    const { findByLabelText, getByText } = render(
+      <ModelsView client={mockClient({ getModels, getProviders, updateModel })} />
+    );
+
+    await userEvent.click(await findByLabelText("编辑模型 nvidia/deepseek-ai/deepseek-v4-flash"));
+    const modelIdInput = await findByLabelText("Model ID");
+    await userEvent.clear(modelIdInput);
+    await userEvent.type(modelIdInput, "deepseek-ai/deepseek-v4-pro");
+    const aliasInput = await findByLabelText("Alias");
+    await userEvent.clear(aliasInput);
+    await userEvent.type(aliasInput, "ds-pro");
+    await userEvent.click(getByText("保存模型"));
+
+    expect(updateModel).toHaveBeenCalledWith("nvidia/deepseek-ai/deepseek-v4-flash", {
+      id: "deepseek-ai/deepseek-v4-pro",
+      name: "DeepSeek Flash",
+      alias: "ds-pro",
+      enabled: true,
+      reasoning: false
+    });
+  });
+
+  test("rejects invalid numeric model fields before submit", async () => {
+    const createModel = mock(async () => ({ ok: true, ref: "nvidia/bad-window" }));
+    const getProviders = mock(async () => ({
+      providers: [
+        { id: "nvidia", api: "openai-completions", baseUrl: "https://nvidia.example/v1", modelCount: 1, enabledModelCount: 1, containsPrimary: false }
+      ]
+    }));
+    const getModels = mock(async () => ({ models: [] }));
+
+    const { findByLabelText, findByText, getByText } = render(
+      <ModelsView client={mockClient({ getModels, getProviders, createModel })} />
+    );
+
+    await userEvent.click(await findByText("添加模型"));
+    await userEvent.type(await findByLabelText("Model ID"), "bad-window");
+    await userEvent.type(await findByLabelText("Context Window"), "abc");
+    await userEvent.click(getByText("保存模型"));
+
+    expect(await findByText("Context Window 必须是正整数")).toBeTruthy();
+    expect(createModel).not.toHaveBeenCalled();
   });
 });
 
@@ -253,6 +362,102 @@ describe("ProvidersView", () => {
       newPrimary: "nvidia/deepseek-ai/deepseek-v4-flash"
     });
     expect(deleteProvider).not.toHaveBeenCalledWith("minimax-portal", { force: true });
+  });
+
+  test("adds model from provider-scoped model manager", async () => {
+    const createModel = mock(async () => ({ ok: true, ref: "nvidia/deepseek-ai/deepseek-v4-pro" }));
+    const getProviders = mock(async () => ({
+      providers: [
+        {
+          id: "nvidia",
+          api: "openai-completions",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          modelCount: 1,
+          enabledModelCount: 1,
+          containsPrimary: false
+        }
+      ]
+    }));
+    const getModels = mock(async () => ({
+      models: [
+        {
+          ref: "nvidia/deepseek-ai/deepseek-v4-flash",
+          providerId: "nvidia",
+          modelId: "deepseek-ai/deepseek-v4-flash",
+          name: "DeepSeek Flash",
+          alias: "flash",
+          enabled: true,
+          isPrimary: false
+        }
+      ]
+    }));
+
+    const { findByLabelText, findByText, getByText } = render(
+      <ProvidersView client={mockClient({ getProviders, getModels, createModel })} />
+    );
+
+    await userEvent.click(await findByLabelText("管理模型 nvidia"));
+    expect(await findByText("nvidia 模型")).toBeTruthy();
+    await userEvent.click(getByText("添加模型"));
+    await userEvent.type(await findByLabelText("Model ID"), "deepseek-ai/deepseek-v4-pro");
+    await userEvent.type(await findByLabelText("Alias"), "ds-pro");
+    await userEvent.click(getByText("保存模型"));
+
+    expect(createModel).toHaveBeenCalledWith("nvidia", {
+      id: "deepseek-ai/deepseek-v4-pro",
+      alias: "ds-pro",
+      enabled: true
+    });
+  });
+
+  test("deleting primary model from provider manager defaults to a different new primary", async () => {
+    const deleteModel = mock(async () => ({ ok: true, ref: "nvidia/deepseek-ai/deepseek-v4-flash" }));
+    const getProviders = mock(async () => ({
+      providers: [
+        {
+          id: "nvidia",
+          api: "openai-completions",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          modelCount: 1,
+          enabledModelCount: 1,
+          containsPrimary: true
+        }
+      ]
+    }));
+    const getModels = mock(async () => ({
+      models: [
+        {
+          ref: "nvidia/deepseek-ai/deepseek-v4-flash",
+          providerId: "nvidia",
+          modelId: "deepseek-ai/deepseek-v4-flash",
+          name: "DeepSeek Flash",
+          alias: "flash",
+          enabled: true,
+          isPrimary: true
+        },
+        {
+          ref: "minimax-portal/MiniMax-M3",
+          providerId: "minimax-portal",
+          modelId: "MiniMax-M3",
+          name: "MiniMax M3",
+          alias: "mm3",
+          enabled: true,
+          isPrimary: false
+        }
+      ]
+    }));
+
+    const { findByLabelText, getByText } = render(
+      <ProvidersView client={mockClient({ getProviders, getModels, deleteModel })} />
+    );
+
+    await userEvent.click(await findByLabelText("管理模型 nvidia"));
+    await userEvent.click(await findByLabelText("删除模型 nvidia/deepseek-ai/deepseek-v4-flash"));
+    await userEvent.click(getByText("确认"));
+
+    expect(deleteModel).toHaveBeenCalledWith("nvidia/deepseek-ai/deepseek-v4-flash", {
+      newPrimary: "minimax-portal/MiniMax-M3"
+    });
   });
 
   test("adds custom provider through preview and confirm without rendering api key", async () => {

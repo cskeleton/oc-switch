@@ -1,8 +1,9 @@
-import { Edit3, Plus, RefreshCw, RotateCw, Trash2 } from "lucide-react";
+import { Cpu, Edit3, Plus, RefreshCw, RotateCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { CustomProviderDialog } from "../components/CustomProviderDialog";
 import { DataTable } from "../components/DataTable";
+import { ProviderModelsDialog } from "../components/ProviderModelsDialog";
 import type { ApiClient, ModelSummary, ProviderSummary } from "../api";
 
 interface ProvidersViewProps {
@@ -23,6 +24,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
   const [selectedNewPrimary, setSelectedNewPrimary] = useState("");
   const [syncing, setSyncing] = useState<string | null>(null);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [modelTarget, setModelTarget] = useState<ProviderSummary | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -178,6 +180,15 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
+                  aria-label={`管理模型 ${row.id}`}
+                  onClick={() => setModelTarget(row)}
+                  className="inline-flex items-center gap-1 rounded border border-slate-600 px-2 py-1 text-xs hover:bg-slate-800"
+                >
+                  <Cpu className="h-3 w-3" />
+                  模型
+                </button>
+                <button
+                  type="button"
                   aria-label={`编辑 ${row.id}`}
                   onClick={() => openEdit(row)}
                   className="inline-flex items-center gap-1 rounded border border-slate-600 px-2 py-1 text-xs hover:bg-slate-800"
@@ -208,6 +219,18 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
             )
           }
         ]}
+      />
+
+      <ProviderModelsDialog
+        open={Boolean(modelTarget)}
+        provider={modelTarget}
+        providers={providers}
+        client={client}
+        onCancel={() => setModelTarget(null)}
+        onChanged={() => {
+          void load();
+          onRefresh?.();
+        }}
       />
 
       <CustomProviderDialog

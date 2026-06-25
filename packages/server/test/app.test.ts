@@ -182,6 +182,83 @@ describe("server write endpoints", () => {
     expect(config.agents.defaults.models["nvidia/deepseek-ai/deepseek-v4-flash"]).toBeUndefined();
   });
 
+  test("POST /api/models adds provider model with structured fields", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+    const { response, json } = await jsonRequest(app, "/api/models", {
+      method: "POST",
+      body: JSON.stringify({
+        providerId: "nvidia",
+        model: {
+          id: "deepseek-ai/deepseek-v4-pro",
+          name: "DeepSeek V4 Pro",
+          alias: "ds-pro",
+          enabled: true,
+          api: "openai-completions",
+          reasoning: true,
+          contextWindow: 128000,
+          maxTokens: 8192,
+          input: ["text"]
+        }
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect(json.backupId).toBeTruthy();
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(config.models.providers.nvidia.models.find((model: { id: string }) => model.id === "deepseek-ai/deepseek-v4-pro")).toMatchObject({
+      name: "DeepSeek V4 Pro",
+      api: "openai-completions",
+      reasoning: true,
+      contextWindow: 128000,
+      maxTokens: 8192,
+      input: ["text"]
+    });
+    expect(config.agents.defaults.models["nvidia/deepseek-ai/deepseek-v4-pro"]).toEqual({ alias: "ds-pro" });
+  });
+
+  test("PUT /api/models edits model and migrates slash-containing ref", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+    const { response } = await jsonRequest(app, "/api/models", {
+      method: "PUT",
+      body: JSON.stringify({
+        ref: "nvidia/deepseek-ai/deepseek-v4-flash",
+        model: {
+          id: "deepseek-ai/deepseek-v4-pro",
+          name: "DeepSeek V4 Pro",
+          alias: "ds-pro",
+          enabled: true,
+          contextWindow: 128000
+        }
+      })
+    });
+
+    expect(response.status).toBe(200);
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(config.models.providers.nvidia.models.some((model: { id: string }) => model.id === "deepseek-ai/deepseek-v4-flash")).toBe(false);
+    expect(config.models.providers.nvidia.models.some((model: { id: string }) => model.id === "deepseek-ai/deepseek-v4-pro")).toBe(true);
+    expect(config.agents.defaults.models["nvidia/deepseek-ai/deepseek-v4-flash"]).toBeUndefined();
+    expect(config.agents.defaults.models["nvidia/deepseek-ai/deepseek-v4-pro"]).toMatchObject({
+      alias: "ds-pro",
+      agentRuntime: { id: "codex" }
+    });
+  });
+
+  test("DELETE /api/models removes model through JSON body", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+    const { response } = await jsonRequest(app, "/api/models", {
+      method: "DELETE",
+      body: JSON.stringify({ ref: "nvidia/deepseek-ai/deepseek-v4-flash" })
+    });
+
+    expect(response.status).toBe(200);
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(config.models.providers.nvidia.models.map((model: { id: string }) => model.id)).not.toContain("deepseek-ai/deepseek-v4-flash");
+    expect(config.agents.defaults.models["nvidia/deepseek-ai/deepseek-v4-flash"]).toBeUndefined();
+  });
+
   test("POST /api/providers adds provider from preset without leaking key", async () => {
     const ws = workspace();
     writeFileSync(join(ws.presetDirs.customDir, "testprov.json"), JSON.stringify({

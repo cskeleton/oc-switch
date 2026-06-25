@@ -61,6 +61,26 @@ describe("ConfigAdapter", () => {
     });
   });
 
+  test("lists editable provider model fields", () => {
+    const config = structuredClone(sample);
+    Object.assign(config.models!.providers!.nvidia!.models![0]!, {
+      api: "openai-completions",
+      reasoning: true,
+      contextWindow: 128000,
+      maxTokens: 8192,
+      input: ["text"]
+    });
+
+    const model = createConfigAdapter(config).listModels().find((entry) => entry.ref === "nvidia/deepseek-ai/deepseek-v4-flash");
+    expect(model).toMatchObject({
+      api: "openai-completions",
+      reasoning: true,
+      contextWindow: 128000,
+      maxTokens: 8192,
+      input: ["text"]
+    });
+  });
+
   test("reports status", () => {
     const adapter = createConfigAdapter(sample);
     expect(adapter.getStatus()).toEqual({

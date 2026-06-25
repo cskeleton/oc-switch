@@ -76,4 +76,17 @@ test.describe("WebGUI smoke", () => {
     await page.getByRole("button", { name: "取消" }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
   });
+
+  test("model editing entry points are reachable", async ({ page }) => {
+    await connect(page);
+    await page.getByRole("button", { name: "Providers" }).click();
+    await expect(page.getByLabel("管理模型 nvidia")).toBeVisible();
+    await page.getByLabel("管理模型 nvidia").click();
+    await expect(page.getByText("nvidia 模型")).toBeVisible();
+    await page.getByRole("button", { name: "关闭" }).click();
+
+    await page.locator("nav").getByRole("button", { name: "模型" }).click();
+    await expect(page.getByRole("button", { name: "添加模型" })).toBeVisible();
+    await expect(page.getByLabel(/编辑模型 nvidia\/deepseek-ai\/deepseek-v4-flash/)).toBeVisible();
+  });
 });

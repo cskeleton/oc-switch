@@ -23,4 +23,37 @@ describe("createApiClient", () => {
     });
     expect(calls[0]?.headers.get("Authorization")).toBe("Bearer secret");
   });
+
+  test("model write methods use JSON request bodies", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const client = createApiClient({
+      baseUrl: "http://localhost:7420",
+      token: "token",
+      fetchImpl: async (url, init = {}) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+    });
+
+    await client.createModel("nvidia", { id: "vendor/model", enabled: true, alias: "vm" });
+    await client.updateModel("nvidia/vendor/model", { id: "vendor/model-renamed", enabled: true });
+    await client.deleteModel("nvidia/vendor/model-renamed", { newPrimary: "minimax-portal/MiniMax-M3" });
+
+    expect(calls[0]?.url).toBe("http://localhost:7420/api/models");
+    expect(calls[0]?.init.method).toBe("POST");
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({
+      providerId: "nvidia",
+      model: { id: "vendor/model", enabled: true, alias: "vm" }
+    });
+    expect(calls[1]?.init.method).toBe("PUT");
+    expect(JSON.parse(String(calls[1]?.init.body))).toEqual({
+      ref: "nvidia/vendor/model",
+      model: { id: "vendor/model-renamed", enabled: true }
+    });
+    expect(calls[2]?.init.method).toBe("DELETE");
+    expect(JSON.parse(String(calls[2]?.init.body))).toEqual({
+      ref: "nvidia/vendor/model-renamed",
+      newPrimary: "minimax-portal/MiniMax-M3"
+    });
+  });
 });

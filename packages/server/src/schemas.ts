@@ -1,4 +1,4 @@
-import type { ApiType, CustomProviderInput } from "@oc-switch/core";
+import type { ApiType, CustomProviderInput, ProviderModelInput } from "@oc-switch/core";
 
 /** 校验请求体中的非空字符串字段 */
 export function requireString(value: unknown, name: string): string {
@@ -117,5 +117,43 @@ export function requireCustomProviderInput(body: Record<string, unknown>): Custo
   };
   if (notes !== undefined) input.notes = notes;
   if (websiteUrl !== undefined) input.websiteUrl = websiteUrl;
+  return input;
+}
+
+function optionalNumber(value: unknown, name: string): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${name} must be a number`);
+  return value;
+}
+
+function optionalStringArray(value: unknown, name: string): string[] | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (!Array.isArray(value)) throw new Error(`${name} must be an array`);
+  return value.map((entry, index) => requireString(entry, `${name}.${index}`));
+}
+
+export function requireProviderModelInput(value: unknown): ProviderModelInput {
+  if (!value || typeof value !== "object") throw new Error("model must be an object");
+  const body = value as Record<string, unknown>;
+  const input: ProviderModelInput = {
+    id: requireString(body.id, "model.id"),
+    enabled: requireBooleanDefault(body.enabled, "model.enabled", true)
+  };
+  const name = optionalString(body.name, "model.name");
+  const alias = optionalString(body.alias, "model.alias");
+  const api = body.api === undefined || body.api === null || body.api === "" ? undefined : requireApiType(body.api, "model.api");
+  const reasoning = body.reasoning === undefined || body.reasoning === null || body.reasoning === ""
+    ? undefined
+    : requireBoolean(body.reasoning, "model.reasoning");
+  const contextWindow = optionalNumber(body.contextWindow, "model.contextWindow");
+  const maxTokens = optionalNumber(body.maxTokens, "model.maxTokens");
+  const inputModes = optionalStringArray(body.input, "model.input");
+  if (name !== undefined) input.name = name;
+  if (alias !== undefined) input.alias = alias;
+  if (api !== undefined) input.api = api;
+  if (reasoning !== undefined) input.reasoning = reasoning;
+  if (contextWindow !== undefined) input.contextWindow = contextWindow;
+  if (maxTokens !== undefined) input.maxTokens = maxTokens;
+  if (inputModes !== undefined) input.input = inputModes;
   return input;
 }
