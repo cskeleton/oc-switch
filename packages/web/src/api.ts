@@ -11,6 +11,7 @@ export interface StatusResponse {
 export interface ProviderSummary {
   id: string;
   api: string | undefined;
+  baseUrl: string | undefined;
   modelCount: number;
   enabledModelCount: number;
   containsPrimary: boolean;
@@ -38,6 +39,9 @@ export interface BackupEntry {
   id: string;
   createdAt: string;
   reason: string;
+  openclawPath: string;
+  envPath: string;
+  pathMatchesActive: boolean;
 }
 
 export interface ConfigDiffSummary {
@@ -198,8 +202,11 @@ export function createApiClient(options: ApiClientOptions) {
         { method: "POST" }
       ),
     getBackups: () => request<{ backups: BackupEntry[] }>("/api/backups"),
-    restoreBackup: (id: string) =>
-      request<{ ok: boolean; id: string; safetyBackupId?: string }>(`/api/backups/${id}/restore`, { method: "POST" }),
+    restoreBackup: (id: string, target?: "backup" | "current") =>
+      request<{ ok: boolean; id: string; safetyBackupId?: string }>(`/api/backups/${id}/restore`, {
+        method: "POST",
+        ...(target ? { body: JSON.stringify({ target }) } : {})
+      }),
     getDiff: () => request<ConfigDiffSummary>("/api/diff"),
     getSettings: () => request<SettingsResponse>("/api/settings"),
     getPathSettings: () => request<PathSettingsResponse>("/api/settings/paths"),

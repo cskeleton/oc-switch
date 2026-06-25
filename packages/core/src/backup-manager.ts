@@ -95,6 +95,15 @@ export function listBackups(stateDir: string): BackupSummary[] {
   });
 }
 
+/** 读取备份 metadata，不读取备份内 openclaw.json 或 .env 内容 */
+export function readBackupMetadata(backupDir: string): BackupMetadata {
+  const metadataPath = join(backupDir, "metadata.json");
+  if (!existsSync(metadataPath)) {
+    throw new Error("backup metadata missing");
+  }
+  return JSON.parse(readFileSync(metadataPath, "utf8")) as BackupMetadata;
+}
+
 export function pruneBackups(
   stateDir: string,
   retentionLimit = DEFAULT_BACKUP_RETENTION,
@@ -130,6 +139,7 @@ export function restoreBackup(input: RestoreBackupInput): void {
 
 export interface SafeRestoreBackupInput extends RestoreBackupInput {
   stateDir: string;
+  allowPathMismatch?: boolean;
 }
 
 export interface SafeRestoreBackupResult {
@@ -149,11 +159,7 @@ export function validateBackupPathMatch(input: {
   openclawPath: string;
   envPath: string;
 }): BackupPathMismatch | null {
-  const metadataPath = join(input.backupDir, "metadata.json");
-  if (!existsSync(metadataPath)) {
-    throw new Error("backup metadata missing; refusing restore");
-  }
-  const metadata = JSON.parse(readFileSync(metadataPath, "utf8")) as BackupMetadata;
+  const metadata = readBackupMetadata(input.backupDir);
   if (metadata.openclawPath === input.openclawPath && metadata.envPath === input.envPath) {
     return null;
   }
@@ -180,8 +186,10 @@ function fileSha256(path: string): string {
 }
 
 export function restoreBackupSafely(input: SafeRestoreBackupInput): SafeRestoreBackupResult {
-  const mismatch = validateBackupPathMatch(input);
-  if (mismatch) throw new Error(formatBackupPathMismatchError(mismatch));
+  if (!input.allowPathMismatch) {
+    const mismatch = validateBackupPathMatch(input);
+    if (mismatch) throw new Error(formatBackupPathMismatchError(mismatch));
+  }
   const targetId = basename(input.backupDir);
   const safetyBackupDir = createBackup({
     stateDir: input.stateDir,

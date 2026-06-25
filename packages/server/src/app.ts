@@ -20,6 +20,7 @@ import {
   listProviderEnvRefs,
   loadPreset,
   previewEnvOperation,
+  readBackupMetadata,
   readManifest,
   removeProvider,
   resolveOpenClawPathCandidates,
@@ -43,7 +44,7 @@ import { Hono } from "hono";
 import JSON5 from "json5";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { requireBoolean, requireCustomProviderInput, requireEnvOperation, requireEnvPreviewOperation, requireString } from "./schemas";
+import { optionalRestoreBackupTarget, requireBoolean, requireCustomProviderInput, requireEnvOperation, requireEnvPreviewOperation, requireString } from "./schemas";
 
 export interface AppOptions {
   token: string;
@@ -403,32 +404,45 @@ export function createApp(options: AppOptions) {
   });
 
   app.get("/api/backups", (c) => {
-    const backups = listBackups(currentPaths().stateDir).map((entry) => ({
+    const paths = currentPaths();
+    const backups = listBackups(paths.stateDir).map((entry) => ({
       id: entry.id,
       createdAt: entry.metadata.createdAt,
-      reason: entry.metadata.reason
+      reason: entry.metadata.reason,
+      openclawPath: entry.metadata.openclawPath,
+      envPath: entry.metadata.envPath,
+      pathMatchesActive: entry.metadata.openclawPath === paths.openclawPath && entry.metadata.envPath === paths.envPath
     }));
     return c.json({ backups });
   });
 
-  app.post("/api/backups/:id/restore", (c) => {
+  app.post("/api/backups/:id/restore", async (c) => {
     try {
       const id = c.req.param("id");
       const paths = currentPaths();
       const backupDir = join(paths.stateDir, "backups", id);
+      const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
+      const target = optionalRestoreBackupTarget(body);
       const mismatch = validateBackupPathMatch({
         backupDir,
         openclawPath: paths.openclawPath,
         envPath: paths.envPath
       });
-      if (mismatch) {
-        return c.json({ error: "backup path mismatch" }, 409);
+      if (mismatch && !target) {
+        return c.json({ error: "backup path mismatch", mismatch }, 409);
       }
+      const restorePaths = target === "backup"
+        ? (() => {
+            const metadata = readBackupMetadata(backupDir);
+            return { openclawPath: metadata.openclawPath, envPath: metadata.envPath };
+          })()
+        : { openclawPath: paths.openclawPath, envPath: paths.envPath };
       const result = restoreBackupSafely({
         stateDir: paths.stateDir,
         backupDir,
-        openclawPath: paths.openclawPath,
-        envPath: paths.envPath
+        openclawPath: restorePaths.openclawPath,
+        envPath: restorePaths.envPath,
+        ...(target === "current" ? { allowPathMismatch: true } : {})
       });
       return c.json({ ok: true, id, safetyBackupId: result.safetyBackupDir.split("/").pop() });
     } catch (error) {

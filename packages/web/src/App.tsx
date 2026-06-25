@@ -25,14 +25,14 @@ const NAV: Array<{ id: AppRoute; label: string; icon: typeof LayoutDashboard }> 
   { id: "dashboard", label: "仪表盘", icon: LayoutDashboard },
   { id: "providers", label: "Providers", icon: Box },
   { id: "models", label: "模型", icon: Cpu },
-  { id: "presets", label: "预设", icon: Layers },
   { id: "backups", label: "备份", icon: Archive },
-  { id: "settings", label: "设置", icon: Settings }
+  { id: "settings", label: "设置", icon: Settings },
+  { id: "presets", label: "预设", icon: Layers }
 ];
 
 function readSession(key: string): string {
   try {
-    return sessionStorage.getItem(key) ?? "";
+    return typeof window === "undefined" ? "" : window.sessionStorage.getItem(key) ?? "";
   } catch {
     return "";
   }
@@ -40,16 +40,23 @@ function readSession(key: string): string {
 
 function writeSession(key: string, value: string) {
   try {
-    sessionStorage.setItem(key, value);
+    window.sessionStorage.setItem(key, value);
   } catch {
     // 忽略存储失败
   }
 }
 
+function defaultBaseUrl(): string {
+  if (typeof window !== "undefined" && window.location.origin && window.location.origin !== "null") {
+    return window.location.origin;
+  }
+  return DEFAULT_BASE_URL;
+}
+
 /** 应用主壳：连接配置 + 响应式导航 */
 export function App() {
   const [token, setToken] = useState(() => readSession(TOKEN_KEY));
-  const [baseUrl, setBaseUrl] = useState(() => readSession(BASE_URL_KEY) || DEFAULT_BASE_URL);
+  const [baseUrl, setBaseUrl] = useState(() => readSession(BASE_URL_KEY) || defaultBaseUrl());
   const [connected, setConnected] = useState(() => Boolean(readSession(TOKEN_KEY)));
   const [route, setRoute] = useState<AppRoute>("dashboard");
   const [connectError, setConnectError] = useState<string | null>(null);
@@ -78,7 +85,7 @@ export function App() {
 
   function handleDisconnect() {
     try {
-      sessionStorage.removeItem(TOKEN_KEY);
+      window.sessionStorage.removeItem(TOKEN_KEY);
     } catch {
       // 忽略
     }

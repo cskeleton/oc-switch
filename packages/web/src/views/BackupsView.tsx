@@ -14,6 +14,7 @@ export function BackupsView({ client, onRefresh }: BackupsViewProps) {
   const [backups, setBackups] = useState<BackupEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [restoreTarget, setRestoreTarget] = useState<BackupEntry | null>(null);
+  const [restoreMode, setRestoreMode] = useState<"backup" | "current">("backup");
 
   const load = useCallback(async () => {
     setError(null);
@@ -32,8 +33,9 @@ export function BackupsView({ client, onRefresh }: BackupsViewProps) {
   async function confirmRestore() {
     if (!restoreTarget) return;
     try {
-      await client.restoreBackup(restoreTarget.id);
+      await client.restoreBackup(restoreTarget.id, restoreTarget.pathMatchesActive ? undefined : restoreMode);
       setRestoreTarget(null);
+      setRestoreMode("backup");
       await load();
       onRefresh?.();
     } catch (err) {
@@ -66,6 +68,8 @@ export function BackupsView({ client, onRefresh }: BackupsViewProps) {
           { key: "id", header: "ID", render: (row) => row.id },
           { key: "createdAt", header: "时间", render: (row) => row.createdAt },
           { key: "reason", header: "原因", render: (row) => row.reason },
+          { key: "openclawPath", header: "openclaw.json", render: (row) => row.openclawPath },
+          { key: "envPath", header: ".env", render: (row) => row.envPath },
           {
             key: "actions",
             header: "操作",
@@ -73,7 +77,10 @@ export function BackupsView({ client, onRefresh }: BackupsViewProps) {
               <button
                 type="button"
                 aria-label={`恢复备份 ${row.id}`}
-                onClick={() => setRestoreTarget(row)}
+                onClick={() => {
+                  setRestoreTarget(row);
+                  setRestoreMode(row.pathMatchesActive ? "current" : "backup");
+                }}
                 className="inline-flex items-center gap-1 rounded border border-amber-600/50 px-2 py-1 text-xs text-amber-200 hover:bg-amber-900/30"
               >
                 <RotateCcw className="h-3 w-3" />
@@ -87,12 +94,51 @@ export function BackupsView({ client, onRefresh }: BackupsViewProps) {
       <ConfirmDialog
         open={Boolean(restoreTarget)}
         title="恢复备份"
-        message={`确认恢复到 ${restoreTarget?.id ?? ""}？将覆盖 openclaw.json 与 .env。`}
+        message={restoreTarget?.pathMatchesActive
+          ? `确认恢复到 ${restoreTarget.id}？将覆盖当前 openclaw.json 与 .env。`
+          : "备份路径与当前路径不一致，请选择恢复目标。"}
         danger
         confirmLabel="恢复"
-        onCancel={() => setRestoreTarget(null)}
+        onCancel={() => {
+          setRestoreTarget(null);
+          setRestoreMode("backup");
+        }}
         onConfirm={() => void confirmRestore()}
-      />
+      >
+        {restoreTarget ? (
+          <div className="space-y-3 text-sm text-slate-300">
+            <div className="space-y-1 rounded border border-slate-700 bg-slate-950/60 p-3 text-xs">
+              <p className="break-all">备份 openclaw: {restoreTarget.openclawPath}</p>
+              <p className="break-all">备份 env: {restoreTarget.envPath}</p>
+            </div>
+            {!restoreTarget.pathMatchesActive ? (
+              <div className="space-y-2">
+                <label className="flex items-start gap-2">
+                  <input
+                    type="radio"
+                    name="restore-target"
+                    checked={restoreMode === "backup"}
+                    onChange={() => setRestoreMode("backup")}
+                    className="mt-1"
+                  />
+                  <span>恢复到备份原路径</span>
+                </label>
+                <label className="flex items-start gap-2">
+                  <input
+                    type="radio"
+                    name="restore-target"
+                    aria-label="明确恢复到当前选中路径"
+                    checked={restoreMode === "current"}
+                    onChange={() => setRestoreMode("current")}
+                    className="mt-1"
+                  />
+                  <span>明确恢复到当前选中路径</span>
+                </label>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </ConfirmDialog>
     </section>
   );
 }

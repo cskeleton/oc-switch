@@ -82,6 +82,15 @@ export function requireEnvOperation(body: Record<string, unknown>) {
   };
 }
 
+export type RestoreBackupTarget = "backup" | "current";
+
+export function optionalRestoreBackupTarget(body: Record<string, unknown>): RestoreBackupTarget | undefined {
+  if (body.target === undefined || body.target === null || body.target === "") return undefined;
+  const target = requireString(body.target, "target");
+  if (target !== "backup" && target !== "current") throw new Error("target must be backup or current");
+  return target;
+}
+
 export function requireCustomProviderInput(body: Record<string, unknown>): CustomProviderInput {
   const modelsValue = body.models;
   if (!Array.isArray(modelsValue)) throw new Error("models must be an array");

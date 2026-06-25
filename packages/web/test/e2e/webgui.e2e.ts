@@ -22,7 +22,7 @@ test.describe("WebGUI smoke", () => {
     await connect(page);
     await page.getByRole("button", { name: "Providers" }).click();
     await expect(page.getByTestId("providers-view")).toBeVisible();
-    await expect(page.getByText("nvidia")).toBeVisible();
+    await expect(page.getByTestId("providers-view").getByText("nvidia", { exact: true })).toBeVisible();
     await expect(page.getByText("openai-completions").first()).toBeVisible();
   });
 

@@ -1,4 +1,4 @@
-import { Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Edit3, Plus, RefreshCw, RotateCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { CustomProviderDialog } from "../components/CustomProviderDialog";
@@ -16,8 +16,13 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
   const [error, setError] = useState<string | null>(null);
   const [addingProvider, setAddingProvider] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ProviderSummary | null>(null);
+  const [editTarget, setEditTarget] = useState<ProviderSummary | null>(null);
+  const [editBaseUrl, setEditBaseUrl] = useState("");
+  const [editApiKey, setEditApiKey] = useState("");
   const [newPrimaryCandidates, setNewPrimaryCandidates] = useState<ModelSummary[]>([]);
   const [selectedNewPrimary, setSelectedNewPrimary] = useState("");
+  const [syncing, setSyncing] = useState<string | null>(null);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -70,6 +75,54 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
     }
   }
 
+  function openEdit(row: ProviderSummary) {
+    setError(null);
+    setEditTarget(row);
+    setEditBaseUrl(row.baseUrl ?? "");
+    setEditApiKey("");
+  }
+
+  async function confirmEdit() {
+    if (!editTarget) return;
+    const changes: { baseUrl?: string; apiKey?: string } = {};
+    const nextBaseUrl = editBaseUrl.trim();
+    if (nextBaseUrl) changes.baseUrl = nextBaseUrl;
+    if (editApiKey) changes.apiKey = editApiKey;
+    if (!changes.baseUrl && !changes.apiKey) {
+      setError("请输入 baseUrl 或 API Key 新值");
+      return;
+    }
+    try {
+      await client.updateProvider(editTarget.id, changes);
+      setEditTarget(null);
+      setEditApiKey("");
+      await load();
+      onRefresh?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存失败");
+    }
+  }
+
+  async function handleSync(row: ProviderSummary) {
+    setSyncing(row.id);
+    setSyncMessage(null);
+    setError(null);
+    try {
+      const result = await client.syncProvider(row.id);
+      if (result.unsupportedReason) {
+        setSyncMessage(`同步未执行：${result.unsupportedReason}`);
+      } else {
+        setSyncMessage(`同步完成：新增 ${result.addedModelIds?.length ?? 0} 个模型`);
+      }
+      await load();
+      onRefresh?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "同步失败");
+    } finally {
+      setSyncing(null);
+    }
+  }
+
   return (
     <section data-testid="providers-view">
       <div className="mb-4 flex items-center justify-between">
@@ -95,6 +148,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
       </div>
 
       {error ? <p className="mb-3 text-red-400">{error}</p> : null}
+      {syncMessage ? <p className="mb-3 text-sm text-emerald-300">{syncMessage}</p> : null}
 
       <DataTable
         rows={providers}
@@ -111,6 +165,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
             )
           },
           { key: "api", header: "API 类型", render: (row) => row.api ?? "—" },
+          { key: "baseUrl", header: "Base URL", render: (row) => row.baseUrl ?? "—" },
           {
             key: "models",
             header: "模型 / 已启用",
@@ -120,15 +175,36 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
             key: "actions",
             header: "操作",
             render: (row) => (
-              <button
-                type="button"
-                aria-label={`删除 ${row.id}`}
-                onClick={() => void openDelete(row)}
-                className="inline-flex items-center gap-1 rounded border border-red-700/50 px-2 py-1 text-xs text-red-300 hover:bg-red-900/30"
-              >
-                <Trash2 className="h-3 w-3" />
-                删除
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  aria-label={`编辑 ${row.id}`}
+                  onClick={() => openEdit(row)}
+                  className="inline-flex items-center gap-1 rounded border border-slate-600 px-2 py-1 text-xs hover:bg-slate-800"
+                >
+                  <Edit3 className="h-3 w-3" />
+                  编辑
+                </button>
+                <button
+                  type="button"
+                  aria-label={`同步 ${row.id}`}
+                  disabled={syncing === row.id}
+                  onClick={() => void handleSync(row)}
+                  className="inline-flex items-center gap-1 rounded border border-sky-600/50 px-2 py-1 text-xs text-sky-200 hover:bg-sky-900/30 disabled:opacity-40"
+                >
+                  <RotateCw className="h-3 w-3" />
+                  同步
+                </button>
+                <button
+                  type="button"
+                  aria-label={`删除 ${row.id}`}
+                  onClick={() => void openDelete(row)}
+                  className="inline-flex items-center gap-1 rounded border border-red-700/50 px-2 py-1 text-xs text-red-300 hover:bg-red-900/30"
+                >
+                  <Trash2 className="h-3 w-3" />
+                  删除
+                </button>
+              </div>
             )
           }
         ]}
@@ -175,6 +251,56 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
           </label>
         ) : null}
       </ConfirmDialog>
+
+      {editTarget ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true">
+          <div className="w-full max-w-md rounded-lg border border-slate-600 bg-slate-900 p-4 shadow-xl">
+            <h2 className="text-lg font-semibold text-slate-100">编辑 Provider</h2>
+            <p className="mt-1 break-all text-xs text-slate-400">{editTarget.id}</p>
+            <div className="mt-4 space-y-3">
+              <label className="block text-sm">
+                <span className="mb-1 block text-slate-400">baseUrl</span>
+                <input
+                  aria-label="Provider baseUrl"
+                  value={editBaseUrl}
+                  onChange={(event) => setEditBaseUrl(event.target.value)}
+                  className="w-full rounded border border-slate-600 bg-slate-950 px-3 py-2 text-slate-100"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="mb-1 block text-slate-400">API Key 新值</span>
+                <input
+                  type="password"
+                  aria-label="Provider API Key 新值"
+                  value={editApiKey}
+                  onChange={(event) => setEditApiKey(event.target.value)}
+                  className="w-full rounded border border-slate-600 bg-slate-950 px-3 py-2 text-slate-100"
+                  autoComplete="off"
+                />
+              </label>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setEditTarget(null);
+                  setEditApiKey("");
+                }}
+                className="rounded-md border border-slate-600 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmEdit()}
+                className="rounded-md bg-sky-600 px-3 py-1.5 text-sm text-white hover:bg-sky-500"
+              >
+                保存 Provider
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

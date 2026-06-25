@@ -8,21 +8,23 @@
 - 控制改动范围，严格按计划实现，不添加计划外功能。
 - Git 合并、推送等操作前先说明执行计划，待用户确认后再执行。
 - 默认不提交 `docs/` 与 `.cursor/`；仅在用户明确要求时纳入 commit。
+- 持续开发时按计划推进至任务完成，仅遇重大问题再暂停向用户确认。
+- 在真实 OpenClaw 配置上做浏览器/E2E 测试时优先只读；若必须写操作，测试后须还原。
 
 ## Learned Workspace Facts
 
 - oc-switch 是用于本地 OpenClaw provider/model 配置管理与清理（陈旧 ref、allowlist 与 provider 不一致等）的 Bun/TypeScript monorepo。
 - 包结构：`packages/core`（唯一读写 OpenClaw 本地文件）、`packages/cli`、`packages/server`（Hono REST）、`packages/web`（React/Vite SPA）。
 - 设计规格在 `docs/superpowers/specs/`；实现计划在 `docs/superpowers/plans/`。
-- 分阶段交付：Phase 1–5 已完成（Core+CLI、REST Server、WebGUI、内置 preset、验收）；后续功能从 `main` 拉分支。
+- 分阶段交付：Phase 1–5 已完成；Path & Env Management（2026-06-25）已落地；后续功能从 `main` 拉分支。
 - Custom Provider（手工添加 Provider）已实现：Web Providers 页 / `provider add-custom` / `POST /api/providers/custom*`；规格见 `docs/superpowers/specs/2026-06-24-oc-switch-custom-provider-design.md`。
-- 默认路径：`OPENCLAW_CONFIG_PATH` 或 `~/.openclaw/openclaw.json`；`.env` 在 `~/.openclaw/.env`；状态与备份在 `~/.oc-switch/`。
+- 默认与活动路径：`OPENCLAW_CONFIG_PATH` 或 `~/.openclaw/openclaw.json`；`.env` 在 `~/.openclaw/.env`；active 路径持久化于 `~/.oc-switch/settings.json` 并可在 Settings 切换；状态与备份在 `~/.oc-switch/`。
 - ModelRef 仅在第一个 `/` 处拆分 provider 与 model，保留大小写。
 - Allowlist（已启用模型）在 `agents.defaults.models`（key 为完整 ModelRef）；`models.providers` 为 provider 模型目录；`listModels` 合并两者展示。
 - `.env` 写入限定在 `# oc-switch:start` / `# oc-switch:end` 托管块内。
 - Provider `baseUrl` 遵循 OpenClaw：`openai-completions` 含 `/v1`；`anthropic-messages` 通常不带末尾 `/v1`。
-- 内置 preset 在 `presets/builtin/`，为当前快照而非永久承诺。
-- 工具链：`bun install`、`bun test`、`bun run typecheck`、`bun run packages/cli/src/index.ts`。
+- Path & Env Management：`GET/PUT /api/settings/paths`、分层 env 管理（preview 不收 value、API/UI 不回显密钥）；备份 metadata 含路径，恢复时路径不一致或缺 metadata 拒绝；运行实例路径 best-effort 发现。规格见 `docs/superpowers/specs/2026-06-24-oc-switch-path-env-management-design.md`。已知后续：stale allowlist/case-mismatch 清理 UI、chmod 警告、真实配置写 E2E。
+- 工具链：`bun install`、`bun test`、`bun run typecheck`、`bun run test:e2e`、`bun run acceptance`、`bun run packages/cli/src/index.ts`。
 
 ## 产品与使用定位
 

@@ -53,6 +53,7 @@ export interface OpenClawConfig {
 export interface ProviderSummary {
   id: string;
   api: string | undefined;
+  baseUrl: string | undefined;
   modelCount: number;
   enabledModelCount: number;
   containsPrimary: boolean;

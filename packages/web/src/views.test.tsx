@@ -2,6 +2,7 @@ import "./test-setup.ts";
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { cleanup, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { App } from "./App";
 import { DiffSummary } from "./components/DiffSummary";
 import { createApiClient, type ApiClient } from "./api";
 import { Dashboard } from "./views/Dashboard";
@@ -11,7 +12,11 @@ import { PresetsView } from "./views/PresetsView";
 import { BackupsView } from "./views/BackupsView";
 import { SettingsView } from "./views/SettingsView";
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  window.sessionStorage.clear();
+  mock.restore();
+});
 
 function mockClient(overrides: Partial<ApiClient> = {}): ApiClient {
   const base = createApiClient({
@@ -24,7 +29,7 @@ function mockClient(overrides: Partial<ApiClient> = {}): ApiClient {
 
 describe("Dashboard", () => {
   test("shows current primary model and counts", async () => {
-    const { findByText } = render(
+    const { findAllByText, findByText } = render(
       <Dashboard
         client={mockClient({
           getStatus: async () => ({
@@ -42,6 +47,34 @@ describe("Dashboard", () => {
     expect(await findByText("3")).toBeTruthy();
     expect(await findByText("5")).toBeTruthy();
     expect(await findByText("4")).toBeTruthy();
+  });
+
+  test("shows configuration health from latest backup diff", async () => {
+    const { findByText } = render(
+      <Dashboard
+        client={mockClient({
+          getStatus: async () => ({
+            ok: true,
+            primaryModel: "minimax-portal/MiniMax-M3",
+            providerCount: 3,
+            providerModelCount: 5,
+            allowlistModelCount: 4
+          }),
+          getDiff: async () => ({
+            providersAdded: [],
+            providersRemoved: [],
+            providersChanged: [],
+            modelsEnabled: ["nvidia/deepseek-ai/deepseek-v4-flash"],
+            modelsDisabled: [],
+            primaryChanged: null
+          })
+        })}
+      />
+    );
+
+    expect(await findByText("配置健康")).toBeTruthy();
+    expect(await findByText("与最近备份有 1 项差异")).toBeTruthy();
+    expect(await findByText("nvidia/deepseek-ai/deepseek-v4-flash")).toBeTruthy();
   });
 });
 
@@ -93,11 +126,61 @@ describe("ModelsView", () => {
 
     expect(patchModel).toHaveBeenCalledWith("a/b/c", false);
   });
+
+  test("filters models by search and provider while marking current primary", async () => {
+    const { findByLabelText, findByText, queryByText } = render(
+      <ModelsView
+        client={mockClient({
+          getModels: async () => ({
+            models: [
+              {
+                ref: "minimax-portal/MiniMax-M3",
+                providerId: "minimax-portal",
+                modelId: "MiniMax-M3",
+                name: "MiniMax M3",
+                alias: "mm3",
+                enabled: true,
+                isPrimary: true
+              },
+              {
+                ref: "nvidia/deepseek-ai/deepseek-v4-flash",
+                providerId: "nvidia",
+                modelId: "deepseek-ai/deepseek-v4-flash",
+                name: "DeepSeek",
+                alias: undefined,
+                enabled: true,
+                isPrimary: false
+              },
+              {
+                ref: "nvidia/llama-3",
+                providerId: "nvidia",
+                modelId: "llama-3",
+                name: "Llama 3",
+                alias: undefined,
+                enabled: false,
+                isPrimary: false
+              }
+            ]
+          })
+        })}
+      />
+    );
+
+    expect(await findByText("当前主模型")).toBeTruthy();
+    await userEvent.type(await findByLabelText("搜索模型"), "deepseek");
+    expect(await findByText("nvidia/deepseek-ai/deepseek-v4-flash")).toBeTruthy();
+    await waitFor(() => expect(queryByText("minimax-portal/MiniMax-M3")).toBeNull());
+
+    await userEvent.clear(await findByLabelText("搜索模型"));
+    await userEvent.selectOptions(await findByLabelText("Provider 筛选"), "minimax-portal");
+    expect(await findByText("minimax-portal/MiniMax-M3")).toBeTruthy();
+    await waitFor(() => expect(queryByText("nvidia/llama-3")).toBeNull());
+  });
 });
 
 describe("ProvidersView", () => {
   test("shows provider id, api type, counts, and primary marker", async () => {
-    const { findByText } = render(
+    const { findAllByText, findByText } = render(
       <ProvidersView
         client={mockClient({
           getProviders: async () => ({
@@ -105,6 +188,7 @@ describe("ProvidersView", () => {
               {
                 id: "nvidia",
                 api: "openai-completions",
+                baseUrl: "https://integrate.api.nvidia.com/v1",
                 modelCount: 2,
                 enabledModelCount: 1,
                 containsPrimary: true
@@ -115,7 +199,7 @@ describe("ProvidersView", () => {
       />
     );
 
-    expect(await findByText(/nvidia/)).toBeTruthy();
+    expect(await findByText("nvidia ★")).toBeTruthy();
     expect(await findByText("openai-completions")).toBeTruthy();
     expect(await findByText("2 / 1")).toBeTruthy();
   });
@@ -127,6 +211,7 @@ describe("ProvidersView", () => {
         {
           id: "minimax-portal",
           api: "anthropic-messages",
+          baseUrl: "https://api.minimax.io",
           modelCount: 1,
           enabledModelCount: 1,
           containsPrimary: true
@@ -185,6 +270,7 @@ describe("ProvidersView", () => {
         {
           id: "nvidia",
           api: "openai-completions",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
           modelCount: 2,
           enabledModelCount: 1,
           containsPrimary: false
@@ -249,6 +335,7 @@ describe("ProvidersView", () => {
         {
           id: "nvidia",
           api: "openai-completions",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
           modelCount: 2,
           enabledModelCount: 1,
           containsPrimary: false
@@ -267,6 +354,64 @@ describe("ProvidersView", () => {
 
     await userEvent.click(getByText("添加 Provider"));
     expect((await findByLabelText("API Key", { exact: true }) as HTMLInputElement).value).toBe("");
+  });
+
+  test("edits provider base URL and API key without rendering the key", async () => {
+    const updateProvider = mock(async () => ({ ok: true }));
+    const getProviders = mock(async () => ({
+      providers: [
+        {
+          id: "nvidia",
+          api: "openai-completions",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          modelCount: 2,
+          enabledModelCount: 1,
+          containsPrimary: false
+        }
+      ]
+    }));
+
+    const { findByLabelText, getByText, queryByText } = render(
+      <ProvidersView client={mockClient({ getProviders, updateProvider })} />
+    );
+
+    await userEvent.click(await findByLabelText("编辑 nvidia"));
+    const baseUrlInput = await findByLabelText("Provider baseUrl");
+    await userEvent.clear(baseUrlInput);
+    await userEvent.type(baseUrlInput, "https://new-nvidia.example/v1");
+    await userEvent.type(await findByLabelText("Provider API Key 新值"), "sk-new-secret");
+    await userEvent.click(getByText("保存 Provider"));
+
+    expect(updateProvider).toHaveBeenCalledWith("nvidia", {
+      baseUrl: "https://new-nvidia.example/v1",
+      apiKey: "sk-new-secret"
+    });
+    expect(queryByText("sk-new-secret")).toBeNull();
+  });
+
+  test("syncs provider models and shows added model count", async () => {
+    const syncProvider = mock(async () => ({ ok: true, addedModelIds: ["remote-model-a"] }));
+    const getProviders = mock(async () => ({
+      providers: [
+        {
+          id: "nvidia",
+          api: "openai-completions",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          modelCount: 2,
+          enabledModelCount: 1,
+          containsPrimary: false
+        }
+      ]
+    }));
+
+    const { findByLabelText, findByText } = render(
+      <ProvidersView client={mockClient({ getProviders, syncProvider })} />
+    );
+
+    await userEvent.click(await findByLabelText("同步 nvidia"));
+
+    expect(syncProvider).toHaveBeenCalledWith("nvidia");
+    expect(await findByText("同步完成：新增 1 个模型")).toBeTruthy();
   });
 });
 
@@ -308,7 +453,14 @@ describe("BackupsView", () => {
       <BackupsView
         client={mockClient({
           getBackups: async () => ({
-            backups: [{ id: "2024-01-01T00-00-00", createdAt: "2024-01-01", reason: "test write" }]
+            backups: [{
+              id: "2024-01-01T00-00-00",
+              createdAt: "2024-01-01",
+              reason: "test write",
+              openclawPath: "/default/openclaw.json",
+              envPath: "/default/.env",
+              pathMatchesActive: true
+            }]
           })
         })}
       />
@@ -319,6 +471,34 @@ describe("BackupsView", () => {
     expect(getByText("恢复备份")).toBeTruthy();
     await userEvent.click(getByText("取消"));
     await waitFor(() => expect(queryByText("恢复备份")).toBeNull());
+  });
+
+  test("offers restore target choices when backup paths differ from active paths", async () => {
+    const restoreBackup = mock(async () => ({ ok: true, id: "backup-a" }));
+    const { findByLabelText, getAllByText, getByLabelText, getByText } = render(
+      <BackupsView
+        client={mockClient({
+          getBackups: async () => ({
+            backups: [{
+              id: "backup-a",
+              createdAt: "2024-01-01",
+              reason: "test write",
+              openclawPath: "/old/openclaw.json",
+              envPath: "/old/.env",
+              pathMatchesActive: false
+            }]
+          }),
+          restoreBackup
+        })}
+      />
+    );
+
+    await userEvent.click(await findByLabelText("恢复备份 backup-a"));
+    expect(getByText(/备份路径与当前路径不一致/)).toBeTruthy();
+    await userEvent.click(getByLabelText("明确恢复到当前选中路径"));
+    await userEvent.click(getAllByText("恢复").at(-1)!);
+
+    expect(restoreBackup).toHaveBeenCalledWith("backup-a", "current");
   });
 });
 
@@ -352,7 +532,7 @@ describe("SettingsView", () => {
   };
 
   test("shows non-secret settings", async () => {
-    const { findByText } = render(
+    const { findAllByText, findByText } = render(
       <SettingsView
         baseUrl="http://127.0.0.1:7420"
         client={mockClient({
@@ -371,6 +551,7 @@ describe("SettingsView", () => {
     );
 
     expect(await findByText(/openclaw\.json/)).toBeTruthy();
+    expect((await findAllByText("/default/.env")).length).toBeGreaterThan(0);
     expect(await findByText("127.0.0.1")).toBeTruthy();
     expect(await findByText("7420")).toBeTruthy();
     expect(await findByText("20（默认）")).toBeTruthy();
@@ -434,6 +615,41 @@ describe("SettingsView", () => {
     await userEvent.selectOptions(getByLabelText(".env 路径"), "/next/.env");
     await userEvent.click(getByText("切换路径"));
     expect(putPaths).toHaveBeenCalledWith("/next/openclaw.json", "/next/.env");
+  });
+
+  test("allows manual path entry and explains when no running instance is found", async () => {
+    const putPaths = mock(async () => ({ ok: true, paths: { openclawPath: "/manual/openclaw.json", envPath: "/manual/.env", stateDir: "/state" } }));
+    const { findByLabelText, findByText, getByText } = render(
+      <SettingsView
+        baseUrl="http://127.0.0.1:7420"
+        client={mockClient({
+          getSettings: async () => ({
+            configPath: "/default/openclaw.json",
+            envPath: "/default/.env",
+            bindAddress: "127.0.0.1",
+            port: 7420,
+            backupRetention: 20,
+            gatewayRestartCommand: "openclaw gateway restart",
+            orphanEnvKeys: []
+          }),
+          getPathSettings: async () => ({
+            active: { openclawPath: "/default/openclaw.json", envPath: "/default/.env", stateDir: "/state" },
+            openclawPaths: [{ path: "/default/openclaw.json", source: "openclaw-default", label: "OpenClaw 默认路径", recommended: false, exists: true, readable: true, writable: true, parentWritable: true }],
+            envPaths: [{ path: "/default/.env", source: "openclaw-default", label: "OpenClaw 默认路径", recommended: false, exists: true, readable: true, writable: true, parentWritable: true }]
+          }),
+          updatePathSettings: putPaths,
+          getEnvIndex: async () => ({ variables: [], warnings: [] })
+        })}
+      />
+    );
+
+    expect(await findByText(/未能确认运行中 OpenClaw 使用的 env 文件/)).toBeTruthy();
+    await userEvent.type(await findByLabelText("手动 openclaw.json 路径"), "/manual/openclaw.json");
+    await userEvent.type(await findByLabelText("手动 .env 路径"), "/manual/.env");
+    await userEvent.click(getByText("使用手动路径"));
+    await userEvent.click(getByText("切换路径"));
+
+    expect(putPaths).toHaveBeenCalledWith("/manual/openclaw.json", "/manual/.env");
   });
 
   test("renders env variables without secret values", async () => {
@@ -684,5 +900,33 @@ describe("SettingsView", () => {
       note: "MCP endpoint id"
     }));
     expect(queryByText("epid-secret")).toBeNull();
+  });
+});
+
+describe("App shell", () => {
+  test("defaults API address to browser origin and keeps presets after main operating pages", async () => {
+    const fetchMock = mock(async () =>
+      new Response(JSON.stringify({
+        ok: true,
+        primaryModel: "minimax-portal/MiniMax-M3",
+        providerCount: 1,
+        providerModelCount: 1,
+        allowlistModelCount: 1
+      }), { headers: { "content-type": "application/json" } })
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const disconnected = render(<App />);
+    expect((await disconnected.findByLabelText("API 地址") as HTMLInputElement).value).toBe(window.location.origin);
+    disconnected.unmount();
+
+    window.sessionStorage.setItem("oc-switch-token", "token");
+    const connected = render(<App />);
+    await connected.findByText("minimax-portal/MiniMax-M3");
+    await connected.findByText("没有可比较备份");
+    const navLabels = Array.from(connected.container.querySelectorAll("aside nav button")).map((button) =>
+      button.textContent?.trim()
+    );
+    expect(navLabels).toEqual(["仪表盘", "Providers", "模型", "备份", "设置", "预设"]);
   });
 });

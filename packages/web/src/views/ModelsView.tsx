@@ -1,4 +1,4 @@
-import { RefreshCw, Star, ToggleLeft, ToggleRight } from "lucide-react";
+import { RefreshCw, Search, Star, ToggleLeft, ToggleRight } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { DataTable } from "../components/DataTable";
 import type { ApiClient, ModelSummary } from "../api";
@@ -12,6 +12,8 @@ export function ModelsView({ client }: ModelsViewProps) {
   const [models, setModels] = useState<ModelSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [providerFilter, setProviderFilter] = useState("all");
 
   const load = useCallback(async () => {
     setError(null);
@@ -51,6 +53,20 @@ export function ModelsView({ client }: ModelsViewProps) {
     }
   }
 
+  const providers = [...new Set(models.map((model) => model.providerId))].sort((a, b) => a.localeCompare(b));
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredModels = models.filter((model) => {
+    const matchesProvider = providerFilter === "all" || model.providerId === providerFilter;
+    const haystack = [
+      model.ref,
+      model.providerId,
+      model.modelId,
+      model.name ?? "",
+      model.alias ?? ""
+    ].join(" ").toLowerCase();
+    return matchesProvider && (!normalizedQuery || haystack.includes(normalizedQuery));
+  });
+
   return (
     <section data-testid="models-view">
       <div className="mb-4 flex items-center justify-between">
@@ -67,15 +83,51 @@ export function ModelsView({ client }: ModelsViewProps) {
 
       {error ? <p className="mb-3 text-red-400">{error}</p> : null}
 
+      <div className="mb-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_14rem]">
+        <label className="relative block text-sm">
+          <span className="sr-only">搜索模型</span>
+          <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
+          <input
+            aria-label="搜索模型"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索 ref、model、alias"
+            className="w-full rounded border border-slate-600 bg-slate-950 py-2 pl-9 pr-3 text-sm"
+          />
+        </label>
+        <label className="block text-sm">
+          <span className="sr-only">Provider 筛选</span>
+          <select
+            aria-label="Provider 筛选"
+            value={providerFilter}
+            onChange={(event) => setProviderFilter(event.target.value)}
+            className="w-full rounded border border-slate-600 bg-slate-950 px-3 py-2 text-sm"
+          >
+            <option value="all">全部 Provider</option>
+            {providers.map((providerId) => (
+              <option key={providerId} value={providerId}>{providerId}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+
       <DataTable
-        rows={models}
+        rows={filteredModels}
         rowKey={(row) => row.ref}
+        emptyMessage="没有匹配的模型"
         columns={[
           {
             key: "ref",
             header: "引用",
             render: (row) => (
-              <span className={row.isPrimary ? "font-medium text-amber-300" : ""}>{row.ref}</span>
+              <div className="space-y-1">
+                <span className={row.isPrimary ? "font-medium text-amber-300" : ""}>{row.ref}</span>
+                {row.isPrimary ? (
+                  <span className="inline-flex rounded border border-amber-500/50 px-1.5 py-0.5 text-[11px] text-amber-200">
+                    当前主模型
+                  </span>
+                ) : null}
+              </div>
             )
           },
           {

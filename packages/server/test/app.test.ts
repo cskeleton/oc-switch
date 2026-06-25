@@ -395,6 +395,116 @@ describe("server write endpoints", () => {
     expect(safetyBackup).toBeTruthy();
   });
 
+  test("GET /api/backups includes path metadata and active path match", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+    await jsonRequest(app, "/api/models/primary", {
+      method: "PUT",
+      body: JSON.stringify({ ref: "nvidia/deepseek-ai/deepseek-v4-flash" })
+    });
+
+    const { response, json } = await jsonRequest(app, "/api/backups");
+    expect(response.status).toBe(200);
+    const [backup] = json.backups as Array<{
+      openclawPath: string;
+      envPath: string;
+      pathMatchesActive: boolean;
+    }>;
+    expect(backup).toMatchObject({
+      openclawPath: ws.paths.openclawPath,
+      envPath: ws.paths.envPath,
+      pathMatchesActive: true
+    });
+    expect(JSON.stringify(json)).not.toContain("sk-");
+  });
+
+  test("POST /api/backups/:id/restore can restore a mismatched backup into current active paths when confirmed", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+    await jsonRequest(app, "/api/models/primary", {
+      method: "PUT",
+      body: JSON.stringify({ ref: "nvidia/deepseek-ai/deepseek-v4-flash" })
+    });
+    const { json: backupsJson } = await jsonRequest(app, "/api/backups");
+    const backupId = (backupsJson.backups as Array<{ id: string }>)[0]?.id;
+    expect(backupId).toBeTruthy();
+
+    const nextDir = mkdtempSync(join(tmpdir(), "oc-switch-server-restore-current-"));
+    tempDirs.push(nextDir);
+    const nextOpenclawPath = join(nextDir, "openclaw.json");
+    const nextEnvPath = join(nextDir, ".env");
+    writeFileSync(nextOpenclawPath, JSON.stringify({
+      models: { providers: { switched: { models: [{ id: "model-a" }] } } },
+      agents: { defaults: { model: "switched/model-a", models: { "switched/model-a": {} } } }
+    }, null, 2));
+    writeFileSync(nextEnvPath, "SWITCHED_API_KEY=value\n");
+    await jsonRequest(app, "/api/settings/paths", {
+      method: "PUT",
+      body: JSON.stringify({ openclawPath: nextOpenclawPath, envPath: nextEnvPath })
+    });
+
+    const rejected = await jsonRequest(app, `/api/backups/${backupId}/restore`, { method: "POST" });
+    expect(rejected.response.status).toBe(409);
+    expect(rejected.json).toMatchObject({
+      error: "backup path mismatch",
+      mismatch: {
+        backupOpenclawPath: ws.paths.openclawPath,
+        backupEnvPath: ws.paths.envPath,
+        currentOpenclawPath: nextOpenclawPath,
+        currentEnvPath: nextEnvPath
+      }
+    });
+
+    const restored = await jsonRequest(app, `/api/backups/${backupId}/restore`, {
+      method: "POST",
+      body: JSON.stringify({ target: "current" })
+    });
+    expect(restored.response.status).toBe(200);
+    const config = JSON.parse(readFileSync(nextOpenclawPath, "utf8"));
+    expect(config.agents.defaults.model).toBe("minimax-portal/MiniMax-M3");
+  });
+
+  test("POST /api/backups/:id/restore can restore a mismatched backup to its original paths when confirmed", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+    await jsonRequest(app, "/api/models/primary", {
+      method: "PUT",
+      body: JSON.stringify({ ref: "nvidia/deepseek-ai/deepseek-v4-flash" })
+    });
+    const { json: backupsJson } = await jsonRequest(app, "/api/backups");
+    const backupId = (backupsJson.backups as Array<{ id: string }>)[0]?.id;
+    expect(backupId).toBeTruthy();
+
+    const nextDir = mkdtempSync(join(tmpdir(), "oc-switch-server-restore-backup-"));
+    tempDirs.push(nextDir);
+    const nextOpenclawPath = join(nextDir, "openclaw.json");
+    const nextEnvPath = join(nextDir, ".env");
+    writeFileSync(nextOpenclawPath, JSON.stringify({
+      models: { providers: { switched: { models: [{ id: "model-a" }] } } },
+      agents: { defaults: { model: "switched/model-a", models: { "switched/model-a": {} } } }
+    }, null, 2));
+    writeFileSync(nextEnvPath, "SWITCHED_API_KEY=value\n");
+    await jsonRequest(app, "/api/settings/paths", {
+      method: "PUT",
+      body: JSON.stringify({ openclawPath: nextOpenclawPath, envPath: nextEnvPath })
+    });
+    writeFileSync(ws.paths.openclawPath, JSON.stringify({
+      models: { providers: {} },
+      agents: { defaults: { model: "changed/original", models: {} } }
+    }, null, 2));
+
+    const restored = await jsonRequest(app, `/api/backups/${backupId}/restore`, {
+      method: "POST",
+      body: JSON.stringify({ target: "backup" })
+    });
+
+    expect(restored.response.status).toBe(200);
+    const originalConfig = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    const currentConfig = JSON.parse(readFileSync(nextOpenclawPath, "utf8"));
+    expect(originalConfig.agents.defaults.model).toBe("minimax-portal/MiniMax-M3");
+    expect(currentConfig.agents.defaults.model).toBe("switched/model-a");
+  });
+
   test("GET /api/diff shows changes since latest backup", async () => {
     const ws = workspace();
     const app = createTestApp(ws);

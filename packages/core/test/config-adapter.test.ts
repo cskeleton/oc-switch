@@ -12,6 +12,7 @@ describe("ConfigAdapter", () => {
       {
         id: "nvidia",
         api: "openai-completions",
+        baseUrl: "https://integrate.api.nvidia.com/v1",
         modelCount: 2,
         enabledModelCount: 2,
         containsPrimary: false
@@ -19,6 +20,7 @@ describe("ConfigAdapter", () => {
       {
         id: "DeepSeek",
         api: "openai-completions",
+        baseUrl: "https://api.deepseek.com/v1",
         modelCount: 1,
         enabledModelCount: 1,
         containsPrimary: false
@@ -26,6 +28,7 @@ describe("ConfigAdapter", () => {
       {
         id: "minimax-portal",
         api: "anthropic-messages",
+        baseUrl: "https://api.minimax.io/anthropic",
         modelCount: 1,
         enabledModelCount: 1,
         containsPrimary: true

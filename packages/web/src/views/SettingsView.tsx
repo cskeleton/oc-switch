@@ -35,6 +35,8 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
   const [envIndex, setEnvIndex] = useState<EnvIndexResponse | null>(null);
   const [selectedOpenClawPath, setSelectedOpenClawPath] = useState("");
   const [selectedEnvPath, setSelectedEnvPath] = useState("");
+  const [manualOpenClawPath, setManualOpenClawPath] = useState("");
+  const [manualEnvPath, setManualEnvPath] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [valueInputs, setValueInputs] = useState<Record<string, string>>({});
@@ -243,6 +245,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
 
   const items = [
     { label: "配置路径", value: effective.configPath },
+    { label: ".env 路径", value: effective.envPath ?? pathSettings?.active.envPath ?? "未知" },
     { label: "Bind 地址", value: effective.bindAddress },
     { label: "端口", value: String(effective.port) },
     { label: "备份保留份数", value: `${effective.backupRetention}（默认）` },
@@ -264,6 +267,11 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
       {pathSettings ? (
         <div className="mt-4 rounded-lg border border-slate-700 bg-slate-800/40 p-4">
           <h2 className="mb-3 text-sm font-medium text-slate-300">OpenClaw 路径</h2>
+          {!pathSettings.envPaths.some((item) => item.source === "running-instance") ? (
+            <p className="mb-3 text-xs text-amber-200">
+              未能确认运行中 OpenClaw 使用的 env 文件。请选择候选路径，或向当前 OpenClaw 实例确认实际 runtime env 文件。
+            </p>
+          ) : null}
           <div className="grid gap-3 md:grid-cols-2">
             <label className="block text-sm">
               <span className="mb-1 block text-slate-400">openclaw.json 路径</span>
@@ -295,6 +303,36 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
                 ))}
               </select>
             </label>
+          </div>
+          <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+            <label className="block text-sm">
+              <span className="mb-1 block text-slate-400">手动 openclaw.json 路径</span>
+              <input
+                aria-label="手动 openclaw.json 路径"
+                value={manualOpenClawPath}
+                onChange={(event) => setManualOpenClawPath(event.target.value)}
+                className="w-full rounded border border-slate-600 bg-slate-950 px-3 py-2"
+              />
+            </label>
+            <label className="block text-sm">
+              <span className="mb-1 block text-slate-400">手动 .env 路径</span>
+              <input
+                aria-label="手动 .env 路径"
+                value={manualEnvPath}
+                onChange={(event) => setManualEnvPath(event.target.value)}
+                className="w-full rounded border border-slate-600 bg-slate-950 px-3 py-2"
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => {
+                if (manualOpenClawPath.trim()) setSelectedOpenClawPath(manualOpenClawPath.trim());
+                if (manualEnvPath.trim()) setSelectedEnvPath(manualEnvPath.trim());
+              }}
+              className="self-end rounded border border-slate-600 px-3 py-2 text-sm hover:bg-slate-800"
+            >
+              使用手动路径
+            </button>
           </div>
           <button type="button" onClick={() => void handleSwitchPaths()} className="mt-3 rounded bg-sky-600 px-3 py-1.5 text-sm hover:bg-sky-500">
             切换路径

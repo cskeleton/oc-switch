@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createBackup, listBackups, restoreBackup, restoreBackupSafely } from "../src/backup-manager";
+import { createBackup, listBackups, readBackupMetadata, restoreBackup, restoreBackupSafely } from "../src/backup-manager";
 
 const tempDirs: string[] = [];
 
@@ -92,6 +92,38 @@ describe("backup manager", () => {
     })).toThrow(/备份路径与当前 active 路径不一致/);
 
     expect(readFileSync(otherOpenclaw, "utf8")).toBe("{\"other\":true}\n");
+  });
+
+  test("restores into current paths when mismatch is explicitly confirmed", () => {
+    const ws = workspace();
+    const backupDir = createBackup({ ...ws, reason: "path-bound", beforeHash: "hash" });
+    const otherOpenclaw = join(ws.dir, "other-openclaw.json");
+    const otherEnv = join(ws.dir, "other.env");
+    writeFileSync(otherOpenclaw, "{\"other\":true}\n");
+    writeFileSync(otherEnv, "KEY=other\n");
+
+    const result = restoreBackupSafely({
+      stateDir: ws.stateDir,
+      backupDir,
+      openclawPath: otherOpenclaw,
+      envPath: otherEnv,
+      allowPathMismatch: true
+    });
+
+    expect(readFileSync(otherOpenclaw, "utf8")).toBe("{\"before\":true}\n");
+    expect(readFileSync(otherEnv, "utf8")).toBe("KEY=before\n");
+    expect(readFileSync(join(result.safetyBackupDir, "openclaw.json"), "utf8")).toBe("{\"other\":true}\n");
+  });
+
+  test("reads backup metadata without exposing file contents", () => {
+    const ws = workspace();
+    const backupDir = createBackup({ ...ws, reason: "metadata", beforeHash: "hash" });
+
+    const metadata = readBackupMetadata(backupDir);
+
+    expect(metadata.openclawPath).toBe(ws.openclawPath);
+    expect(metadata.envPath).toBe(ws.envPath);
+    expect(JSON.stringify(metadata)).not.toContain("KEY=before");
   });
 
   test("rejects restore when backup metadata is missing", () => {

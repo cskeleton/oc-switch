@@ -23,6 +23,7 @@ export function createConfigAdapter(config: OpenClawConfig) {
         return {
           id,
           api: provider.api,
+          baseUrl: provider.baseUrl,
           modelCount: refs.length,
           enabledModelCount: Object.keys(allowlist).filter((ref) => parseModelRef(ref).providerId === id).length,
           containsPrimary: primaryModel ? parseModelRef(primaryModel).providerId === id : false
