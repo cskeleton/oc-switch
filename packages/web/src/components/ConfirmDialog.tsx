@@ -27,15 +27,25 @@ export function ConfirmDialog({
   confirmDisabled = false,
   children
 }: ConfirmDialogProps) {
+  const scrollableBody = Boolean(children);
+
   return (
     <Dialog open={open} onOpenChange={(val) => { if (!val) onCancel(); }}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
+      <DialogContent
+        className={
+          scrollableBody
+            ? "flex max-h-[min(90vh,42rem)] max-w-md flex-col gap-0 overflow-hidden p-0"
+            : "max-w-md"
+        }
+      >
+        <DialogHeader className={scrollableBody ? "shrink-0 px-6 pt-6" : undefined}>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{message}</DialogDescription>
         </DialogHeader>
-        {children ? <div className="py-4">{children}</div> : null}
-        <DialogFooter>
+        {children ? (
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">{children}</div>
+        ) : null}
+        <DialogFooter className={scrollableBody ? "shrink-0 border-t border-border px-6 pb-6 pt-4" : undefined}>
           <button
             type="button"
             onClick={onCancel}

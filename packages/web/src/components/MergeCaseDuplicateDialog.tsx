@@ -129,7 +129,7 @@ export function MergeCaseDuplicateDialog({ open, group, client, onCancel, onMerg
           预览改动
         </button>
         {diff ? (
-          <ul className="list-inside list-disc space-y-1 text-muted-foreground">
+          <ul className="max-h-48 list-inside list-disc space-y-1 overflow-y-auto rounded-md border border-border p-2 text-muted-foreground">
             {diff.providersRemoved.map((p) => <li key={p} className="break-all">删除 Provider {p}</li>)}
             {diff.modelsEnabled.map((m) => <li key={`e${m}`} className="break-all">启用 {m}</li>)}
             {diff.modelsDisabled.map((m) => <li key={`d${m}`} className="break-all">移除 {m}</li>)}
