@@ -1,6 +1,7 @@
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { ApiClient, ConfigDiffSummary, StatusResponse } from "../api";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 
 interface DashboardProps {
   client: ApiClient;
@@ -47,40 +48,44 @@ export function Dashboard({ client }: DashboardProps) {
 
   return (
     <section data-testid="dashboard-view">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-xl font-semibold">仪表盘</h1>
+      <div className="mb-6 flex items-center justify-between">
+        <h1 className="text-2xl font-bold tracking-tight">仪表盘</h1>
         <button
           type="button"
           aria-label="刷新"
           onClick={() => void load()}
-          className="rounded-md border border-slate-600 p-2 hover:bg-slate-800"
+          className="inline-flex items-center justify-center rounded-md border border-input bg-background p-2 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <RefreshCw className="h-4 w-4" />
         </button>
       </div>
 
-      {loading ? <p className="text-slate-400">加载中…</p> : null}
-      {error ? <p className="text-red-400">{error}</p> : null}
+      {loading ? <p className="text-sm text-muted-foreground">加载中…</p> : null}
+      {error ? <p className="text-sm font-medium text-destructive">{error}</p> : null}
 
       {status ? (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-          <StatCard label="主模型" value={status.primaryModel ?? "未设置"} large />
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
+          <StatCard label="主模型" value={status.primaryModel ?? "未设置"} className="lg:col-span-2" />
           <StatCard label="Provider 数量" value={String(status.providerCount)} />
           <StatCard label="Provider 模型" value={String(status.providerModelCount)} />
           <StatCard label="Allowlist 模型" value={String(status.allowlistModelCount)} />
-          <HealthCard diff={diff} unavailable={diffUnavailable} />
+          <HealthCard diff={diff} unavailable={diffUnavailable} className="md:col-span-2 lg:col-span-5" />
         </div>
       ) : null}
     </section>
   );
 }
 
-function StatCard({ label, value, large = false }: { label: string; value: string; large?: boolean }) {
+function StatCard({ label, value, className }: { label: string; value: string; className?: string }) {
   return (
-    <div className="rounded-lg border border-slate-700 bg-slate-800/50 p-4">
-      <p className="text-xs uppercase tracking-wide text-slate-400">{label}</p>
-      <p className={`mt-1 break-all font-medium text-slate-100 ${large ? "text-base" : "text-2xl"}`}>{value}</p>
-    </div>
+    <Card className={className}>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">{label}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="break-all text-2xl font-bold">{value}</div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -115,7 +120,7 @@ function diffHighlights(diff: ConfigDiffSummary): string[] {
   ].slice(0, 3);
 }
 
-function HealthCard({ diff, unavailable }: { diff: ConfigDiffSummary | null; unavailable: boolean }) {
+function HealthCard({ diff, unavailable, className }: { diff: ConfigDiffSummary | null; unavailable: boolean; className?: string }) {
   const count = diff ? diffCount(diff) : 0;
   const summary = unavailable
     ? "没有可比较备份"
@@ -124,16 +129,22 @@ function HealthCard({ diff, unavailable }: { diff: ConfigDiffSummary | null; una
       : `与最近备份有 ${count} 项差异`;
 
   return (
-    <div className="rounded-lg border border-slate-700 bg-slate-800/50 p-4">
-      <p className="text-xs uppercase tracking-wide text-slate-400">配置健康</p>
-      <p className={`mt-1 font-medium ${count > 0 ? "text-amber-200" : "text-slate-100"}`}>{summary}</p>
-      {diff && count > 0 ? (
-        <ul className="mt-2 space-y-1 text-xs text-slate-300">
-          {diffHighlights(diff).map((item) => (
-            <li key={item} className="break-all">{item}</li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
+    <Card className={className}>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">配置健康</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className={`text-xl font-bold ${count > 0 ? "text-amber-500" : "text-foreground"}`}>
+          {summary}
+        </div>
+        {diff && count > 0 ? (
+          <ul className="mt-3 list-inside list-disc space-y-1 text-sm text-muted-foreground">
+            {diffHighlights(diff).map((item) => (
+              <li key={item} className="break-all">{item}</li>
+            ))}
+          </ul>
+        ) : null}
+      </CardContent>
+    </Card>
   );
 }

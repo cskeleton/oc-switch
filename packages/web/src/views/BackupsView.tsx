@@ -52,13 +52,13 @@ export function BackupsView({ client, onRefresh }: BackupsViewProps) {
           type="button"
           aria-label="刷新"
           onClick={() => void load()}
-          className="rounded-md border border-slate-600 p-2 hover:bg-slate-800"
+          className="rounded-md border border-input p-2 hover:bg-accent hover:text-foreground"
         >
           <RefreshCw className="h-4 w-4" />
         </button>
       </div>
 
-      {error ? <p className="mb-3 text-red-400">{error}</p> : null}
+      {error ? <p className="mb-3 text-destructive">{error}</p> : null}
 
       <DataTable
         rows={backups}
@@ -106,8 +106,8 @@ export function BackupsView({ client, onRefresh }: BackupsViewProps) {
         onConfirm={() => void confirmRestore()}
       >
         {restoreTarget ? (
-          <div className="space-y-3 text-sm text-slate-300">
-            <div className="space-y-1 rounded border border-slate-700 bg-slate-950/60 p-3 text-xs">
+          <div className="space-y-3 text-sm text-foreground">
+            <div className="space-y-1 rounded border border-border bg-background/60 p-3 text-xs">
               <p className="break-all">备份 openclaw: {restoreTarget.openclawPath}</p>
               <p className="break-all">备份 env: {restoreTarget.envPath}</p>
             </div>

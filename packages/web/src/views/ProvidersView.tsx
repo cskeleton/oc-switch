@@ -133,7 +133,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
           <button
             type="button"
             onClick={() => setAddingProvider(true)}
-            className="inline-flex items-center gap-1 rounded bg-sky-600 px-3 py-1.5 text-sm text-white hover:bg-sky-500"
+            className="inline-flex items-center gap-1 rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90"
           >
             <Plus className="h-4 w-4" />
             添加 Provider
@@ -142,15 +142,15 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
             type="button"
             aria-label="刷新"
             onClick={() => void load()}
-            className="rounded-md border border-slate-600 p-2 hover:bg-slate-800"
+            className="rounded-md border border-input p-2 hover:bg-accent hover:text-foreground"
           >
             <RefreshCw className="h-4 w-4" />
           </button>
         </div>
       </div>
 
-      {error ? <p className="mb-3 text-red-400">{error}</p> : null}
-      {syncMessage ? <p className="mb-3 text-sm text-emerald-300">{syncMessage}</p> : null}
+      {error ? <p className="mb-3 text-destructive">{error}</p> : null}
+      {syncMessage ? <p className="mb-3 text-sm text-emerald-500 dark:text-emerald-400">{syncMessage}</p> : null}
 
       <DataTable
         rows={providers}
@@ -160,7 +160,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
             key: "id",
             header: "ID",
             render: (row) => (
-              <span className={row.containsPrimary ? "font-medium text-amber-300" : ""}>
+              <span className={row.containsPrimary ? "font-medium text-amber-500 dark:text-amber-400" : ""}>
                 {row.id}
                 {row.containsPrimary ? " ★" : ""}
               </span>
@@ -182,7 +182,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
                   type="button"
                   aria-label={`管理模型 ${row.id}`}
                   onClick={() => setModelTarget(row)}
-                  className="inline-flex items-center gap-1 rounded border border-slate-600 px-2 py-1 text-xs hover:bg-slate-800"
+                  className="inline-flex items-center gap-1 rounded border border-input px-2 py-1 text-xs hover:bg-accent hover:text-foreground"
                 >
                   <Cpu className="h-3 w-3" />
                   模型
@@ -191,7 +191,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
                   type="button"
                   aria-label={`编辑 ${row.id}`}
                   onClick={() => openEdit(row)}
-                  className="inline-flex items-center gap-1 rounded border border-slate-600 px-2 py-1 text-xs hover:bg-slate-800"
+                  className="inline-flex items-center gap-1 rounded border border-input px-2 py-1 text-xs hover:bg-accent hover:text-foreground"
                 >
                   <Edit3 className="h-3 w-3" />
                   编辑
@@ -201,7 +201,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
                   aria-label={`同步 ${row.id}`}
                   disabled={syncing === row.id}
                   onClick={() => void handleSync(row)}
-                  className="inline-flex items-center gap-1 rounded border border-sky-600/50 px-2 py-1 text-xs text-sky-200 hover:bg-sky-900/30 disabled:opacity-40"
+                  className="inline-flex items-center gap-1 rounded border border-primary/50 px-2 py-1 text-xs text-primary hover:bg-primary/10 disabled:opacity-40"
                 >
                   <RotateCw className="h-3 w-3" />
                   同步
@@ -210,7 +210,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
                   type="button"
                   aria-label={`删除 ${row.id}`}
                   onClick={() => void openDelete(row)}
-                  className="inline-flex items-center gap-1 rounded border border-red-700/50 px-2 py-1 text-xs text-red-300 hover:bg-red-900/30"
+                  className="inline-flex items-center gap-1 rounded border border-destructive/50 px-2 py-1 text-xs text-destructive hover:bg-destructive hover:text-destructive-foreground"
                 >
                   <Trash2 className="h-3 w-3" />
                   删除
@@ -258,12 +258,12 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
       >
         {deleteTarget?.containsPrimary ? (
           <label className="block text-sm">
-            <span className="mb-1 block text-slate-400">新主模型</span>
+            <span className="mb-1 block text-muted-foreground">新主模型</span>
             <select
               aria-label="新主模型"
               value={selectedNewPrimary}
               onChange={(event) => setSelectedNewPrimary(event.target.value)}
-              className="w-full rounded border border-slate-600 bg-slate-950 px-3 py-2 text-slate-100"
+              className="w-full rounded border border-input bg-background px-3 py-2 text-foreground"
             >
               {newPrimaryCandidates.map((model) => (
                 <option key={model.ref} value={model.ref}>
@@ -277,27 +277,27 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
 
       {editTarget ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true">
-          <div className="w-full max-w-md rounded-lg border border-slate-600 bg-slate-900 p-4 shadow-xl">
-            <h2 className="text-lg font-semibold text-slate-100">编辑 Provider</h2>
-            <p className="mt-1 break-all text-xs text-slate-400">{editTarget.id}</p>
+          <div className="w-full max-w-md rounded-lg border border-border bg-card p-4 shadow-xl">
+            <h2 className="text-lg font-semibold text-foreground">编辑 Provider</h2>
+            <p className="mt-1 break-all text-xs text-muted-foreground">{editTarget.id}</p>
             <div className="mt-4 space-y-3">
               <label className="block text-sm">
-                <span className="mb-1 block text-slate-400">baseUrl</span>
+                <span className="mb-1 block text-muted-foreground">baseUrl</span>
                 <input
                   aria-label="Provider baseUrl"
                   value={editBaseUrl}
                   onChange={(event) => setEditBaseUrl(event.target.value)}
-                  className="w-full rounded border border-slate-600 bg-slate-950 px-3 py-2 text-slate-100"
+                  className="w-full rounded border border-input bg-background px-3 py-2 text-foreground"
                 />
               </label>
               <label className="block text-sm">
-                <span className="mb-1 block text-slate-400">API Key 新值</span>
+                <span className="mb-1 block text-muted-foreground">API Key 新值</span>
                 <input
                   type="password"
                   aria-label="Provider API Key 新值"
                   value={editApiKey}
                   onChange={(event) => setEditApiKey(event.target.value)}
-                  className="w-full rounded border border-slate-600 bg-slate-950 px-3 py-2 text-slate-100"
+                  className="w-full rounded border border-input bg-background px-3 py-2 text-foreground"
                   autoComplete="off"
                 />
               </label>
@@ -309,14 +309,14 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
                   setEditTarget(null);
                   setEditApiKey("");
                 }}
-                className="rounded-md border border-slate-600 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800"
+                className="rounded-md border border-input px-3 py-1.5 text-sm text-foreground hover:bg-accent"
               >
                 取消
               </button>
               <button
                 type="button"
                 onClick={() => void confirmEdit()}
-                className="rounded-md bg-sky-600 px-3 py-1.5 text-sm text-white hover:bg-sky-500"
+                className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90"
               >
                 保存 Provider
               </button>

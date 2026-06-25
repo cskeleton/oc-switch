@@ -1,4 +1,6 @@
 import "./test-setup.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { cleanup, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -98,8 +100,7 @@ describe("ModelsView", () => {
 
     const { findByLabelText } = render(<ModelsView client={mockClient({ getModels, getProviders, setPrimary })} />);
 
-    const btn = await findByLabelText("设为主模型 nvidia/deepseek-ai/deepseek-v4-flash");
-    await userEvent.click(btn);
+    await userEvent.click(await findByLabelText("设为主模型 nvidia/deepseek-ai/deepseek-v4-flash"));
 
     expect(setPrimary).toHaveBeenCalledWith("nvidia/deepseek-ai/deepseek-v4-flash");
   });
@@ -123,8 +124,7 @@ describe("ModelsView", () => {
 
     const { findByLabelText } = render(<ModelsView client={mockClient({ getModels, getProviders, patchModel })} />);
 
-    const btn = await findByLabelText("禁用 a/b/c");
-    await userEvent.click(btn);
+    await userEvent.click(await findByLabelText("禁用 a/b/c"));
 
     expect(patchModel).toHaveBeenCalledWith("a/b/c", false);
   });
@@ -171,15 +171,56 @@ describe("ModelsView", () => {
 
     const searchView = render(<ModelsView client={client} />);
     expect(await searchView.findByText("当前主模型")).toBeTruthy();
+    await userEvent.click(await searchView.findByText("nvidia"));
     await userEvent.type(await searchView.findByLabelText("搜索模型"), "deepseek");
     expect(await searchView.findByText("nvidia/deepseek-ai/deepseek-v4-flash")).toBeTruthy();
     await waitFor(() => expect(searchView.queryByText("minimax-portal/MiniMax-M3")).toBeNull());
     searchView.unmount();
 
     const filterView = render(<ModelsView client={client} />);
-    await userEvent.selectOptions(await filterView.findByLabelText("Provider 筛选"), "minimax-portal");
+    await userEvent.click(await filterView.findByText("nvidia"));
+    expect(await filterView.findByText("nvidia/llama-3")).toBeTruthy();
+    await userEvent.click(await filterView.findByText("minimax-portal"));
     expect(await filterView.findByText("minimax-portal/MiniMax-M3")).toBeTruthy();
     await waitFor(() => expect(filterView.queryByText("nvidia/llama-3")).toBeNull());
+  });
+
+  test("matches revamp styling for selected provider, disabled models, and keyboard focus actions", async () => {
+    const getProviders = mock(async () => ({
+      providers: [
+        { id: "nvidia", api: "openai-completions", baseUrl: "https://nvidia.example/v1", modelCount: 2, enabledModelCount: 1, containsPrimary: false }
+      ]
+    }));
+    const getModels = mock(async () => ({
+      models: [
+        {
+          ref: "nvidia/enabled-model",
+          providerId: "nvidia",
+          modelId: "enabled-model",
+          name: undefined,
+          alias: undefined,
+          enabled: true,
+          isPrimary: false
+        },
+        {
+          ref: "nvidia/disabled-model",
+          providerId: "nvidia",
+          modelId: "disabled-model",
+          name: undefined,
+          alias: undefined,
+          enabled: false,
+          isPrimary: false
+        }
+      ]
+    }));
+
+    const { container, findByLabelText, findByRole } = render(<ModelsView client={mockClient({ getModels, getProviders })} />);
+
+    await findByRole("button", { name: "添加模型" });
+    expect(container.querySelector("nav button")?.className).toContain("bg-primary/10");
+    expect(container.querySelector(".opacity-60")).toBeTruthy();
+    expect(container.querySelector(".grayscale-\\[0\\.2\\]")).toBeTruthy();
+    expect((await findByLabelText("设为主模型 nvidia/enabled-model")).parentElement?.className).toContain("group-focus-within:opacity-100");
   });
 
   test("adds model from global Models page with structured fields", async () => {
@@ -815,6 +856,7 @@ describe("SettingsView", () => {
       />
     );
 
+    await userEvent.click(await findByText("路径"));
     expect(await findByText(/\/next\/openclaw\.json/)).toBeTruthy();
     await userEvent.selectOptions(getByLabelText("openclaw.json 路径"), "/next/openclaw.json");
     await userEvent.selectOptions(getByLabelText(".env 路径"), "/next/.env");
@@ -848,7 +890,8 @@ describe("SettingsView", () => {
       />
     );
 
-    expect(await findByText(/未能确认运行中 OpenClaw 使用的 env 文件/)).toBeTruthy();
+    await userEvent.click(await findByText("路径"));
+    expect(await findByText(/未能确认运行中 OpenClaw/)).toBeTruthy();
     await userEvent.type(await findByLabelText("手动 openclaw.json 路径"), "/manual/openclaw.json");
     await userEvent.type(await findByLabelText("手动 .env 路径"), "/manual/.env");
     await userEvent.click(getByText("使用手动路径"));
@@ -895,6 +938,7 @@ describe("SettingsView", () => {
       />
     );
 
+    await userEvent.click(await findByText("环境变量"));
     expect(await findByText("NVIDIA_API_KEY")).toBeTruthy();
     expect(queryByText("sk-test-secret")).toBeNull();
   });
@@ -933,6 +977,7 @@ describe("SettingsView", () => {
       />
     );
 
+    await userEvent.click(await findByText("环境变量"));
     expect(await findByText(/高级：额外托管变量/)).toBeTruthy();
     expect(queryByText("SOME_MCP_EPID")).toBeNull();
   });
@@ -961,7 +1006,7 @@ describe("SettingsView", () => {
       warnings: []
     }));
 
-    const { findByLabelText, getByText } = render(
+    const { findByText, findByLabelText, getByText } = render(
       <SettingsView
         baseUrl="http://127.0.0.1:7420"
         client={mockClient({
@@ -982,6 +1027,7 @@ describe("SettingsView", () => {
       />
     );
 
+    await userEvent.click(await findByText("环境变量"));
     const input = await findByLabelText("NVIDIA_API_KEY 新值");
     await userEvent.type(input, "brand-new-secret");
     await userEvent.click(getByText("重填"));
@@ -1038,6 +1084,7 @@ describe("SettingsView", () => {
       />
     );
 
+    await userEvent.click(await findByText("环境变量"));
     await userEvent.type(await findByLabelText("NVIDIA_API_KEY 新值"), "new-secret");
     await userEvent.click(getByText("重填"));
     expect(await findByText(/不在 oc-switch 托管区/)).toBeTruthy();
@@ -1095,7 +1142,8 @@ describe("SettingsView", () => {
       />
     );
 
-    await userEvent.click(await findByText(/高级：额外托管变量/));
+    await userEvent.click(await findByText("环境变量"));
+    await userEvent.click(getByText("展开"));
     await userEvent.type(await findByLabelText("SOME_MCP_EPID 新变量名"), "SOME_MCP_EPID_NEXT");
     await userEvent.click(getByText("重命名"));
     await waitFor(() => expect(renameEnvVar).toHaveBeenCalledWith({
@@ -1109,6 +1157,14 @@ describe("SettingsView", () => {
 });
 
 describe("App shell", () => {
+  test("theme setup uses class-based dark mode and treats system as system on first paint", () => {
+    const styles = readFileSync(join(import.meta.dir, "styles.css"), "utf8");
+    const html = readFileSync(join(import.meta.dir, "../index.html"), "utf8");
+
+    expect(styles).toContain("@custom-variant dark");
+    expect(html).toContain("theme === 'system'");
+  });
+
   test("defaults API address to browser origin and keeps presets after main operating pages", async () => {
     const fetchMock = mock(async () =>
       new Response(JSON.stringify({

@@ -1,12 +1,12 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 const TOKEN = "e2e-test-token";
 const BASE_URL = "http://127.0.0.1:7420";
 
-async function connect(page: import("@playwright/test").Page) {
+async function connect(page: Page) {
   await page.goto("/");
-  await page.locator('input[type="text"], input:not([type="password"])').first().fill(BASE_URL);
-  await page.locator('input[type="password"]').fill(TOKEN);
+  await page.getByLabel("API 地址").fill(BASE_URL);
+  await page.getByLabel("Token").fill(TOKEN);
   await page.getByRole("button", { name: "连接" }).click();
   await expect(page.getByTestId("dashboard-view")).toBeVisible({ timeout: 15_000 });
 }
@@ -30,8 +30,11 @@ test.describe("WebGUI smoke", () => {
     await connect(page);
     await page.getByRole("button", { name: "模型" }).click();
     await expect(page.getByTestId("models-view")).toBeVisible();
+    await page.getByRole("button", { name: "nvidia" }).click();
     const ref = page.getByText("nvidia/deepseek-ai/deepseek-v4-flash");
     await expect(ref).toBeVisible();
+
+    // 获取元素的边界框和视口尺寸，确保模型引用文本没有超出视口宽度导致水平溢出
     const box = await ref.boundingBox();
     const viewport = page.viewportSize();
     expect(box).not.toBeNull();
@@ -43,6 +46,7 @@ test.describe("WebGUI smoke", () => {
   test("primary model button is reachable", async ({ page }) => {
     await connect(page);
     await page.getByRole("button", { name: "模型" }).click();
+    await page.getByRole("button", { name: "nvidia" }).click();
     const btn = page.getByLabel("设为主模型 nvidia/deepseek-ai/deepseek-v4-flash");
     await expect(btn).toBeVisible();
     await btn.scrollIntoViewIfNeeded();
@@ -85,7 +89,8 @@ test.describe("WebGUI smoke", () => {
     await expect(page.getByText("nvidia 模型")).toBeVisible();
     await page.getByRole("button", { name: "关闭" }).click();
 
-    await page.locator("nav").getByRole("button", { name: "模型" }).click();
+    await page.getByRole("navigation").getByRole("button", { name: "模型" }).click();
+    await page.getByRole("button", { name: "nvidia" }).click();
     await expect(page.getByRole("button", { name: "添加模型" })).toBeVisible();
     await expect(page.getByLabel(/编辑模型 nvidia\/deepseek-ai\/deepseek-v4-flash/)).toBeVisible();
   });

@@ -8,8 +8,8 @@ function ListSection({ title, items }: { title: string; items: string[] }) {
   if (items.length === 0) return null;
   return (
     <div>
-      <h4 className="text-xs font-medium uppercase tracking-wide text-slate-400">{title}</h4>
-      <ul className="mt-1 list-inside list-disc text-sm text-slate-200">
+      <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{title}</h4>
+      <ul className="mt-1 list-inside list-disc text-sm text-foreground">
         {items.map((item) => (
           <li key={item} className="break-all">
             {item}
@@ -31,11 +31,11 @@ export function DiffSummary({ diff }: DiffSummaryProps) {
     !diff.primaryChanged;
 
   if (empty) {
-    return <p className="text-sm text-slate-400">无待展示的变更</p>;
+    return <p className="text-sm text-muted-foreground">无待展示的变更</p>;
   }
 
   return (
-    <div className="space-y-3 rounded-lg border border-slate-700 bg-slate-800/50 p-3" data-testid="diff-summary">
+    <div className="space-y-3 rounded-lg border border-border bg-muted/50 p-3" data-testid="diff-summary">
       <ListSection title="新增 Provider" items={diff.providersAdded} />
       <ListSection title="移除 Provider" items={diff.providersRemoved} />
       <ListSection title="变更 Provider" items={diff.providersChanged} />
@@ -43,8 +43,8 @@ export function DiffSummary({ diff }: DiffSummaryProps) {
       <ListSection title="禁用模型" items={diff.modelsDisabled} />
       {diff.primaryChanged ? (
         <div>
-          <h4 className="text-xs font-medium uppercase tracking-wide text-slate-400">主模型变更</h4>
-          <p className="mt-1 break-all text-sm text-slate-200">
+          <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">主模型变更</h4>
+          <p className="mt-1 break-all text-sm text-foreground">
             {diff.primaryChanged.before ?? "(无)"} → {diff.primaryChanged.after ?? "(无)"}
           </p>
         </div>

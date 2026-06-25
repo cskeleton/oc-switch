@@ -3,6 +3,10 @@ import { useEffect, useState } from "react";
 import type { ApiClient, ApiType, ConfigDiffSummary, CustomProviderInput, CustomProviderModelInput } from "../api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DiffSummary } from "./DiffSummary";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
+import { Input } from "./ui/input";
+import { Label } from "./ui/label";
+import { Textarea } from "./ui/textarea";
 
 interface CustomProviderDialogProps {
   open: boolean;
@@ -59,8 +63,6 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
   useEffect(() => {
     if (!apiKeyEnvTouched) setApiKeyEnv(envNameFromProviderId(providerId));
   }, [providerId, apiKeyEnvTouched]);
-
-  if (!open) return null;
 
   function resetForm() {
     setDisplayName("");
@@ -125,96 +127,120 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
     }
   }
 
+  const selectClassName = "flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-base shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring md:text-sm";
+
   return (
-    <div className="fixed inset-0 z-40 overflow-y-auto bg-black/60 p-4" role="dialog" aria-modal="true">
-      <div className="mx-auto w-full max-w-4xl rounded-lg border border-slate-700 bg-slate-950 p-5 shadow-xl">
-        <div className="mb-4 flex items-center gap-3">
-          <div className="flex h-14 w-14 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-xl font-semibold text-slate-300">
-            {(providerId || "P").slice(0, 1).toUpperCase()}
+    <>
+      <Dialog open={open} onOpenChange={(val) => { if (!val) cancel(); }}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader className="flex-row items-center gap-3">
+            <div className="flex h-14 w-14 items-center justify-center rounded-lg border border-border bg-muted text-xl font-semibold text-muted-foreground shrink-0">
+              {(providerId || "P").slice(0, 1).toUpperCase()}
+            </div>
+            <div className="flex flex-col space-y-1.5 text-left">
+              <DialogTitle>添加 Provider</DialogTitle>
+              <DialogDescription>
+                填写自定义 Provider 信息，确认前会预览配置差异。
+              </DialogDescription>
+            </div>
+          </DialogHeader>
+
+          {error ? <p className="text-sm font-medium text-destructive">{error}</p> : null}
+
+          <div className="grid gap-4 py-4 md:grid-cols-2">
+            <div className="grid gap-2">
+              <Label>供应商名称</Label>
+              <Input aria-label="供应商名称" value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
+            </div>
+            <div className="grid gap-2">
+              <Label>Provider ID</Label>
+              <Input aria-label="Provider ID" value={providerId} onChange={(event) => { setProviderIdTouched(true); setProviderId(event.target.value); }} />
+            </div>
+            <div className="grid gap-2">
+              <Label>官网链接</Label>
+              <Input aria-label="官网链接" value={websiteUrl} onChange={(event) => setWebsiteUrl(event.target.value)} />
+            </div>
+            <div className="grid gap-2">
+              <Label>备注</Label>
+              <Input aria-label="备注" value={notes} onChange={(event) => setNotes(event.target.value)} />
+            </div>
+
+            <div className="grid gap-2 md:col-span-2 mt-2">
+              <Label>API Key</Label>
+              <Input aria-label="API Key" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} autoComplete="off" />
+            </div>
+
+            <div className="grid gap-2 mt-2">
+              <Label>请求地址</Label>
+              <Input aria-label="请求地址" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
+              <p className="text-xs text-muted-foreground mt-1">
+                OpenAI-compatible 通常使用 `/v1` 结尾；Anthropic/Gemini 兼容端点按服务商说明填写。
+              </p>
+            </div>
+            <div className="flex items-center space-x-2 mt-8 md:mt-10 md:ml-4">
+              <input
+                id="is-full-url"
+                type="checkbox"
+                className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                checked={isFullUrl}
+                onChange={(event) => setIsFullUrl(event.target.checked)}
+                aria-label="完整 URL"
+              />
+              <Label htmlFor="is-full-url">
+                完整 URL
+              </Label>
+            </div>
+
+            <div className="grid gap-2 md:col-span-2 mt-2">
+              <Label>模型列表</Label>
+              <Textarea aria-label="模型列表" value={modelText} onChange={(event) => setModelText(event.target.value)} rows={5} className="font-mono" placeholder={"model-a | a\nvendor/model-b | b"} />
+            </div>
+
+            <details className="md:col-span-2 mt-2 rounded border p-3 group">
+              <summary className="cursor-pointer text-sm font-medium text-foreground">高级选项</summary>
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <div className="grid gap-2">
+                  <Label>API 类型</Label>
+                  <select aria-label="API 类型" value={api} onChange={(event) => setApi(event.target.value as ApiType)} className={selectClassName}>
+                    <option value="openai-completions">openai-completions</option>
+                    <option value="anthropic-messages">anthropic-messages</option>
+                    <option value="google-generative-ai">google-generative-ai</option>
+                  </select>
+                </div>
+                <div className="grid gap-2">
+                  <Label>API Key env 名</Label>
+                  <Input aria-label="API Key env 名" value={apiKeyEnv} onChange={(event) => { setApiKeyEnvTouched(true); setApiKeyEnv(event.target.value); }} />
+                </div>
+              </div>
+              <div className="flex items-center space-x-2 mt-4">
+                <input
+                  id="enable-all-models"
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                  checked={enableAllModels}
+                  onChange={(event) => setEnableAllModels(event.target.checked)}
+                  aria-label="默认启用全部模型"
+                />
+                <Label htmlFor="enable-all-models">
+                  默认启用全部模型
+                </Label>
+              </div>
+            </details>
+
+            {diff ? <div className="md:col-span-2 mt-2"><DiffSummary diff={diff} /></div> : null}
           </div>
-          <div>
-            <h2 className="text-lg font-semibold">添加 Provider</h2>
-            <p className="text-sm text-slate-400">填写自定义 Provider 信息，确认前会预览配置差异。</p>
-          </div>
-        </div>
 
-        {error ? <p className="mb-3 text-sm text-red-400">{error}</p> : null}
-
-        <div className="grid gap-3 md:grid-cols-2">
-          <label className="text-sm">
-            <span className="mb-1 block text-slate-400">供应商名称</span>
-            <input aria-label="供应商名称" value={displayName} onChange={(event) => setDisplayName(event.target.value)} className="w-full rounded border border-slate-600 bg-slate-900 px-3 py-2" />
-          </label>
-          <label className="text-sm">
-            <span className="mb-1 block text-slate-400">Provider ID</span>
-            <input aria-label="Provider ID" value={providerId} onChange={(event) => { setProviderIdTouched(true); setProviderId(event.target.value); }} className="w-full rounded border border-slate-600 bg-slate-900 px-3 py-2" />
-          </label>
-          <label className="text-sm">
-            <span className="mb-1 block text-slate-400">官网链接</span>
-            <input aria-label="官网链接" value={websiteUrl} onChange={(event) => setWebsiteUrl(event.target.value)} className="w-full rounded border border-slate-600 bg-slate-900 px-3 py-2" />
-          </label>
-          <label className="text-sm">
-            <span className="mb-1 block text-slate-400">备注</span>
-            <input aria-label="备注" value={notes} onChange={(event) => setNotes(event.target.value)} className="w-full rounded border border-slate-600 bg-slate-900 px-3 py-2" />
-          </label>
-        </div>
-
-        <label className="mt-3 block text-sm">
-          <span className="mb-1 block text-slate-400">API Key</span>
-          <input aria-label="API Key" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} className="w-full rounded border border-slate-600 bg-slate-900 px-3 py-2" autoComplete="off" />
-        </label>
-
-        <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
-          <label className="text-sm">
-            <span className="mb-1 block text-slate-400">请求地址</span>
-            <input aria-label="请求地址" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} className="w-full rounded border border-slate-600 bg-slate-900 px-3 py-2" />
-          </label>
-          <label className="flex items-center gap-2 text-sm text-slate-300">
-            <input aria-label="完整 URL" type="checkbox" checked={isFullUrl} onChange={(event) => setIsFullUrl(event.target.checked)} />
-            完整 URL
-          </label>
-        </div>
-        <p className="mt-1 text-xs text-slate-500">
-          OpenAI-compatible 通常使用 `/v1` 结尾；Anthropic/Gemini 兼容端点按服务商说明填写。
-        </p>
-
-        <label className="mt-3 block text-sm">
-          <span className="mb-1 block text-slate-400">模型列表</span>
-          <textarea aria-label="模型列表" value={modelText} onChange={(event) => setModelText(event.target.value)} rows={5} className="w-full rounded border border-slate-600 bg-slate-900 px-3 py-2 font-mono text-sm" placeholder={"model-a | a\nvendor/model-b | b"} />
-        </label>
-
-        <details className="mt-4 rounded border border-slate-700 p-3">
-          <summary className="cursor-pointer text-sm font-medium text-slate-300">高级选项</summary>
-          <div className="mt-3 grid gap-3 md:grid-cols-2">
-            <label className="text-sm">
-              <span className="mb-1 block text-slate-400">API 类型</span>
-              <select aria-label="API 类型" value={api} onChange={(event) => setApi(event.target.value as ApiType)} className="w-full rounded border border-slate-600 bg-slate-900 px-3 py-2">
-                <option value="openai-completions">openai-completions</option>
-                <option value="anthropic-messages">anthropic-messages</option>
-                <option value="google-generative-ai">google-generative-ai</option>
-              </select>
-            </label>
-            <label className="text-sm">
-              <span className="mb-1 block text-slate-400">API Key env 名</span>
-              <input aria-label="API Key env 名" value={apiKeyEnv} onChange={(event) => { setApiKeyEnvTouched(true); setApiKeyEnv(event.target.value); }} className="w-full rounded border border-slate-600 bg-slate-900 px-3 py-2" />
-            </label>
-          </div>
-          <label className="mt-3 flex items-center gap-2 text-sm text-slate-300">
-            <input aria-label="默认启用全部模型" type="checkbox" checked={enableAllModels} onChange={(event) => setEnableAllModels(event.target.checked)} />
-            默认启用全部模型
-          </label>
-        </details>
-
-        {diff ? <div className="mt-4"><DiffSummary diff={diff} /></div> : null}
-
-        <div className="mt-5 flex justify-end gap-2">
-          <button type="button" onClick={cancel} className="rounded-md border border-slate-600 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">取消</button>
-          <button type="button" onClick={() => void preview()} className="inline-flex items-center gap-1 rounded-md bg-sky-600 px-3 py-1.5 text-sm text-white hover:bg-sky-500">
-            <Plus className="h-4 w-4" />
-            预览并添加
-          </button>
-        </div>
-      </div>
+          <DialogFooter>
+            <button type="button" onClick={cancel} className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground">
+              取消
+            </button>
+            <button type="button" onClick={() => void preview()} className="inline-flex items-center gap-1 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
+              <Plus className="h-4 w-4" />
+              预览并添加
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <ConfirmDialog
         open={confirming}
@@ -223,6 +249,6 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
         onCancel={() => setConfirming(false)}
         onConfirm={() => void confirm()}
       />
-    </div>
+    </>
   );
 }

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 
 interface ConfirmDialogProps {
   open: boolean;
@@ -24,33 +25,33 @@ export function ConfirmDialog({
   danger = false,
   children
 }: ConfirmDialogProps) {
-  if (!open) return null;
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true">
-      <div className="w-full max-w-md rounded-lg border border-slate-600 bg-slate-900 p-4 shadow-xl">
-        <h2 className="text-lg font-semibold text-slate-100">{title}</h2>
-        <p className="mt-2 text-sm text-slate-300">{message}</p>
-        {children ? <div className="mt-3">{children}</div> : null}
-        <div className="mt-4 flex justify-end gap-2">
+    <Dialog open={open} onOpenChange={(val) => { if (!val) onCancel(); }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{message}</DialogDescription>
+        </DialogHeader>
+        {children ? <div className="py-4">{children}</div> : null}
+        <DialogFooter>
           <button
             type="button"
             onClick={onCancel}
-            className="rounded-md border border-slate-600 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800"
+            className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
           >
             {cancelLabel}
           </button>
           <button
             type="button"
             onClick={onConfirm}
-            className={`rounded-md px-3 py-1.5 text-sm text-white ${
-              danger ? "bg-red-600 hover:bg-red-500" : "bg-sky-600 hover:bg-sky-500"
+            className={`inline-flex items-center justify-center rounded-md px-4 py-2 text-sm font-medium text-primary-foreground ${
+              danger ? "bg-destructive hover:bg-destructive/90 text-destructive-foreground" : "bg-primary hover:bg-primary/90"
             }`}
           >
             {confirmLabel}
           </button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

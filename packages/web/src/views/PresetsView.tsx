@@ -94,14 +94,14 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
           待改进
         </span>
       </div>
-      <p className="mb-4 text-sm text-slate-400">
+      <p className="mb-4 text-sm text-muted-foreground">
         列表来自内置/自定义模板文件，不是当前 openclaw.json 的实时镜像。日常管理请用 Providers 与模型页；迁移与共享请优先使用「导入当前配置」或备份恢复。
       </p>
       <div className="mb-4 flex flex-wrap items-center justify-end gap-2">
           <button
             type="button"
             onClick={() => void handleImport()}
-            className="inline-flex items-center gap-1 rounded border border-slate-600 px-3 py-1.5 text-sm hover:bg-slate-800"
+            className="inline-flex items-center gap-1 rounded border border-input px-3 py-1.5 text-sm hover:bg-accent hover:text-foreground"
           >
             <Upload className="h-4 w-4" />
             导入当前配置
@@ -110,23 +110,23 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
             type="button"
             aria-label="刷新"
             onClick={() => void load()}
-            className="rounded-md border border-slate-600 p-2 hover:bg-slate-800"
+            className="rounded-md border border-input p-2 hover:bg-accent hover:text-foreground"
           >
             <RefreshCw className="h-4 w-4" />
           </button>
       </div>
 
-      {error ? <p className="mb-3 text-red-400">{error}</p> : null}
+      {error ? <p className="mb-3 text-destructive">{error}</p> : null}
 
-      <div className="mb-6 rounded-lg border border-slate-700 bg-slate-800/40 p-4">
-        <h2 className="mb-3 text-sm font-medium text-slate-300">从预设添加 Provider</h2>
+      <div className="mb-6 rounded-lg border border-border bg-muted/40 p-4">
+        <h2 className="mb-3 text-sm font-medium text-foreground">从预设添加 Provider</h2>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
           <label className="flex-1 text-sm">
-            <span className="mb-1 block text-slate-400">预设</span>
+            <span className="mb-1 block text-muted-foreground">预设</span>
             <select
               value={selectedPreset}
               onChange={(e) => setSelectedPreset(e.target.value)}
-              className="w-full rounded border border-slate-600 bg-slate-900 px-3 py-2"
+              className="w-full rounded border border-input bg-background px-3 py-2 text-foreground"
             >
               {presets.map((p) => (
                 <option key={p.id} value={p.id}>
@@ -136,12 +136,12 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
             </select>
           </label>
           <label className="flex-1 text-sm">
-            <span className="mb-1 block text-slate-400">API Key（仅提交，不展示）</span>
+            <span className="mb-1 block text-muted-foreground">API Key（仅提交，不展示）</span>
             <input
               type="password"
               value={apiKeyInput}
               onChange={(e) => setApiKeyInput(e.target.value)}
-              className="w-full rounded border border-slate-600 bg-slate-900 px-3 py-2"
+              className="w-full rounded border border-input bg-background px-3 py-2 text-foreground"
               autoComplete="off"
               aria-label="API Key"
             />
@@ -149,7 +149,7 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
           <button
             type="button"
             onClick={() => void previewAdd()}
-            className="inline-flex items-center justify-center gap-1 rounded bg-sky-600 px-4 py-2 text-sm hover:bg-sky-500"
+            className="inline-flex items-center justify-center gap-1 rounded bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90"
           >
             <Plus className="h-4 w-4" />
             预览并添加
@@ -175,7 +175,7 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
                   type="button"
                   aria-label={`导出 ${row.id}`}
                   onClick={() => void handleExport(row.id)}
-                  className="inline-flex items-center gap-1 text-xs text-sky-300 hover:underline"
+                  className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
                 >
                   <Download className="h-3 w-3" />
                   导出

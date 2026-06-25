@@ -14,6 +14,7 @@ import { ModelsView } from "./views/ModelsView";
 import { PresetsView } from "./views/PresetsView";
 import { ProvidersView } from "./views/ProvidersView";
 import { SettingsView } from "./views/SettingsView";
+import { ThemeToggle } from "./components/ThemeToggle";
 
 const TOKEN_KEY = "oc-switch-token";
 const BASE_URL_KEY = "oc-switch-base-url";
@@ -96,31 +97,31 @@ export function App() {
   if (!connected) {
     return (
       <div className="flex min-h-screen items-center justify-center p-4">
-        <form onSubmit={(e) => void handleConnect(e)} className="w-full max-w-md space-y-4 rounded-lg border border-slate-700 bg-slate-900 p-6">
-          <h1 className="text-xl font-semibold">oc-switch</h1>
-          <p className="text-sm text-slate-400">输入 API 地址与 Token 以连接本地服务</p>
+        <form onSubmit={(e) => void handleConnect(e)} className="w-full max-w-md space-y-4 rounded-lg border border-border bg-card p-6">
+          <h1 className="text-xl font-semibold text-foreground">oc-switch</h1>
+          <p className="text-sm text-muted-foreground">输入 API 地址与 Token 以连接本地服务</p>
           <label className="block text-sm">
-            <span className="mb-1 block text-slate-400">API 地址</span>
+            <span className="mb-1 block text-muted-foreground">API 地址</span>
             <input
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
-              className="w-full rounded border border-slate-600 bg-slate-950 px-3 py-2"
+              className="w-full rounded border border-input bg-background px-3 py-2 text-foreground"
               placeholder={DEFAULT_BASE_URL}
               aria-label="API 地址"
             />
           </label>
           <label className="block text-sm">
-            <span className="mb-1 block text-slate-400">Token</span>
+            <span className="mb-1 block text-muted-foreground">Token</span>
             <input
               type="password"
               value={token}
               onChange={(e) => setToken(e.target.value)}
-              className="w-full rounded border border-slate-600 bg-slate-950 px-3 py-2"
+              className="w-full rounded border border-input bg-background px-3 py-2 text-foreground"
               autoComplete="off"
             />
           </label>
-          {connectError ? <p className="text-sm text-red-400">{connectError}</p> : null}
-          <button type="submit" className="w-full rounded bg-sky-600 py-2 text-sm font-medium hover:bg-sky-500">
+          {connectError ? <p className="text-sm text-destructive">{connectError}</p> : null}
+          <button type="submit" className="w-full rounded bg-primary py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
             连接
           </button>
         </form>
@@ -149,21 +150,22 @@ export function App() {
 
   return (
     <div className="flex min-h-screen flex-col md:flex-row">
-      <header className="border-b border-slate-700 bg-slate-900 md:hidden">
+      <ThemeToggle />
+      <header className="border-b border-border bg-card md:hidden">
         <div className="flex items-center justify-between px-4 py-3">
-          <span className="font-semibold">oc-switch</span>
-          <button type="button" onClick={handleDisconnect} className="text-xs text-slate-400 hover:text-slate-200">
+          <span className="font-semibold text-foreground">oc-switch</span>
+          <button type="button" onClick={handleDisconnect} className="text-xs text-muted-foreground hover:text-foreground">
             断开
           </button>
         </div>
-        <nav className="flex overflow-x-auto border-t border-slate-700">
+        <nav className="flex overflow-x-auto border-t border-border">
           {NAV.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               type="button"
               onClick={() => setRoute(id)}
               className={`flex shrink-0 items-center gap-1 px-3 py-2 text-xs ${
-                route === id ? "border-b-2 border-sky-500 text-sky-300" : "text-slate-400"
+                route === id ? "border-b-2 border-primary text-primary" : "text-muted-foreground"
               }`}
             >
               <Icon className="h-3.5 w-3.5" />
@@ -173,10 +175,10 @@ export function App() {
         </nav>
       </header>
 
-      <aside className="hidden w-52 shrink-0 flex-col border-r border-slate-700 bg-slate-900 md:flex">
-        <div className="flex items-center justify-between border-b border-slate-700 px-4 py-4">
-          <span className="font-semibold">oc-switch</span>
-          <button type="button" onClick={handleDisconnect} className="text-xs text-slate-400 hover:text-slate-200">
+      <aside className="hidden w-52 shrink-0 flex-col border-r border-border bg-card md:flex">
+        <div className="flex items-center justify-between border-b border-border px-4 py-4">
+          <span className="font-semibold text-foreground">oc-switch</span>
+          <button type="button" onClick={handleDisconnect} className="text-xs text-muted-foreground hover:text-foreground">
             断开
           </button>
         </div>
@@ -187,7 +189,7 @@ export function App() {
               type="button"
               onClick={() => setRoute(id)}
               className={`flex items-center gap-2 rounded-md px-3 py-2 text-sm ${
-                route === id ? "bg-sky-900/50 text-sky-200" : "text-slate-300 hover:bg-slate-800"
+                route === id ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent hover:text-foreground"
               }`}
             >
               <Icon className="h-4 w-4" />
