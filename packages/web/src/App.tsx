@@ -150,7 +150,9 @@ export function App() {
 
   return (
     <div className="flex min-h-screen flex-col md:flex-row">
-      <ThemeToggle />
+      <div className="md:hidden">
+        <ThemeToggle />
+      </div>
       <header className="border-b border-border bg-card md:hidden">
         <div className="flex items-center justify-between px-4 py-3">
           <span className="font-semibold text-foreground">oc-switch</span>
@@ -197,6 +199,9 @@ export function App() {
             </button>
           ))}
         </nav>
+        <div className="border-t border-border p-3">
+          <ThemeToggle embedded />
+        </div>
       </aside>
 
       <main className="flex-1 overflow-auto p-4 md:p-6">{renderRoute()}</main>

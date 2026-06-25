@@ -3,7 +3,12 @@ import { useEffect, useState } from "react";
 
 export type Theme = "light" | "dark" | "system";
 
-export function ThemeToggle() {
+type ThemeToggleProps = {
+  /** 嵌入侧边栏底部时使用，非 viewport 悬浮定位 */
+  embedded?: boolean;
+};
+
+export function ThemeToggle({ embedded = false }: ThemeToggleProps) {
   const [theme, setTheme] = useState<Theme>(() => {
     if (typeof window !== "undefined" && window.localStorage) {
       return (window.localStorage.getItem("theme") as Theme) || "system";
@@ -43,7 +48,13 @@ export function ThemeToggle() {
   }, [theme]);
 
   return (
-    <div className="fixed top-4 right-4 z-50 flex items-center gap-0.5 rounded-full border border-border bg-background/60 p-1 backdrop-blur-md shadow-sm">
+    <div
+      className={
+        embedded
+          ? "flex w-full items-center justify-center gap-0.5 rounded-full border border-border bg-background/60 p-1 backdrop-blur-md shadow-sm"
+          : "fixed bottom-4 left-4 z-50 flex items-center gap-0.5 rounded-full border border-border bg-background/60 p-1 backdrop-blur-md shadow-sm"
+      }
+    >
       <button
         type="button"
         onClick={() => setTheme("light")}
