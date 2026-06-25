@@ -157,3 +157,25 @@ export function requireProviderModelInput(value: unknown): ProviderModelInput {
   if (inputModes !== undefined) input.input = inputModes;
   return input;
 }
+
+export interface MergeCaseDuplicateInput {
+  groupKey: string;
+  canonicalId: string;
+  removeIds: string[];
+  keepModelIds?: string[];
+}
+
+export function requireMergeCaseDuplicateInput(body: Record<string, unknown>): MergeCaseDuplicateInput {
+  const removeIdsValue = body.removeIds;
+  if (!Array.isArray(removeIdsValue) || removeIdsValue.length === 0) {
+    throw new Error("removeIds must be a non-empty array");
+  }
+  const input: MergeCaseDuplicateInput = {
+    groupKey: requireString(body.groupKey, "groupKey"),
+    canonicalId: requireString(body.canonicalId, "canonicalId"),
+    removeIds: removeIdsValue.map((id, index) => requireString(id, `removeIds.${index}`))
+  };
+  const keepModelIds = optionalStringArray(body.keepModelIds, "keepModelIds");
+  if (keepModelIds !== undefined) input.keepModelIds = keepModelIds;
+  return input;
+}

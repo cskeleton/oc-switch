@@ -598,6 +598,80 @@ describe("server write endpoints", () => {
     });
     expect(JSON.stringify(json)).not.toContain("sk-");
   });
+
+  test("GET /api/health 返回大小写重复组", async () => {
+    const ws = workspace();
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    delete config.models.providers.DeepSeek;
+    for (const key of Object.keys(config.agents.defaults.models)) {
+      if (key.split("/")[0]?.toLowerCase() === "deepseek") delete config.agents.defaults.models[key];
+    }
+    config.models.providers.deepseek = { baseUrl: "https://api.deepseek.com/v1", apiKey: { source: "env", id: "DEEPSEEK_API_KEY" }, models: [{ id: "deepseek-chat" }, { id: "deepseek-reasoner" }] };
+    config.models.providers.DeepSeek = { baseUrl: "https://api.deepseek.com/v1/", apiKey: { source: "env", id: "${DEEPSEEK_API_KEY}" }, models: [{ id: "deepseek-chat" }, { id: "deepseek-reasoner" }] };
+    config.agents.defaults.models["deepseek/deepseek-chat"] = {};
+    config.agents.defaults.models["deepseek/deepseek-reasoner"] = {};
+    writeFileSync(ws.paths.openclawPath, JSON.stringify(config));
+    const app = createTestApp(ws);
+
+    const { response, json } = await jsonRequest(app, "/api/health", { method: "GET" });
+    expect(response.status).toBe(200);
+    const health = json as { caseDuplicateGroups: Array<{ groupKey: string; mergeable: boolean; canonicalId: string }> };
+    const group = health.caseDuplicateGroups.find((g) => g.groupKey === "deepseek");
+    expect(group).toBeTruthy();
+    expect(group!.mergeable).toBe(true);
+    expect(group!.canonicalId).toBe("deepseek");
+  });
+
+  test("POST /api/providers/merge-case-duplicates/preview 返回 diff", async () => {
+    const ws = workspace();
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    config.models.providers.deepseek = { baseUrl: "https://api.deepseek.com/v1", apiKey: { source: "env", id: "DEEPSEEK_API_KEY" }, models: [{ id: "c" }] };
+    config.models.providers.DeepSeek = { baseUrl: "https://api.deepseek.com/v1", apiKey: { source: "env", id: "DEEPSEEK_API_KEY" }, models: [{ id: "r" }] };
+    config.agents.defaults.models["DeepSeek/r"] = {};
+    writeFileSync(ws.paths.openclawPath, JSON.stringify(config));
+    const app = createTestApp(ws);
+
+    const { response, json } = await jsonRequest(app, "/api/providers/merge-case-duplicates/preview", {
+      method: "POST",
+      body: JSON.stringify({ groupKey: "deepseek", canonicalId: "deepseek", removeIds: ["DeepSeek"] })
+    });
+    expect(response.status).toBe(200);
+    expect(json.providersRemoved).toContain("DeepSeek");
+  });
+
+  test("POST /api/providers/merge-case-duplicates 写入并备份", async () => {
+    const ws = workspace();
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    config.models.providers.deepseek = { baseUrl: "https://api.deepseek.com/v1", apiKey: { source: "env", id: "DEEPSEEK_API_KEY" }, models: [{ id: "c" }] };
+    config.models.providers.DeepSeek = { baseUrl: "https://api.deepseek.com/v1", apiKey: { source: "env", id: "DEEPSEEK_API_KEY" }, models: [{ id: "r" }] };
+    config.agents.defaults.models["DeepSeek/r"] = {};
+    writeFileSync(ws.paths.openclawPath, JSON.stringify(config));
+    const app = createTestApp(ws);
+
+    const { response, json } = await jsonRequest(app, "/api/providers/merge-case-duplicates", {
+      method: "POST",
+      body: JSON.stringify({ groupKey: "deepseek", canonicalId: "deepseek", removeIds: ["DeepSeek"] })
+    });
+    expect(response.status).toBe(200);
+    expect(json.backupId).toBeTruthy();
+    const written = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(written.models.providers.DeepSeek).toBeUndefined();
+    expect(written.agents.defaults.models["deepseek/r"]).toEqual({});
+  });
+
+  test("merge canonicalId 不在组内 → 400", async () => {
+    const ws = workspace();
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    config.models.providers.deepseek = { models: [] };
+    config.models.providers.DeepSeek = { models: [] };
+    writeFileSync(ws.paths.openclawPath, JSON.stringify(config));
+    const app = createTestApp(ws);
+    const { response } = await jsonRequest(app, "/api/providers/merge-case-duplicates", {
+      method: "POST",
+      body: JSON.stringify({ groupKey: "deepseek", canonicalId: "nope", removeIds: ["DeepSeek"] })
+    });
+    expect(response.status).toBe(400);
+  });
 });
 
 describe("server path settings", () => {

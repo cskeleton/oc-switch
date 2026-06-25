@@ -350,6 +350,9 @@ function assertCustomProviderInput(config: OpenClawConfig, input: CustomProvider
   if (!input.providerId.trim()) throw new Error("providerId must be a non-empty string");
   if (input.providerId.includes("/")) throw new Error("Provider ID must not contain /");
   if (config.models?.providers?.[input.providerId]) throw new Error(`Provider ${input.providerId} already exists`);
+  const lower = input.providerId.toLowerCase();
+  const caseClash = Object.keys(config.models?.providers ?? {}).find((id) => id.toLowerCase() === lower);
+  if (caseClash) throw new Error(`Provider ${caseClash} already exists (case-insensitive match)`);
   if (!CUSTOM_PROVIDER_API_TYPES.has(input.api)) throw new Error("api must be a supported API type");
   if (!ENV_VAR_PATTERN.test(input.apiKeyEnv)) throw new Error("apiKeyEnv must be a valid env var name");
   if (input.models.length === 0) throw new Error("models must contain at least one model");

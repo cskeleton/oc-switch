@@ -57,3 +57,26 @@ describe("createApiClient", () => {
     });
   });
 });
+
+test("health 与合并方法使用正确的方法与 JSON body", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const client = createApiClient({
+    baseUrl: "http://localhost:7420",
+    token: "token",
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url: String(url), init });
+      return new Response(JSON.stringify({ caseDuplicateGroups: [], summary: {} }), { status: 200 });
+    }
+  });
+
+  await client.getHealth();
+  await client.previewMergeCaseDuplicates({ groupKey: "deepseek", canonicalId: "deepseek", removeIds: ["DeepSeek"] });
+  await client.mergeCaseDuplicates({ groupKey: "deepseek", canonicalId: "deepseek", removeIds: ["DeepSeek"] });
+
+  expect(calls[0]!.url).toBe("http://localhost:7420/api/health");
+  expect(calls[1]!.url).toBe("http://localhost:7420/api/providers/merge-case-duplicates/preview");
+  expect(calls[1]!.init.method).toBe("POST");
+  expect(JSON.parse(String(calls[1]!.init.body))).toEqual({ groupKey: "deepseek", canonicalId: "deepseek", removeIds: ["DeepSeek"] });
+  expect(calls[2]!.url).toBe("http://localhost:7420/api/providers/merge-case-duplicates");
+  expect(calls[2]!.init.method).toBe("POST");
+});

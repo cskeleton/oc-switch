@@ -14,6 +14,8 @@ import {
   enableModel,
   exportProviderPreset,
   getActivePaths,
+  inspectConfigHealth,
+  mergeProviderCaseDuplicates,
   listBackups,
   listPresets,
   loadPreset,
@@ -103,6 +105,25 @@ program.command("status").action(() => {
   console.log(`Allowlist models: ${status.allowlistModelCount}`);
 });
 
+program.command("health").action(() => {
+  const report = inspectConfigHealth(readConfig());
+  if (report.caseDuplicateGroups.length === 0) {
+    console.log("未发现 Provider 大小写重复");
+    return;
+  }
+  console.log(`发现 ${report.summary.duplicateGroupCount} 组 Provider 大小写重复：`);
+  for (const group of report.caseDuplicateGroups) {
+    const flag = group.mergeable ? "可合并" : "需人工核对";
+    console.log(`\n[${group.groupKey}] ${group.ids.join(" / ")}  (${group.confidence}, ${flag})`);
+    console.log(`  建议保留 ${group.canonicalId}，合并并删除 ${group.duplicateIds.join(", ")}`);
+    for (const reason of group.reasons) console.log(`  - ${reason}`);
+    if (group.mergeBlockers.length) console.log(`  ⚠ 阻断合并：${group.mergeBlockers.join("；")}`);
+    if (group.mergeable) {
+      console.log(`  合并命令：oc-switch providers merge-duplicates --group ${group.groupKey} --keep ${group.canonicalId} --remove ${group.duplicateIds.join(",")}`);
+    }
+  }
+});
+
 const providers = program.command("providers");
 providers.command("list").action(() => {
   const rows = createConfigAdapter(readConfig()).listProviders();
@@ -110,6 +131,31 @@ providers.command("list").action(() => {
     console.log(`${row.id}\t${row.api ?? "unknown"}\t${row.enabledModelCount}/${row.modelCount}`);
   }
 });
+
+providers
+  .command("merge-duplicates")
+  .requiredOption("--group <key>", "case-insensitive 分组 key")
+  .requiredOption("--keep <id>", "保留的 canonical Provider ID")
+  .requiredOption("--remove <ids>", "逗号分隔的待删除 Provider ID")
+  .option("--dry-run", "仅打印 diff，不写入")
+  .action(async (options) => {
+    const removeIds = parseModelIds(options.remove);
+    const input = { groupKey: options.group, canonicalId: options.keep, removeIds };
+    if (options.dryRun) {
+      const before = readConfig();
+      const after = mergeProviderCaseDuplicates(structuredClone(before), input).config;
+      console.log(JSON.stringify(summarizeConfigDiff(before, after), null, 2));
+      return;
+    }
+    const result = await writeOpenClawTransaction({
+      ...activePaths(),
+      reason: `merge case duplicate ${input.groupKey} -> ${input.canonicalId}`,
+      mutate(config) {
+        return mergeProviderCaseDuplicates(config, input).config;
+      }
+    });
+    console.log(`已合并 ${removeIds.join(", ")} → ${options.keep}（备份 ${result.backupDir.split("/").pop()}）`);
+  });
 
 const provider = program.command("provider");
 provider.command("add")

@@ -4,6 +4,7 @@ export * from "./model-ref";
 export * from "./config-adapter";
 export * from "./env-manager";
 export * from "./operations";
+export * from "./config-health";
 export * from "./transaction-writer";
 export * from "./paths";
 export * from "./path-discovery";

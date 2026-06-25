@@ -58,6 +58,40 @@ export interface ConfigDiffSummary {
   primaryChanged: { before: string | undefined; after: string | undefined } | null;
 }
 
+export type CaseDuplicateKind = "provider-duplicate" | "allowlist-drift" | "same-origin-hint" | "primary-split";
+
+export interface CaseDuplicateGroup {
+  groupKey: string;
+  ids: string[];
+  kinds: CaseDuplicateKind[];
+  confidence: "high" | "medium" | "low";
+  sameOrigin: boolean;
+  mergeable: boolean;
+  mergeBlockers: string[];
+  canonicalId: string;
+  duplicateIds: string[];
+  reasons: string[];
+  details: {
+    baseUrls: Record<string, string | undefined>;
+    allowlistCounts: Record<string, number>;
+    modelCounts: Record<string, number>;
+    primaryModel?: string;
+    envVars: Record<string, string | undefined>;
+  };
+}
+
+export interface ConfigHealthReport {
+  caseDuplicateGroups: CaseDuplicateGroup[];
+  summary: { duplicateGroupCount: number; affectedProviderCount: number; affectedAllowlistCount: number };
+}
+
+export interface MergeCaseDuplicateInput {
+  groupKey: string;
+  canonicalId: string;
+  removeIds: string[];
+  keepModelIds?: string[];
+}
+
 export interface SettingsResponse {
   configPath: string;
   envPath?: string;
@@ -240,6 +274,17 @@ export function createApiClient(options: ApiClientOptions) {
         ...(target ? { body: JSON.stringify({ target }) } : {})
       }),
     getDiff: () => request<ConfigDiffSummary>("/api/diff"),
+    getHealth: () => request<ConfigHealthReport>("/api/health"),
+    previewMergeCaseDuplicates: (input: MergeCaseDuplicateInput) =>
+      request<ConfigDiffSummary>("/api/providers/merge-case-duplicates/preview", {
+        method: "POST",
+        body: JSON.stringify(input)
+      }),
+    mergeCaseDuplicates: (input: MergeCaseDuplicateInput) =>
+      request<{ ok: boolean; warnings: string[]; backupId?: string }>("/api/providers/merge-case-duplicates", {
+        method: "POST",
+        body: JSON.stringify(input)
+      }),
     getSettings: () => request<SettingsResponse>("/api/settings"),
     getPathSettings: () => request<PathSettingsResponse>("/api/settings/paths"),
     updatePathSettings: (openclawPath: string, envPath: string) =>

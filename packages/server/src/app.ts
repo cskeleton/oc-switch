@@ -15,6 +15,8 @@ import {
   exportProviderPreset,
   getActivePaths,
   inspectEnvFile,
+  inspectConfigHealth,
+  mergeProviderCaseDuplicates,
   listBackups,
   listOrphanEnvKeys,
   listPresets,
@@ -47,7 +49,7 @@ import { Hono } from "hono";
 import JSON5 from "json5";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { optionalRestoreBackupTarget, requireBoolean, requireCustomProviderInput, requireEnvOperation, requireEnvPreviewOperation, requireProviderModelInput, requireString } from "./schemas";
+import { optionalRestoreBackupTarget, requireBoolean, requireCustomProviderInput, requireEnvOperation, requireEnvPreviewOperation, requireMergeCaseDuplicateInput, requireProviderModelInput, requireString } from "./schemas";
 
 export interface AppOptions {
   token: string;
@@ -123,6 +125,10 @@ export function createApp(options: AppOptions) {
     const adapter = createConfigAdapter(readConfig(currentPaths()));
     const status = adapter.getStatus();
     return c.json({ ok: true, ...status });
+  });
+
+  app.get("/api/health", (c) => {
+    return c.json(inspectConfigHealth(readConfig(currentPaths())));
   });
 
   app.get("/api/providers", (c) => {
@@ -213,6 +219,38 @@ export function createApp(options: AppOptions) {
         }
       });
       return c.json({ ok: true, backupId: result.backupDir.split("/").pop() });
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/providers/merge-case-duplicates/preview", async (c) => {
+    try {
+      const body = await c.req.json() as Record<string, unknown>;
+      const input = requireMergeCaseDuplicateInput(body);
+      const before = readConfig(currentPaths());
+      const after = mergeProviderCaseDuplicates(structuredClone(before), input).config;
+      return c.json(summarizeConfigDiff(before, after));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/providers/merge-case-duplicates", async (c) => {
+    try {
+      const body = await c.req.json() as Record<string, unknown>;
+      const input = requireMergeCaseDuplicateInput(body);
+      let warnings: string[] = [];
+      const result = await writeOpenClawTransaction({
+        ...currentPaths(),
+        reason: `merge case duplicate ${input.groupKey} -> ${input.canonicalId}`,
+        mutate(config) {
+          const merged = mergeProviderCaseDuplicates(config, input);
+          warnings = merged.warnings;
+          return merged.config;
+        }
+      });
+      return c.json({ ok: true, warnings, backupId: result.backupDir.split("/").pop() });
     } catch (error) {
       return jsonError(c, error);
     }

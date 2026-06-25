@@ -1,6 +1,7 @@
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import type { ApiClient, ConfigDiffSummary, StatusResponse } from "../api";
+import type { ApiClient, CaseDuplicateGroup, ConfigDiffSummary, ConfigHealthReport, StatusResponse } from "../api";
+import { MergeCaseDuplicateDialog } from "../components/MergeCaseDuplicateDialog";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 
 interface DashboardProps {
@@ -12,6 +13,8 @@ export function Dashboard({ client }: DashboardProps) {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [diff, setDiff] = useState<ConfigDiffSummary | null>(null);
   const [diffUnavailable, setDiffUnavailable] = useState(false);
+  const [health, setHealth] = useState<ConfigHealthReport | null>(null);
+  const [mergeTarget, setMergeTarget] = useState<CaseDuplicateGroup | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -20,9 +23,10 @@ export function Dashboard({ client }: DashboardProps) {
     setError(null);
     setDiffUnavailable(false);
     try {
-      const [statusResult, diffResult] = await Promise.allSettled([
+      const [statusResult, diffResult, healthResult] = await Promise.allSettled([
         client.getStatus(),
-        client.getDiff()
+        client.getDiff(),
+        client.getHealth()
       ]);
       if (statusResult.status === "fulfilled") {
         setStatus(statusResult.value);
@@ -35,6 +39,7 @@ export function Dashboard({ client }: DashboardProps) {
         setDiff(null);
         setDiffUnavailable(true);
       }
+      setHealth(healthResult.status === "fulfilled" ? healthResult.value : null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载失败");
     } finally {
@@ -70,8 +75,21 @@ export function Dashboard({ client }: DashboardProps) {
           <StatCard label="Provider 模型" value={String(status.providerModelCount)} />
           <StatCard label="Allowlist 模型" value={String(status.allowlistModelCount)} />
           <HealthCard diff={diff} unavailable={diffUnavailable} className="md:col-span-2 lg:col-span-5" />
+          <CaseDuplicateCard
+            groups={health?.caseDuplicateGroups ?? []}
+            onMerge={setMergeTarget}
+            className="md:col-span-2 lg:col-span-5"
+          />
         </div>
       ) : null}
+
+      <MergeCaseDuplicateDialog
+        open={Boolean(mergeTarget)}
+        group={mergeTarget}
+        client={client}
+        onCancel={() => setMergeTarget(null)}
+        onMerged={() => { setMergeTarget(null); void load(); }}
+      />
     </section>
   );
 }
@@ -144,6 +162,46 @@ function HealthCard({ diff, unavailable, className }: { diff: ConfigDiffSummary 
             ))}
           </ul>
         ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function CaseDuplicateCard({ groups, onMerge, className }: { groups: CaseDuplicateGroup[]; onMerge: (group: CaseDuplicateGroup) => void; className?: string }) {
+  if (groups.length === 0) return null;
+  const names = groups.map((g) => g.ids.join("/")).join("、");
+  return (
+    <Card className={className}>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">Provider 大小写重复</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="text-xl font-bold text-amber-500">{`发现 ${groups.length} 组 Provider 大小写重复（${names}）`}</div>
+        <ul className="mt-3 space-y-3 text-sm">
+          {groups.map((group) => (
+            <li key={group.groupKey} className="border-t border-border pt-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="break-all">建议保留 <strong>{group.canonicalId}</strong>，合并并删除 {group.duplicateIds.join(", ")}</span>
+                {group.mergeable ? (
+                  <button
+                    type="button"
+                    aria-label={`合并 ${group.groupKey}`}
+                    onClick={() => onMerge(group)}
+                    className="shrink-0 rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+                  >
+                    合并
+                  </button>
+                ) : (
+                  <span className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground">需人工核对</span>
+                )}
+              </div>
+              <ul className="mt-1 list-inside list-disc text-muted-foreground">
+                {group.reasons.map((reason) => <li key={reason} className="break-all">{reason}</li>)}
+                {group.mergeBlockers.map((blocker) => <li key={blocker} className="break-all text-amber-500">{blocker}</li>)}
+              </ul>
+            </li>
+          ))}
+        </ul>
       </CardContent>
     </Card>
   );

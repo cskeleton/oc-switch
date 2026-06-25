@@ -1,10 +1,11 @@
 import { Cpu, Edit3, Plus, RefreshCw, RotateCw, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { CustomProviderDialog } from "../components/CustomProviderDialog";
 import { DataTable } from "../components/DataTable";
+import { MergeCaseDuplicateDialog } from "../components/MergeCaseDuplicateDialog";
 import { ProviderModelsDialog } from "../components/ProviderModelsDialog";
-import type { ApiClient, ModelSummary, ProviderSummary } from "../api";
+import type { ApiClient, CaseDuplicateGroup, ModelSummary, ProviderSummary } from "../api";
 
 interface ProvidersViewProps {
   client: ApiClient;
@@ -14,6 +15,8 @@ interface ProvidersViewProps {
 /** Provider 列表与管理 */
 export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
+  const [duplicateGroups, setDuplicateGroups] = useState<CaseDuplicateGroup[]>([]);
+  const [mergeTarget, setMergeTarget] = useState<CaseDuplicateGroup | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [addingProvider, setAddingProvider] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ProviderSummary | null>(null);
@@ -29,12 +32,22 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const { providers: list } = await client.getProviders();
+      const [{ providers: list }, health] = await Promise.all([
+        client.getProviders(),
+        client.getHealth().catch(() => null)
+      ]);
       setProviders(list);
+      setDuplicateGroups(health?.caseDuplicateGroups ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载失败");
     }
   }, [client]);
+
+  const groupByProviderId = useMemo(() => {
+    const map = new Map<string, CaseDuplicateGroup>();
+    for (const group of duplicateGroups) for (const id of group.ids) map.set(id, group);
+    return map;
+  }, [duplicateGroups]);
 
   useEffect(() => {
     void load();
@@ -163,6 +176,26 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
               <span className={row.containsPrimary ? "font-medium text-amber-500 dark:text-amber-400" : ""}>
                 {row.id}
                 {row.containsPrimary ? " ★" : ""}
+                {groupByProviderId.has(row.id) ? (
+                  <span className="ml-2 inline-flex items-center gap-2">
+                    <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">⚠ 重复</span>
+                    {(() => {
+                      const group = groupByProviderId.get(row.id)!;
+                      return group.mergeable ? (
+                        <button
+                          type="button"
+                          aria-label={`合并 ${group.groupKey}`}
+                          onClick={() => setMergeTarget(group)}
+                          className="rounded border border-border px-1.5 py-0.5 text-[10px] hover:bg-accent"
+                        >
+                          合并到 {group.canonicalId}
+                        </button>
+                      ) : (
+                        <span className="text-[10px] text-muted-foreground">建议保留 {group.canonicalId}</span>
+                      );
+                    })()}
+                  </span>
+                ) : null}
               </span>
             )
           },
@@ -324,6 +357,14 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
           </div>
         </div>
       ) : null}
+
+      <MergeCaseDuplicateDialog
+        open={Boolean(mergeTarget)}
+        group={mergeTarget}
+        client={client}
+        onCancel={() => setMergeTarget(null)}
+        onMerged={() => { setMergeTarget(null); void load(); }}
+      />
     </section>
   );
 }

@@ -414,4 +414,20 @@ describe("addCustomProvider", () => {
     expect(() => addCustomProvider(cloneSample(), { ...base, models: [] })).toThrow("models must contain at least one model");
     expect(() => addCustomProvider(cloneSample(), { ...base, models: [{ id: "dup" }, { id: "dup" }] })).toThrow("Duplicate model id dup");
   });
+
+  test("拒绝 case-insensitive 同名 provider", () => {
+    const config = cloneSample();
+    delete config.models!.providers!.DeepSeek;
+    config.models!.providers!.deepseek = { baseUrl: "https://api.deepseek.com/v1", apiKey: { source: "env", id: "DEEPSEEK_API_KEY" }, models: [] };
+    expect(() => addCustomProvider(config, {
+      providerId: "DeepSeek",
+      displayName: "DeepSeek",
+      api: "openai-completions",
+      baseUrl: "https://api.deepseek.com",
+      isFullUrl: false,
+      apiKeyEnv: "DEEPSEEK_API_KEY",
+      models: [{ id: "deepseek-chat" }],
+      enableAllModels: true
+    })).toThrow("already exists (case-insensitive match)");
+  });
 });

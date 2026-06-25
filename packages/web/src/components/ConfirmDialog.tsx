@@ -10,6 +10,7 @@ interface ConfirmDialogProps {
   onConfirm: () => void;
   onCancel: () => void;
   danger?: boolean;
+  confirmDisabled?: boolean;
   children?: ReactNode;
 }
 
@@ -23,6 +24,7 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
   danger = false,
+  confirmDisabled = false,
   children
 }: ConfirmDialogProps) {
   return (
@@ -44,7 +46,8 @@ export function ConfirmDialog({
           <button
             type="button"
             onClick={onConfirm}
-            className={`inline-flex items-center justify-center rounded-md px-4 py-2 text-sm font-medium text-primary-foreground ${
+            disabled={confirmDisabled}
+            className={`inline-flex items-center justify-center rounded-md px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50 ${
               danger ? "bg-destructive hover:bg-destructive/90 text-destructive-foreground" : "bg-primary hover:bg-primary/90"
             }`}
           >

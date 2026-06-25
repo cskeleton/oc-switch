@@ -5,7 +5,7 @@ import { ModelDialog } from "../components/ModelDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Badge } from "../components/ui/badge";
 import { Switch } from "../components/ui/switch";
-import type { ApiClient, ModelSummary, ProviderModelInput, ProviderSummary } from "../api";
+import type { ApiClient, CaseDuplicateGroup, ModelSummary, ProviderModelInput, ProviderSummary } from "../api";
 
 interface ModelsViewProps {
   client: ApiClient;
@@ -14,6 +14,7 @@ interface ModelsViewProps {
 export function ModelsView({ client }: ModelsViewProps) {
   const [models, setModels] = useState<ModelSummary[]>([]);
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
+  const [duplicateGroups, setDuplicateGroups] = useState<CaseDuplicateGroup[]>([]);
   const [creating, setCreating] = useState(false);
   const [editTarget, setEditTarget] = useState<ModelSummary | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ModelSummary | null>(null);
@@ -27,12 +28,14 @@ export function ModelsView({ client }: ModelsViewProps) {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [{ models: list }, { providers: providerList }] = await Promise.all([
+      const [{ models: list }, { providers: providerList }, health] = await Promise.all([
         client.getModels(),
-        client.getProviders()
+        client.getProviders(),
+        client.getHealth().catch(() => null)
       ]);
       setModels(list);
       setProviders(providerList ?? []);
+      setDuplicateGroups(health?.caseDuplicateGroups ?? []);
 
       // Auto-select first provider
       const pIds = [...new Set([
@@ -125,6 +128,14 @@ export function ModelsView({ client }: ModelsViewProps) {
       ...models.map((m) => m.providerId)
     ])].sort((a, b) => a.localeCompare(b));
   }, [providers, models]);
+
+  const dupIdInfo = useMemo(() => {
+    const map = new Map<string, { canonicalId: string; isCanonical: boolean }>();
+    for (const group of duplicateGroups) {
+      for (const id of group.ids) map.set(id, { canonicalId: group.canonicalId, isCanonical: id === group.canonicalId });
+    }
+    return map;
+  }, [duplicateGroups]);
 
   const filteredProviderIds = useMemo(() => {
     const normalized = providerQuery.trim().toLowerCase();
@@ -270,7 +281,14 @@ export function ModelsView({ client }: ModelsViewProps) {
                     : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
                 }`}
               >
-                <span>{pId}</span>
+                <span className="flex items-center gap-1">
+                  {pId}
+                  {dupIdInfo.has(pId) ? (
+                    <span className={`text-[10px] ${dupIdInfo.get(pId)!.isCanonical ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}`}>
+                      {dupIdInfo.get(pId)!.isCanonical ? `（推荐）` : `（重复）`}
+                    </span>
+                  ) : null}
+                </span>
                 <Badge variant="secondary" className="px-1.5 py-0 text-[10px] leading-none shrink-0 font-normal">
                   {providerCounts[pId] || 0}
                 </Badge>

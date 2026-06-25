@@ -6,7 +6,7 @@ import { cleanup, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "./App";
 import { DiffSummary } from "./components/DiffSummary";
-import { createApiClient, type ApiClient } from "./api";
+import { createApiClient, type ApiClient, type CaseDuplicateKind, type ConfigHealthReport } from "./api";
 import { Dashboard } from "./views/Dashboard";
 import { ModelsView } from "./views/ModelsView";
 import { ProvidersView } from "./views/ProvidersView";
@@ -77,6 +77,23 @@ describe("Dashboard", () => {
     expect(await findByText("配置健康")).toBeTruthy();
     expect(await findByText("与最近备份有 1 项差异")).toBeTruthy();
     expect(await findByText("nvidia/deepseek-ai/deepseek-v4-flash")).toBeTruthy();
+  });
+
+  test("配置健康展示大小写重复组并对 mergeable 组显示合并入口", async () => {
+    const getHealth = mock(async (): Promise<ConfigHealthReport> => ({
+      caseDuplicateGroups: [{
+        groupKey: "deepseek", ids: ["DeepSeek", "deepseek"], kinds: ["provider-duplicate", "same-origin-hint"] as CaseDuplicateKind[],
+        confidence: "high", sameOrigin: true, mergeable: true, mergeBlockers: [],
+        canonicalId: "deepseek", duplicateIds: ["DeepSeek"], reasons: ["baseUrl 相同：https://api.deepseek.com/v1"],
+        details: { baseUrls: {}, allowlistCounts: {}, modelCounts: {}, envVars: {} }
+      }],
+      summary: { duplicateGroupCount: 1, affectedProviderCount: 2, affectedAllowlistCount: 0 }
+    }));
+    const { findByText, findByLabelText } = render(
+      <Dashboard client={mockClient({ getStatus: async () => ({ ok: true, providerCount: 2, providerModelCount: 2, allowlistModelCount: 0 }), getDiff: async () => { throw new Error("no backup"); }, getHealth })} />
+    );
+    expect(await findByText(/发现 1 组 Provider 大小写重复/)).toBeTruthy();
+    expect(await findByLabelText("合并 deepseek")).toBeTruthy();
   });
 });
 
@@ -325,6 +342,27 @@ describe("ModelsView", () => {
 
     expect(await findByText("Context Window 必须是正整数")).toBeTruthy();
     expect(createModel).not.toHaveBeenCalled();
+  });
+
+  test("侧栏对大小写重复 Provider 标注推荐/重复而非并列两项", async () => {
+    const getProviders = mock(async () => ({ providers: [
+      { id: "9R", api: "openai-completions", baseUrl: "http://h/v1", modelCount: 2, enabledModelCount: 0, containsPrimary: false }
+    ] }));
+    const getModels = mock(async () => ({ models: [
+      { ref: "9R/v3", providerId: "9R", modelId: "v3", name: undefined, alias: undefined, enabled: false, isPrimary: false },
+      { ref: "9r/v3", providerId: "9r", modelId: "v3", name: undefined, alias: undefined, enabled: true, isPrimary: false }
+    ] }));
+    const getHealth = mock(async (): Promise<ConfigHealthReport> => ({
+      caseDuplicateGroups: [{
+        groupKey: "9r", ids: ["9R", "9r"], kinds: ["allowlist-drift"] as CaseDuplicateKind[], confidence: "high", sameOrigin: false,
+        mergeable: true, mergeBlockers: [], canonicalId: "9R", duplicateIds: ["9r"], reasons: [],
+        details: { baseUrls: {}, allowlistCounts: {}, modelCounts: {}, envVars: {} }
+      }],
+      summary: { duplicateGroupCount: 1, affectedProviderCount: 1, affectedAllowlistCount: 1 }
+    }));
+    const { findByText } = render(<ModelsView client={mockClient({ getProviders, getModels, getHealth })} />);
+    expect(await findByText("（推荐）")).toBeTruthy();
+    expect(await findByText("（重复）")).toBeTruthy();
   });
 });
 
@@ -658,6 +696,24 @@ describe("ProvidersView", () => {
 
     expect(syncProvider).toHaveBeenCalledWith("nvidia");
     expect(await findByText("同步完成：新增 1 个模型")).toBeTruthy();
+  });
+
+  test("重复组 Provider 显示⚠重复徽章与合并入口", async () => {
+    const getProviders = mock(async () => ({ providers: [
+      { id: "deepseek", api: "openai-completions", baseUrl: "https://api.deepseek.com/v1", modelCount: 2, enabledModelCount: 2, containsPrimary: false },
+      { id: "DeepSeek", api: "openai-completions", baseUrl: "https://api.deepseek.com/v1", modelCount: 2, enabledModelCount: 0, containsPrimary: false }
+    ] }));
+    const getHealth = mock(async (): Promise<ConfigHealthReport> => ({
+      caseDuplicateGroups: [{
+        groupKey: "deepseek", ids: ["DeepSeek", "deepseek"], kinds: ["provider-duplicate"] as CaseDuplicateKind[], confidence: "high",
+        sameOrigin: true, mergeable: true, mergeBlockers: [], canonicalId: "deepseek", duplicateIds: ["DeepSeek"],
+        reasons: [], details: { baseUrls: {}, allowlistCounts: {}, modelCounts: {}, envVars: {} }
+      }],
+      summary: { duplicateGroupCount: 1, affectedProviderCount: 2, affectedAllowlistCount: 0 }
+    }));
+    const { findAllByText, findAllByLabelText } = render(<ProvidersView client={mockClient({ getProviders, getHealth })} />);
+    expect((await findAllByText("⚠ 重复")).length).toBeGreaterThanOrEqual(1);
+    expect((await findAllByLabelText("合并 deepseek")).length).toBeGreaterThanOrEqual(1);
   });
 });
 
