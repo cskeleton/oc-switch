@@ -86,6 +86,39 @@ export interface ConfigHealthReport {
   summary: { duplicateGroupCount: number; affectedProviderCount: number; affectedAllowlistCount: number };
 }
 
+export interface ConfigStatusIssue {
+  id: string;
+  severity: "info" | "warning" | "blocking";
+  source: "health" | "env" | "paths" | "providers";
+  title: string;
+  detail?: string;
+  action?: string;
+}
+
+export interface DisabledProviderStatus {
+  providerId: string;
+  disabledAt: string;
+  openclawPath: string;
+  hiddenModelCount: number;
+}
+
+export interface ConfigStatusReport {
+  version: 1;
+  health: ConfigHealthReport;
+  disabledProviders: DisabledProviderStatus[];
+  orphanEnvKeys: string[];
+  envWarnings: string[];
+  issues: ConfigStatusIssue[];
+  summary: {
+    issueCount: number;
+    blockingIssueCount: number;
+    warningIssueCount: number;
+    duplicateGroupCount: number;
+    disabledProviderCount: number;
+    orphanEnvKeyCount: number;
+  };
+}
+
 export interface MergeCaseDuplicateInput {
   groupKey: string;
   canonicalId: string;
@@ -284,6 +317,7 @@ export function createApiClient(options: ApiClientOptions) {
       }),
     getDiff: () => request<ConfigDiffSummary>("/api/diff"),
     getHealth: () => request<ConfigHealthReport>("/api/health"),
+    getConfigStatus: () => request<ConfigStatusReport>("/api/config-status"),
     previewMergeCaseDuplicates: (input: MergeCaseDuplicateInput) =>
       request<ConfigDiffSummary>("/api/providers/merge-case-duplicates/preview", {
         method: "POST",

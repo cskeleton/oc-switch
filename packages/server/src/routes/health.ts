@@ -1,6 +1,7 @@
 import {
   createConfigAdapter,
   inspectConfigHealth,
+  inspectConfigStatus,
   listBackups,
   summarizeConfigDiff
 } from "@oc-switch/core";
@@ -9,7 +10,7 @@ import JSON5 from "json5";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { OpenClawConfig } from "@oc-switch/core";
-import { readConfig, type AppRuntime } from "../context";
+import { readConfig, readEnvContent, type AppRuntime } from "../context";
 import { jsonError } from "../errors";
 
 export function registerHealthRoutes(app: Hono, runtime: AppRuntime): void {
@@ -21,6 +22,30 @@ export function registerHealthRoutes(app: Hono, runtime: AppRuntime): void {
 
   app.get("/api/health", (c) => {
     return c.json(inspectConfigHealth(readConfig(runtime.currentPaths())));
+  });
+
+  app.get("/api/config-status", (c) => {
+    const paths = runtime.currentPaths();
+    let config: OpenClawConfig | undefined;
+    let configReadError: string | undefined;
+    try {
+      config = readConfig(paths);
+    } catch (error) {
+      configReadError = error instanceof Error ? error.message : String(error);
+    }
+    let envContent = "";
+    try {
+      envContent = readEnvContent(paths) ?? "";
+    } catch {
+      envContent = "";
+    }
+    return c.json(inspectConfigStatus({
+      ...(config ? { config } : {}),
+      ...(configReadError ? { configReadError } : {}),
+      paths,
+      envContent,
+      ...(runtime.options.runningInstances ? { runningInstances: runtime.options.runningInstances } : {})
+    }));
   });
 
   app.get("/api/diff", (c) => {

@@ -623,6 +623,68 @@ describe("server write endpoints", () => {
     expect(group!.canonicalId).toBe("deepseek");
   });
 
+  test("GET /api/config-status 返回统一配置状态", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+
+    const disabled = await jsonRequest(app, "/api/providers/nvidia/state", {
+      method: "PATCH",
+      body: JSON.stringify({ enabled: false })
+    });
+    expect(disabled.response.status).toBe(200);
+
+    const { response, json } = await jsonRequest(app, "/api/config-status", { method: "GET" });
+    expect(response.status).toBe(200);
+    const report = json as {
+      version: number;
+      summary: { disabledProviderCount: number };
+      disabledProviders: Array<{ providerId: string }>;
+      issues: Array<{ id: string }>;
+    };
+    expect(report.version).toBe(1);
+    expect(report.summary.disabledProviderCount).toBe(1);
+    expect(report.disabledProviders[0]?.providerId).toBe("nvidia");
+    const issueIds = report.issues.map((issue) => issue.id);
+    expect(new Set(issueIds).size).toBe(issueIds.length);
+    expect(JSON.stringify(json)).not.toContain("sk-");
+  });
+
+  test("GET /api/config-status 在 openclaw.json 缺失时仍返回 200 与 path blocking issue", async () => {
+    const ws = workspace();
+    rmSync(ws.paths.openclawPath);
+    const app = createTestApp(ws);
+
+    const { response, json } = await jsonRequest(app, "/api/config-status", { method: "GET" });
+    expect(response.status).toBe(200);
+    const report = json as {
+      health: { caseDuplicateGroups: unknown[] };
+      issues: Array<{ id: string; severity: string; source: string }>;
+    };
+    expect(report.health.caseDuplicateGroups).toEqual([]);
+    const openclawIssue = report.issues.find((issue) => issue.source === "paths" && issue.id.includes("openclaw"));
+    expect(openclawIssue?.severity).toBe("blocking");
+  });
+
+  test("GET /api/config-status 在 .env 不可读时仍返回 200 与 path blocking issue", async () => {
+    if (process.platform === "win32") return;
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, "TEST=1\n");
+    chmodSync(ws.paths.envPath, 0o000);
+    const app = createTestApp(ws);
+
+    try {
+      const { response, json } = await jsonRequest(app, "/api/config-status", { method: "GET" });
+      expect(response.status).toBe(200);
+      const report = json as {
+        issues: Array<{ id: string; severity: string; source: string }>;
+      };
+      const envIssue = report.issues.find((issue) => issue.id === "paths:unreadable:env");
+      expect(envIssue).toMatchObject({ severity: "blocking", source: "paths" });
+    } finally {
+      chmodSync(ws.paths.envPath, 0o644);
+    }
+  });
+
   test("POST /api/providers/merge-case-duplicates/preview 返回 diff", async () => {
     const ws = workspace();
     const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));

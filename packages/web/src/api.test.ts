@@ -98,3 +98,30 @@ test("patchProviderState sends enabled flag to provider state route", async () =
   expect(calls[0]!.init.method).toBe("PATCH");
   expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ enabled: false });
 });
+
+test("getConfigStatus 请求 /api/config-status 并携带 Bearer auth", async () => {
+  const calls: Request[] = [];
+  const client = createApiClient({
+    baseUrl: "http://localhost:7420",
+    token: "secret",
+    fetchImpl: async (input, init) => {
+      calls.push(new Request(input, init));
+      return new Response(JSON.stringify({
+        version: 1,
+        health: { caseDuplicateGroups: [], summary: { duplicateGroupCount: 0, affectedProviderCount: 0, affectedAllowlistCount: 0 } },
+        disabledProviders: [],
+        orphanEnvKeys: [],
+        envWarnings: [],
+        issues: [],
+        summary: { issueCount: 0, blockingIssueCount: 0, warningIssueCount: 0, duplicateGroupCount: 0, disabledProviderCount: 0, orphanEnvKeyCount: 0 }
+      }), {
+        headers: { "content-type": "application/json" }
+      });
+    }
+  });
+
+  const report = await client.getConfigStatus();
+  expect(report.version).toBe(1);
+  expect(calls[0]?.url).toBe("http://localhost:7420/api/config-status");
+  expect(calls[0]?.headers.get("Authorization")).toBe("Bearer secret");
+});
