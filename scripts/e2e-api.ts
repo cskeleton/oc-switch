@@ -9,7 +9,7 @@ import { createApp } from "../packages/server/src/app";
 
 const TOKEN = "e2e-test-token";
 const PORT = 7420;
-const repoRoot = join(import.meta.dir, "..");
+const fixtureBuiltinDir = join(import.meta.dir, "../packages/core/test/fixtures/presets/builtin");
 
 const dir = mkdtempSync(join(tmpdir(), "oc-switch-e2e-"));
 const openclawPath = join(dir, "openclaw.json");
@@ -24,10 +24,9 @@ const app = createApp({
   token: TOKEN,
   paths: { openclawPath, envPath, stateDir },
   presetDirs: {
-    builtinDir: join(repoRoot, "presets", "builtin"),
+    builtinDir: fixtureBuiltinDir,
     customDir
-  },
-  repoRoot
+  }
 });
 
 Bun.serve({

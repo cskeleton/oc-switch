@@ -12,6 +12,7 @@ import { createApp } from "../packages/server/src/app";
 
 const repoRoot = join(import.meta.dir, "..");
 const CLI_ENTRY = join(repoRoot, "packages/cli/src/index.ts");
+const fixtureBuiltinDir = join(repoRoot, "packages/core/test/fixtures/presets/builtin");
 const TOKEN = "acceptance-smoke-token";
 const SERVER_PORT = 17_421;
 
@@ -150,10 +151,9 @@ async function main(): Promise<void> {
       token: TOKEN,
       paths: { openclawPath, envPath, stateDir },
       presetDirs: {
-        builtinDir: join(repoRoot, "presets", "builtin"),
+        builtinDir: fixtureBuiltinDir,
         customDir
-      },
-      repoRoot
+      }
     });
     const server = Bun.serve({
       port: SERVER_PORT,

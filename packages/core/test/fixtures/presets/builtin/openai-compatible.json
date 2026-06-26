@@ -1,0 +1,17 @@
+{
+  "id": "openai-compatible",
+  "name": "OpenAI Compatible",
+  "tags": ["openai-compatible"],
+  "provider": {
+    "api": "openai-completions",
+    "baseUrl": "https://example.com/v1",
+    "apiKeyEnv": "OPENAI_COMPATIBLE_API_KEY"
+  },
+  "models": [
+    {
+      "id": "model-id",
+      "name": "Model",
+      "alias": "model"
+    }
+  ]
+}

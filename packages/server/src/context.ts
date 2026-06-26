@@ -17,7 +17,6 @@ export interface AppOptions {
   token: string;
   paths?: OcSwitchPaths;
   presetDirs?: PresetDirs;
-  repoRoot?: string;
   fetchImpl?: FetchImpl;
   bindAddress?: string;
   port?: number;
@@ -36,7 +35,7 @@ export interface AppRuntime {
 export function createAppRuntime(options: AppOptions): AppRuntime {
   let activePaths = options.paths ?? getActivePaths();
   const currentPaths = () => activePaths;
-  const presetDirs = options.presetDirs ?? defaultPresetDirs(currentPaths().stateDir, options.repoRoot);
+  const presetDirs = options.presetDirs ?? defaultPresetDirs(currentPaths().stateDir);
   const fetchImpl = options.fetchImpl ?? fetch;
   return {
     options,

@@ -179,7 +179,7 @@ oc-switch/
 │   ├── cli/      # Commander CLI / 命令行
 │   ├── server/   # Hono REST API / REST 服务
 │   └── web/      # React + Vite SPA / Web 界面
-├── presets/builtin/   # Optional builtin templates / 可选内置模板
+├── presets/README.md  # 预设目录说明（数据在 ~/.oc-switch/presets/）
 └── scripts/           # Acceptance smoke tests / 验收脚本
 ```
 

@@ -9,7 +9,7 @@ import { upsertDisabledProviderState } from "@oc-switch/core";
 
 const tempDirs: string[] = [];
 const TOKEN = "test-secret";
-const repoRoot = join(import.meta.dir, "../../..");
+const fixtureBuiltinDir = join(import.meta.dir, "../../core/test/fixtures/presets/builtin");
 
 function authHeaders(token = TOKEN) {
   return { Authorization: `Bearer ${token}` };
@@ -34,7 +34,7 @@ function workspace(): Workspace {
     dir,
     paths: { openclawPath, envPath, stateDir },
     presetDirs: {
-      builtinDir: join(repoRoot, "presets", "builtin"),
+      builtinDir: fixtureBuiltinDir,
       customDir
     }
   };
@@ -45,7 +45,6 @@ function createTestApp(ws: Workspace, fetchImpl?: FetchImpl, extra?: { runningIn
     token: TOKEN,
     paths: ws.paths,
     presetDirs: ws.presetDirs,
-    repoRoot,
     ...(fetchImpl ? { fetchImpl } : {}),
     ...(extra?.runningInstances ? { runningInstances: extra.runningInstances } : {})
   });
@@ -138,7 +137,7 @@ describe("server read endpoints", () => {
 
     expect(response.status).toBe(200);
     const presets = json.presets as Array<{ id: string }>;
-    expect(presets.some((p) => p.id === "nvidia")).toBe(true);
+    expect(presets.some((p) => p.id === "openai-compatible")).toBe(true);
     expect(JSON.stringify(json)).not.toContain("sk-");
   });
 

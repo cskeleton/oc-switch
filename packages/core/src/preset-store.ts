@@ -102,12 +102,9 @@ export function exportProviderPreset(config: OpenClawConfig, providerId: string)
   };
 }
 
-export function defaultPresetDirs(stateDir: string, repoRoot?: string): PresetDirs {
-  const builtinDir = repoRoot
-    ? join(repoRoot, "presets", "builtin")
-    : join(stateDir, "presets", "builtin");
+export function defaultPresetDirs(stateDir: string): PresetDirs {
   return {
-    builtinDir,
+    builtinDir: join(stateDir, "presets", "builtin"),
     customDir: join(stateDir, "presets", "custom")
   };
 }

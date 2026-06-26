@@ -3,6 +3,9 @@ import JSON5 from "json5";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+/** monorepo 根目录（自 packages/cli/src 上溯三级） */
+export const repoRoot = join(dirname(import.meta.path), "../../..");
+
 function activePaths() {
   return getActivePaths();
 }
@@ -31,8 +34,7 @@ function providerEnvVar(config: OpenClawConfig, providerId: string): string | un
 
 function presetDirs() {
   const paths = activePaths();
-  const repoRoot = join(dirname(import.meta.path), "../../..");
-  return defaultPresetDirs(paths.stateDir, repoRoot);
+  return defaultPresetDirs(paths.stateDir);
 }
 
 function mockSyncFetch(): FetchImpl | undefined {

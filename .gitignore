@@ -11,3 +11,9 @@ test-results/
 
 # Superpowers 实现计划 — 本地 agent 工作流，不纳入公开仓库
 docs/superpowers/plans/
+
+# Cursor IDE 本地配置与 hooks 状态
+.cursor/
+
+# 仓库内 builtin 预设数据 — 运行时从 ~/.oc-switch/presets/builtin/ 读取
+presets/builtin/

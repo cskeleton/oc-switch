@@ -22,7 +22,7 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 
 ### 常见踩坑
 
-- **`repoRoot`**：`packages/cli/src/command-context.ts` 导出，须自 `packages/cli/src` **上溯三级**至 monorepo 根。不可从 `commands/` 子目录计算，否则 builtin presets 路径错误。
+- **`repoRoot`**：`packages/cli/src/command-context.ts` 导出，须自 `packages/cli/src` **上溯三级**至 monorepo 根（测试脚本定位等用途）。
 - **Web 主题**：双主题用 `styles.css` 的 `@theme inline` + `:root` / `.dark` token。禁止硬编码 `slate-*` / `sky-*` / `red-*`——Tailwind v4 会静默丢弃未声明 token 的工具类且不报错。
 - **共享类型**：不新建 shared contracts 包；core 类型由 server/cli/web 各自引用。
 
@@ -83,10 +83,11 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 - 优先 **backup/restore**、**`presets export <provider-id>`**、**`import`**，或拷贝 `openclaw.json` + 相关 `.env` Key。
 - export/import **不含** API Key 明文。
 
-### Preset（次要，待改进）
+### Preset（已弱化，不推荐主流程）
 
-- **builtin**（`presets/builtin/`）：仓库静态模板，会过时，不等于用户本机配置。
-- **custom**（`~/.oc-switch/presets/custom/`）：由 `import` / `presets export` 生成，反映真实配置。
+- 仓库**不包含**任何 builtin 预设 JSON；请勿将个人 Provider 配置提交进 Git。
+- **custom**（`~/.oc-switch/presets/custom/`）：仅作本机 `import` / `presets export` 迁移快照。
+- 主流程用 **Providers 页 / `provider add-custom`**；Web「预设」页为遗留入口，后续可移除。
 - Web「预设」页展示 JSON 文件，**不是**实时读 `openclaw.json`。
 - 后续优先整配置或 provider 级 import/export，而非扩充 builtin。
 

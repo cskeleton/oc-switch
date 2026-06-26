@@ -3,22 +3,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { ApiType, ProviderPreset } from "../src/types";
 
-// 内置 preset 目录（相对 packages/core/test）
-const BUILTIN_DIR = join(import.meta.dir, "../../../presets/builtin");
-
-// 计划要求的全部内置 preset id
-const EXPECTED_PRESET_IDS = [
-  "elysiver",
-  "cherryin",
-  "juya",
-  "aitoolscfd",
-  "nvidia",
-  "openrouter",
-  "deepseek",
-  "minimax-portal",
-  "cerebras",
-  "openai-compatible"
-] as const;
+// 测试用 preset 样例（非仓库分发数据）
+const FIXTURE_BUILTIN_DIR = join(import.meta.dir, "fixtures/presets/builtin");
 
 const SUPPORTED_API_TYPES: ApiType[] = ["openai-completions", "anthropic-messages", "google-generative-ai"];
 
@@ -32,8 +18,8 @@ const SECRET_PATTERNS = [
   /\b(api[_-]?key|apikey)\s*[:=]\s*["']?[a-zA-Z0-9._-]{12,}/i
 ];
 
-function listBuiltinPresetFiles(): string[] {
-  return readdirSync(BUILTIN_DIR)
+function listFixturePresetFiles(): string[] {
+  return readdirSync(FIXTURE_BUILTIN_DIR)
     .filter((name) => name.endsWith(".json"))
     .sort();
 }
@@ -74,38 +60,25 @@ function assertNoSecrets(preset: ProviderPreset): void {
   }
 }
 
-describe("builtin presets", () => {
-  test("catalog contains all required preset files", () => {
-    const files = listBuiltinPresetFiles();
-    const ids = files.map((file) => basename(file, ".json"));
-    expect(ids.sort()).toEqual([...EXPECTED_PRESET_IDS].sort());
+describe("preset contract (fixtures)", () => {
+  test("fixture catalog is non-empty", () => {
+    expect(listFixturePresetFiles().length).toBeGreaterThan(0);
   });
 
-  for (const expectedId of EXPECTED_PRESET_IDS) {
-    test(`${expectedId}.json validates preset contract`, () => {
-      const filePath = join(BUILTIN_DIR, `${expectedId}.json`);
-      const preset = loadPreset(filePath);
+  for (const file of listFixturePresetFiles()) {
+    const presetId = basename(file, ".json");
+    test(`${presetId}.json validates preset contract`, () => {
+      const preset = loadPreset(join(FIXTURE_BUILTIN_DIR, file));
 
-      // id 与文件名一致
-      expect(preset.id).toBe(expectedId);
+      expect(preset.id).toBe(presetId);
       expect(preset.name).toBeTruthy();
-
-      // provider.api 为支持的 ApiType
       expect(SUPPORTED_API_TYPES).toContain(preset.provider.api);
-
-      // apiKeyEnv 命名规范
       expect(preset.provider.apiKeyEnv).toMatch(API_KEY_ENV_PATTERN);
-
-      // baseUrl 必须存在
       expect(preset.provider.baseUrl).toMatch(/^https?:\/\//);
-
-      // 每个模型必须有 id
       expect(preset.models.length).toBeGreaterThan(0);
       for (const model of preset.models) {
         expect(model.id).toBeTruthy();
       }
-
-      // 不得包含疑似密钥
       assertNoSecrets(preset);
     });
   }

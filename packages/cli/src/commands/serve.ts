@@ -1,7 +1,6 @@
 import { resolveServeToken } from "@oc-switch/core";
 import { createApp } from "@oc-switch/server";
 import type { Command } from "commander";
-import { dirname, join } from "node:path";
 import type { CommandContext } from "../command-context";
 
 export function registerServeCommand(program: Command, context: CommandContext): void {
@@ -20,9 +19,8 @@ export function registerServeCommand(program: Command, context: CommandContext):
       if (ephemeral) {
         console.log(`Ephemeral token (localhost only): ${token}`);
       }
-      const repoRoot = join(dirname(import.meta.path), "../../..");
       const port = Number(options.port);
-      const app = createApp({ token, paths, repoRoot, bindAddress: options.host, port });
+      const app = createApp({ token, paths, bindAddress: options.host, port });
       Bun.serve({
         port,
         hostname: options.host,
