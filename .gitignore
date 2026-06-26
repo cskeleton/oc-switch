@@ -8,3 +8,6 @@ coverage/
 test-results/
 .worktrees/
 *.tsbuildinfo
+
+# Superpowers 实现计划 — 本地 agent 工作流，不纳入公开仓库
+docs/superpowers/plans/
