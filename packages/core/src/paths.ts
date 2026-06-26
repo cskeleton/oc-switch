@@ -1,6 +1,7 @@
-import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { readJsonState, writeJsonState } from "./json-state-store";
 
 export interface OcSwitchPaths {
   openclawPath: string;
@@ -72,10 +73,6 @@ function defaultStateDir(env: NodeJS.ProcessEnv | Record<string, string | undefi
   return explicit ? resolveUserPath(explicit, env) : join(envHome(env), ".openclaw");
 }
 
-function settingsPath(stateDir: string): string {
-  return join(stateDir, SETTINGS_FILE);
-}
-
 function canRead(path: string): boolean {
   try {
     accessSync(path, constants.R_OK);
@@ -103,14 +100,6 @@ function parentWritable(path: string): boolean {
   }
 }
 
-function safeChmod(path: string, mode: number): void {
-  try {
-    chmodSync(path, mode);
-  } catch {
-    // 部分平台或文件系统不支持 chmod，尽力而为
-  }
-}
-
 export function defaultPaths(env: NodeJS.ProcessEnv = process.env): OcSwitchPaths {
   const stateDir = join(envHome(env), ".oc-switch");
   const openclawStateDir = defaultStateDir(env);
@@ -125,25 +114,27 @@ export function defaultPaths(env: NodeJS.ProcessEnv = process.env): OcSwitchPath
 }
 
 export function readOcSwitchSettings(stateDir: string): OcSwitchSettings {
-  const path = settingsPath(stateDir);
-  if (!existsSync(path)) return {};
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<OcSwitchSettings>;
-    return {
-      ...(typeof parsed.openclawPath === "string" ? { openclawPath: parsed.openclawPath } : {}),
-      ...(typeof parsed.envPath === "string" ? { envPath: parsed.envPath } : {})
-    };
-  } catch {
-    return {};
-  }
+  return readJsonState({
+    stateDir,
+    filename: SETTINGS_FILE,
+    fallback: () => ({}),
+    normalize(value) {
+      if (typeof value !== "object" || value === null) return {};
+      const parsed = value as Partial<OcSwitchSettings>;
+      return {
+        ...(typeof parsed.openclawPath === "string" ? { openclawPath: parsed.openclawPath } : {}),
+        ...(typeof parsed.envPath === "string" ? { envPath: parsed.envPath } : {})
+      };
+    }
+  });
 }
 
 export function writeOcSwitchSettings(stateDir: string, settings: OcSwitchSettings): void {
-  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-  safeChmod(stateDir, 0o700);
-  const path = settingsPath(stateDir);
-  writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
-  safeChmod(path, 0o600);
+  writeJsonState({
+    stateDir,
+    filename: SETTINGS_FILE,
+    value: settings
+  });
 }
 
 export function getActivePaths(options: ActivePathOptions = {}): OcSwitchPaths {

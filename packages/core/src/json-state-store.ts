@@ -6,6 +6,7 @@ export interface ReadJsonStateOptions<T> {
   filename: string;
   fallback: () => T;
   normalize?: (value: unknown) => T;
+  invalidJson?: "fallback" | "throw";
 }
 
 export interface WriteJsonStateOptions<T> {
@@ -32,7 +33,8 @@ export function readJsonState<T>(options: ReadJsonStateOptions<T>): T {
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
     return options.normalize ? options.normalize(parsed) : (parsed as T);
-  } catch {
+  } catch (error) {
+    if (options.invalidJson === "throw") throw error;
     return options.fallback();
   }
 }

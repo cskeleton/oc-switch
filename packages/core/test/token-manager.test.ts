@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -36,8 +36,17 @@ describe("token manager", () => {
     expect(readPersistedToken(dir)).toBe("persisted-secret");
     const tokenPath = join(dir, "token.json");
     expect(existsSync(tokenPath)).toBe(true);
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
     const mode = statSync(tokenPath).mode & 0o777;
     expect(mode).toBe(0o600);
+    expect(readFileSync(tokenPath, "utf8").endsWith("\n")).toBe(true);
+  });
+
+  test("invalid persisted token file is ignored", () => {
+    const dir = stateDir();
+    writeFileSync(join(dir, "token.json"), "{bad json");
+
+    expect(readPersistedToken(dir)).toBeUndefined();
   });
 
   test("rotate writes new persisted token", () => {

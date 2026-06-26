@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { markProviderEnvOrphan, readManifest, upsertExtraEnvManifest, upsertProviderEnvManifest } from "../src/manifest-manager";
@@ -44,6 +44,16 @@ describe("manifest manager metadata", () => {
       updatedAt: "2026-06-24T01:00:00.000Z",
       orphan: false
     });
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+    expect(statSync(join(dir, "manifest.json")).mode & 0o777).toBe(0o600);
+    expect(readFileSync(join(dir, "manifest.json"), "utf8").endsWith("\n")).toBe(true);
+  });
+
+  test("throws when manifest JSON is invalid", () => {
+    const dir = stateDir();
+    writeFileSync(join(dir, "manifest.json"), "{bad json");
+
+    expect(() => readManifest(dir)).toThrow(SyntaxError);
   });
 
   test("marking orphan keeps existing display metadata", () => {

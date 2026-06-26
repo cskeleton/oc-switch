@@ -47,7 +47,17 @@ describe("path settings", () => {
       openclawPath: customConfig,
       envPath: customEnv
     });
+    expect(statSync(ws.stateDir).mode & 0o777).toBe(0o700);
     expect(statSync(join(ws.stateDir, "settings.json")).mode & 0o777).toBe(0o600);
+    expect(readFileSync(join(ws.stateDir, "settings.json"), "utf8").endsWith("\n")).toBe(true);
+  });
+
+  test("falls back to empty settings when settings JSON is invalid", () => {
+    const ws = workspace();
+    mkdirSync(ws.stateDir, { recursive: true });
+    writeFileSync(join(ws.stateDir, "settings.json"), "{bad json");
+
+    expect(readOcSwitchSettings(ws.stateDir)).toEqual({});
   });
 
   test("uses explicit OPENCLAW_CONFIG_PATH while keeping settings env path", () => {

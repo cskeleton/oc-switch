@@ -14,17 +14,15 @@
 ## Learned Workspace Facts
 
 - oc-switch 是用于本地 OpenClaw provider/model 配置管理与清理（陈旧 ref、allowlist 与 provider 不一致等）的 Bun/TypeScript monorepo。
-- 包结构：`packages/core`（唯一读写 OpenClaw 本地文件）、`packages/cli`、`packages/server`（Hono REST）、`packages/web`（React/Vite SPA）。
+- 包结构：`packages/core`（唯一读写 OpenClaw 本地文件）、`packages/cli`、`packages/server`（Hono REST）、`packages/web`（React/Vite SPA；双主题用 `styles.css` 的 `@theme inline` + `:root`/`.dark` token，禁止硬编码 `slate-*`/`sky-*`/`red-*`，否则 Tailwind v4 会静默丢弃未声明 token 的工具类且不报错）。
 - 设计规格在 `docs/superpowers/specs/`；实现计划在 `docs/superpowers/plans/`。
-- 分阶段交付：Phase 1–5 已完成；Path & Env Management（2026-06-25）已落地；后续功能从 `main` 拉分支。
+- 分阶段交付：Phase 1–5 已完成；Path & Env Management（2026-06-25）、E2E Browser Review 改进（2026-06-25）、Model Editing、Provider Case Duplicate（2026-06-25）已合并到 `main`；后续功能从 `main` 拉分支。
 - Custom Provider（手工添加 Provider）已实现：Web Providers 页 / `provider add-custom` / `POST /api/providers/custom*`；规格见 `docs/superpowers/specs/2026-06-24-oc-switch-custom-provider-design.md`。
-- 默认与活动路径：`OPENCLAW_CONFIG_PATH` 或 `~/.openclaw/openclaw.json`；`.env` 在 `~/.openclaw/.env`；active 路径持久化于 `~/.oc-switch/settings.json` 并可在 Settings 切换；状态与备份在 `~/.oc-switch/`。
-- ModelRef 仅在第一个 `/` 处拆分 provider 与 model，保留大小写。
-- Allowlist（已启用模型）在 `agents.defaults.models`（key 为完整 ModelRef）；`models.providers` 为 provider 模型目录；`listModels` 合并两者展示。
-- `.env` 写入限定在 `# oc-switch:start` / `# oc-switch:end` 托管块内。
-- Provider `baseUrl` 遵循 OpenClaw：`openai-completions` 含 `/v1`；`anthropic-messages` 通常不带末尾 `/v1`。
-- Path & Env Management：`GET/PUT /api/settings/paths`、分层 env 管理（preview 不收 value、API/UI 不回显密钥）；备份 metadata 含路径，恢复时路径不一致或缺 metadata 拒绝；运行实例路径 best-effort 发现。规格见 `docs/superpowers/specs/2026-06-24-oc-switch-path-env-management-design.md`。已知后续：stale allowlist/case-mismatch 清理 UI、chmod 警告、真实配置写 E2E。
-- 工具链：`bun install`、`bun test`、`bun run typecheck`、`bun run test:e2e`、`bun run acceptance`、`bun run packages/cli/src/index.ts`。
+- Provider Case Duplicate（大小写重复检测/合并）已合并到 `main`：core `inspectConfigHealth`/`mergeProviderCaseDuplicates`、`GET /api/health`、CLI `health`/`providers merge-duplicates`、Web 仪表盘/Providers/Models 标注与 `MergeCaseDuplicateDialog`；`addCustomProvider` 含大小写防重复。规格见 `docs/superpowers/specs/2026-06-25-oc-switch-provider-case-duplicate-design.md`。
+- 删除 Provider 级联：同时移除 `models.providers[<id>]` 目录与 allowlist 中第一段等于该 Provider ID 的所有条目；`.env` API Key 不自动删，仅标为 orphan 供设置页清理；若其下含当前主模型须先选新主模型，操作前自动备份。
+- Path & Env Management：默认与活动路径 `OPENCLAW_CONFIG_PATH` 或 `~/.openclaw/openclaw.json`、`.env` 在 `~/.openclaw/.env`、active 路径持久化于 `~/.oc-switch/settings.json` 并可在 Settings 切换；`GET/PUT /api/settings/paths`、分层 env 管理（preview 不收 value、API/UI 不回显密钥）；备份 metadata 含路径，恢复时路径不一致或缺 metadata 拒绝；运行实例路径 best-effort 发现。规格见 `docs/superpowers/specs/2026-06-24-oc-switch-path-env-management-design.md`。已知后续：stale allowlist 专用清理 UI、chmod 警告、真实配置写 E2E。
+- ModelRef 与 Allowlist 约定：ModelRef 仅在第一个 `/` 处拆分 provider 与 model 且保留大小写；Allowlist（已启用模型）在 `agents.defaults.models`（key 为完整 ModelRef），`models.providers` 为 provider 模型目录，`listModels` 合并两者；`.env` 写入限定在 `# oc-switch:start` / `# oc-switch:end` 托管块内；Provider `baseUrl` 遵循 OpenClaw（`openai-completions` 含 `/v1`、`anthropic-messages` 通常不带末尾 `/v1`）。
+- 工具链：`bun install`、`bun test`、`bun run typecheck`、`bun run test:e2e`（需先 `bun run build` 生成 `packages/web/dist`，因 E2E 用 vite preview）、`bun run check`（test+typecheck+build）、`bun run acceptance`、`bun run packages/cli/src/index.ts`。
 
 ## 产品与使用定位
 

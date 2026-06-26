@@ -29,6 +29,21 @@ describe("json-state-store", () => {
     }
   });
 
+  test("can rethrow invalid JSON for strict state files", () => {
+    const stateDir = tempStateDir();
+    try {
+      writeFileSync(jsonStatePath(stateDir, "sample.json"), "{bad json");
+      expect(() => readJsonState({
+        stateDir,
+        filename: "sample.json",
+        fallback: () => ({ ok: false }),
+        invalidJson: "throw"
+      })).toThrow(SyntaxError);
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   test("normalizes parsed data and writes with private permissions and newline", () => {
     const stateDir = tempStateDir();
     try {

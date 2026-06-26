@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { createBackup } from "./backup-manager";
 import { removeManagedEnvKeys } from "./env-manager";
+import { readJsonState, writeJsonState } from "./json-state-store";
 import type { OcSwitchPaths } from "./paths";
 
 export interface ManifestProviderMetadata {
@@ -38,25 +39,25 @@ export interface OcSwitchManifest {
 
 export const MANIFEST_FILE = "manifest.json";
 
-function manifestPath(stateDir: string): string {
-  return join(stateDir, MANIFEST_FILE);
-}
-
 export function readManifest(stateDir: string): OcSwitchManifest {
-  const path = manifestPath(stateDir);
-  if (!existsSync(path)) return { providers: {}, extraEnv: {} };
-  const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<OcSwitchManifest>;
-  return { providers: parsed.providers ?? {}, extraEnv: parsed.extraEnv ?? {} };
+  return readJsonState({
+    stateDir,
+    filename: MANIFEST_FILE,
+    fallback: () => ({ providers: {}, extraEnv: {} }),
+    invalidJson: "throw",
+    normalize(value) {
+      const parsed = value as Partial<OcSwitchManifest>;
+      return { providers: parsed.providers ?? {}, extraEnv: parsed.extraEnv ?? {} };
+    }
+  });
 }
 
 export function writeManifest(stateDir: string, manifest: OcSwitchManifest): void {
-  mkdirSync(stateDir, { recursive: true });
-  writeFileSync(manifestPath(stateDir), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
-  try {
-    chmodSync(manifestPath(stateDir), 0o600);
-  } catch {
-    // 尽力收紧权限
-  }
+  writeJsonState({
+    stateDir,
+    filename: MANIFEST_FILE,
+    value: manifest
+  });
 }
 
 export function upsertExtraEnvManifest(
