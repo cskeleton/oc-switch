@@ -85,6 +85,56 @@ describe("writeOpenClawTransaction", () => {
     });
   });
 
+  test("writeOpenClawTransaction returns verified env write summary", async () => {
+    const ws = makeWorkspace();
+    writeFileSync(ws.envPath, "# oc-switch:start\nELYSIVER_API_KEY=old-value\n# oc-switch:end\n");
+
+    const result = await writeOpenClawTransaction({
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath,
+      stateDir: ws.stateDir,
+      reason: "edit provider elysiver",
+      envUpdates: { ELYSIVER_API_KEY: "sk-abcdefghijklmnopqrstuvwxyz123456" },
+      mutate(config) {
+        return config;
+      }
+    });
+
+    expect(result.envWrite).toEqual({
+      verified: true,
+      entries: [
+        {
+          envVar: "ELYSIVER_API_KEY",
+          verified: true,
+          managed: true,
+          maskedValue: "sk-abc********123456"
+        }
+      ]
+    });
+    expect(JSON.stringify(result)).not.toContain("sk-abcdefghijklmnopqrstuvwxyz123456");
+  });
+
+  test("rolls back config and env when env write verification fails", async () => {
+    const ws = makeWorkspace();
+    writeFileSync(ws.envPath, "# oc-switch:start\nELYSIVER_API_KEY=old-value\n# oc-switch:end\n");
+
+    await expect(writeOpenClawTransaction({
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath,
+      stateDir: ws.stateDir,
+      reason: "verification failure",
+      envUpdates: { ELYSIVER_API_KEY: "line-one\nline-two" },
+      mutate(config) {
+        config.agents!.defaults!.model = "nvidia/deepseek-ai/deepseek-v4-flash";
+        return config;
+      }
+    })).rejects.toThrow("env write verification failed");
+
+    const restored = JSON.parse(readFileSync(ws.openclawPath, "utf8"));
+    expect(restored.agents.defaults.model).toBe("minimax-portal/MiniMax-M3");
+    expect(readFileSync(ws.envPath, "utf8")).toBe("# oc-switch:start\nELYSIVER_API_KEY=old-value\n# oc-switch:end\n");
+  });
+
   test("does not create env file when no env updates are requested", async () => {
     const ws = makeWorkspace();
     rmSync(ws.envPath, { force: true });

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ApiClient, EnvIndexResponse, EnvVariableSummary, PathSettingsResponse, SettingsResponse } from "../api";
+import { formatEnvWriteSuccess } from "../env-feedback";
 import { EnvMigrationConfirmDialog } from "../components/EnvMigrationConfirmDialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../components/ui/card";
@@ -107,9 +108,13 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
         });
         return;
       }
-      await client.updateEnvVar({ type: "upsert", envVar, value, ...(note ? { note } : {}) });
+      const result = await client.updateEnvVar({ type: "upsert", envVar, value, ...(note ? { note } : {}) });
       setValueInputs((prev) => ({ ...prev, [envVar]: "" }));
-      setSuccessMessage(`${envVar} 已写入新值`);
+      setSuccessMessage(formatEnvWriteSuccess({
+        label: envVar,
+        envWrite: result.envWrite,
+        fallback: `${envVar} 已写入新值`
+      }));
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "更新失败");
@@ -179,7 +184,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
     try {
       if (pendingAction.type === "upsert" && pendingAction.value && pendingAction.envVar) {
         const envVar = pendingAction.envVar;
-        await client.updateEnvVar({
+        const result = await client.updateEnvVar({
           type: "upsert",
           envVar,
           value: pendingAction.value,
@@ -188,13 +193,15 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
           ...(pendingAction.confirmComplex ? { confirmComplex: true } : {})
         });
         setValueInputs((prev) => ({ ...prev, [envVar]: "" }));
-        setSuccessMessage(
-          pendingAction.confirmMigration
+        setSuccessMessage(formatEnvWriteSuccess({
+          label: envVar,
+          envWrite: result.envWrite,
+          fallback: pendingAction.confirmMigration
             ? `${envVar} 已迁入托管块并写入新值`
             : pendingAction.confirmComplex
               ? `${envVar} 已改写为标准格式并写入新值`
               : `${envVar} 已写入新值`
-        );
+        }));
       } else if (pendingAction.type === "delete" && pendingAction.envVar) {
         await client.deleteEnvVar({
           type: "delete",

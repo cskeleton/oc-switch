@@ -117,6 +117,32 @@ describe("applyEnvOperation", () => {
     });
   });
 
+  test("applyEnvOperation returns verified env write summary for upsert", async () => {
+    const ws = workspace("# oc-switch:start\nELYSIVER_API_KEY=old-value\n# oc-switch:end\n");
+
+    const result = await applyEnvOperation({
+      paths: ws,
+      operation: {
+        type: "upsert",
+        envVar: "ELYSIVER_API_KEY",
+        value: "sk-abcdefghijklmnopqrstuvwxyz123456"
+      }
+    });
+
+    expect(result.envWrite).toEqual({
+      verified: true,
+      entries: [
+        {
+          envVar: "ELYSIVER_API_KEY",
+          verified: true,
+          managed: true,
+          maskedValue: "sk-abc********123456"
+        }
+      ]
+    });
+    expect(JSON.stringify(result)).not.toContain("sk-abcdefghijklmnopqrstuvwxyz123456");
+  });
+
   test("does not store provider env refs as extra managed variables", async () => {
     const ws = workspace("# oc-switch:start\nNVIDIA_API_KEY=old-secret\n# oc-switch:end\n");
 

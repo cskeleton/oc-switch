@@ -17,6 +17,19 @@ export interface EnvPreview {
   backupWillIncludeSecrets: boolean;
 }
 
+export interface EnvWriteVerificationEntry {
+  envVar: string;
+  verified: boolean;
+  managed: boolean;
+  maskedValue?: string | undefined;
+  reason?: "missing-managed-value" | "value-mismatch" | undefined;
+}
+
+export interface EnvWriteVerification {
+  verified: boolean;
+  entries: EnvWriteVerificationEntry[];
+}
+
 export type ApiKeyEnvStatus = "managed" | "unmanaged" | "missing" | "complex" | "duplicate";
 
 export interface ProviderSummary {
@@ -292,7 +305,7 @@ export function createApiClient(options: ApiClientOptions) {
       models?: string[],
       flags?: { confirmMigration?: boolean; confirmComplex?: boolean }
     ) =>
-      request<{ ok: boolean }>("/api/providers", {
+      request<{ ok: boolean; backupId?: string; envWrite?: EnvWriteVerification }>("/api/providers", {
         method: "POST",
         body: JSON.stringify({ presetId, apiKey, models, ...flags })
       }),
@@ -306,7 +319,7 @@ export function createApiClient(options: ApiClientOptions) {
       apiKey: string,
       flags?: { confirmMigration?: boolean; confirmComplex?: boolean }
     ) =>
-      request<{ ok: boolean; backupId?: string }>("/api/providers/custom", {
+      request<{ ok: boolean; backupId?: string; envWrite?: EnvWriteVerification }>("/api/providers/custom", {
         method: "POST",
         body: JSON.stringify({ ...input, apiKey, ...flags })
       }),
@@ -316,7 +329,7 @@ export function createApiClient(options: ApiClientOptions) {
         body: JSON.stringify(changes)
       }),
     updateProvider: (id: string, changes: { baseUrl?: string; apiKey?: string; confirmMigration?: boolean; confirmComplex?: boolean }) =>
-      request<{ ok: boolean }>(`/api/providers/${id}`, {
+      request<{ ok: boolean; backupId?: string; envWrite?: EnvWriteVerification }>(`/api/providers/${id}`, {
         method: "PUT",
         body: JSON.stringify(changes)
       }),
@@ -366,7 +379,7 @@ export function createApiClient(options: ApiClientOptions) {
       }),
     getEnvIndex: () => request<EnvIndexResponse>("/api/env"),
     updateEnvVar: (body: { type: "upsert"; envVar: string; value: string; note?: string; confirmMigration?: boolean; confirmComplex?: boolean }) =>
-      request<{ ok: true; affectedKeys: string[]; backupId?: string }>("/api/env", {
+      request<{ ok: true; affectedKeys: string[]; backupId?: string; envWrite?: EnvWriteVerification }>("/api/env", {
         method: "POST",
         body: JSON.stringify(body)
       }),

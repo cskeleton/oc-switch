@@ -8,6 +8,7 @@ import { writeEnvTransaction } from "./transaction-writer";
 import type { OcSwitchPaths } from "./paths";
 import type { OpenClawConfig } from "./types";
 import JSON5 from "json5";
+import type { EnvWriteVerification } from "./env-verification";
 
 const ENV_VAR_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -29,6 +30,7 @@ export interface EnvOperationResult {
   ok: true;
   affectedKeys: string[];
   backupId?: string;
+  envWrite?: EnvWriteVerification;
 }
 
 function assertEnvVar(envVar: string): void {
@@ -113,6 +115,9 @@ export async function applyEnvOperation(input: { paths: OcSwitchPaths; operation
     reason: input.operation.type === "rename"
       ? `rename env var ${input.operation.fromEnvVar} to ${input.operation.toEnvVar}`
       : `${input.operation.type} env var ${input.operation.envVar}`,
+    ...(input.operation.type === "upsert"
+      ? { verifyEnvUpdates: { [input.operation.envVar]: input.operation.value! } }
+      : {}),
     mutateEnv(content) {
       if (input.operation.type === "delete") {
         return removeManagedEnvKeys(content, [input.operation.envVar]).content;
@@ -154,6 +159,7 @@ export async function applyEnvOperation(input: { paths: OcSwitchPaths; operation
     affectedKeys: input.operation.type === "rename"
       ? [input.operation.fromEnvVar, input.operation.toEnvVar]
       : [input.operation.envVar],
-    backupId: basename(result.backupDir)
+    backupId: basename(result.backupDir),
+    ...(result.envWrite ? { envWrite: result.envWrite } : {})
   };
 }

@@ -502,7 +502,20 @@ describe("ProvidersView", () => {
       modelsDisabled: [],
       primaryChanged: null
     }));
-    const addCustomProvider = mock(async () => ({ ok: true }));
+    const addCustomProvider = mock(async () => ({
+      ok: true,
+      envWrite: {
+        verified: true,
+        entries: [
+          {
+            envVar: "CUSTOM_OPENAI_API_KEY",
+            verified: true,
+            managed: true,
+            maskedValue: "sk-abc********123456"
+          }
+        ]
+      }
+    }));
     const getProviders = mock(async () => ({
       providers: [
         providerSummary({
@@ -527,7 +540,7 @@ describe("ProvidersView", () => {
     await userEvent.type(providerIdInput, "custom-openai");
     await userEvent.type(await findByLabelText("官网链接"), "https://custom.example");
     await userEvent.type(await findByLabelText("备注"), "Company account");
-    await userEvent.type(await findByLabelText("API Key"), "sk-test-custom-secret");
+    await userEvent.type(await findByLabelText("API Key"), "sk-abcdefghijklmnopqrstuvwxyz123456");
     await userEvent.type(await findByLabelText("请求地址"), "https://api.custom.example");
     await userEvent.type(await findByLabelText("模型 ID 1"), "model-a");
     await userEvent.type(await findByLabelText("模型名称 1"), "Model A");
@@ -570,8 +583,9 @@ describe("ProvidersView", () => {
         { id: "vendor/model-b", name: "Vendor Model B", alias: "b" }
       ],
       enableAllModels: true
-    }, "sk-test-custom-secret", undefined);
-    expect(queryByText("sk-test-custom-secret")).toBeNull();
+    }, "sk-abcdefghijklmnopqrstuvwxyz123456", undefined);
+    expect(await findByText("Provider custom-openai 的 API Key 已写入托管块：CUSTOM_OPENAI_API_KEY = sk-abc********123456")).toBeTruthy();
+    expect(queryByText("sk-abcdefghijklmnopqrstuvwxyz123456")).toBeNull();
   });
 
   test("clears custom provider api key when dialog is cancelled", async () => {
@@ -599,7 +613,20 @@ describe("ProvidersView", () => {
   });
 
   test("edits provider base URL and API key without rendering the key", async () => {
-    const updateProvider = mock(async () => ({ ok: true }));
+    const updateProvider = mock(async () => ({
+      ok: true,
+      envWrite: {
+        verified: true,
+        entries: [
+          {
+            envVar: "NVIDIA_API_KEY",
+            verified: true,
+            managed: true,
+            maskedValue: "sk-abc********123456"
+          }
+        ]
+      }
+    }));
     const previewUpdateProvider = mock(async () => ({
       providersAdded: [],
       providersRemoved: [],
@@ -637,15 +664,15 @@ describe("ProvidersView", () => {
     const baseUrlInput = await findByLabelText("Provider baseUrl");
     await userEvent.clear(baseUrlInput);
     await userEvent.type(baseUrlInput, "https://new-nvidia.example/v1");
-    await userEvent.type(await findByLabelText("Provider API Key 新值"), "sk-new-secret");
+    await userEvent.type(await findByLabelText("Provider API Key 新值"), "sk-abcdefghijklmnopqrstuvwxyz123456");
     await userEvent.click(getByText("保存 Provider"));
 
     expect(updateProvider).toHaveBeenCalledWith("nvidia", {
       baseUrl: "https://new-nvidia.example/v1",
-      apiKey: "sk-new-secret"
+      apiKey: "sk-abcdefghijklmnopqrstuvwxyz123456"
     });
-    expect(await findByText("Provider nvidia 的 API Key 已更新")).toBeTruthy();
-    expect(queryByText("sk-new-secret")).toBeNull();
+    expect(await findByText("Provider nvidia 的 API Key 已写入托管块：NVIDIA_API_KEY = sk-abc********123456")).toBeTruthy();
+    expect(queryByText("sk-abcdefghijklmnopqrstuvwxyz123456")).toBeNull();
   });
 
   test("provider edit previews unmanaged API key migration before saving", async () => {
@@ -802,7 +829,20 @@ describe("ProvidersView", () => {
 
 describe("PresetsView", () => {
   test("sends apiKey only in request body and never renders it after submit", async () => {
-    const addProvider = mock(async () => ({ ok: true }));
+    const addProvider = mock(async () => ({
+      ok: true,
+      envWrite: {
+        verified: true,
+        entries: [
+          {
+            envVar: "NVIDIA_API_KEY",
+            verified: true,
+            managed: true,
+            maskedValue: "sk-abc********123456"
+          }
+        ]
+      }
+    }));
     const previewAddProvider = mock(async () => ({
       providersAdded: ["nvidia"],
       providersRemoved: [],
@@ -821,14 +861,15 @@ describe("PresetsView", () => {
     );
 
     const keyInput = await findByLabelText("API Key");
-    await userEvent.type(keyInput, "sk-test-secret-key");
+    await userEvent.type(keyInput, "sk-abcdefghijklmnopqrstuvwxyz123456");
     await userEvent.click(getByText("预览并添加"));
     await userEvent.click(getByText("确认"));
 
     expect(previewAddProvider).toHaveBeenCalledWith("nvidia");
-    expect(addProvider).toHaveBeenCalledWith("nvidia", "sk-test-secret-key", undefined, undefined);
+    expect(addProvider).toHaveBeenCalledWith("nvidia", "sk-abcdefghijklmnopqrstuvwxyz123456", undefined, undefined);
+    expect(await findByText("Provider nvidia 的 API Key 已写入托管块：NVIDIA_API_KEY = sk-abc********123456")).toBeTruthy();
     expect(getDiff).not.toHaveBeenCalled();
-    expect(queryByText("sk-test-secret-key")).toBeNull();
+    expect(queryByText("sk-abcdefghijklmnopqrstuvwxyz123456")).toBeNull();
   });
 });
 
@@ -1130,7 +1171,21 @@ describe("SettingsView", () => {
       warnings: [],
       backupWillIncludeSecrets: true
     }));
-    const updateEnvVar = mock(async () => ({ ok: true as const, affectedKeys: ["NVIDIA_API_KEY"] }));
+    const updateEnvVar = mock(async () => ({
+      ok: true as const,
+      affectedKeys: ["NVIDIA_API_KEY"],
+      envWrite: {
+        verified: true,
+        entries: [
+          {
+            envVar: "NVIDIA_API_KEY",
+            verified: true,
+            managed: true,
+            maskedValue: "sk-abc********123456"
+          }
+        ]
+      }
+    }));
     const getEnvIndex = mock(async () => ({
       variables: [{
         envVar: "NVIDIA_API_KEY",
@@ -1147,7 +1202,7 @@ describe("SettingsView", () => {
       warnings: []
     }));
 
-    const { findByText, findByLabelText, getByText } = render(
+    const { findByText, findByLabelText, getByText, queryByText } = render(
       <SettingsView
         baseUrl="http://127.0.0.1:7420"
         client={mockClient({
@@ -1170,14 +1225,16 @@ describe("SettingsView", () => {
 
     await userEvent.click(await findByText("环境变量"));
     const input = await findByLabelText("NVIDIA_API_KEY 新值");
-    await userEvent.type(input, "brand-new-secret");
+    await userEvent.type(input, "sk-abcdefghijklmnopqrstuvwxyz123456");
     await userEvent.click(getByText("重填"));
     await waitFor(() => expect(updateEnvVar).toHaveBeenCalled());
     expect(updateEnvVar).toHaveBeenCalledWith({
       type: "upsert",
       envVar: "NVIDIA_API_KEY",
-      value: "brand-new-secret"
+      value: "sk-abcdefghijklmnopqrstuvwxyz123456"
     });
+    expect(await findByText("NVIDIA_API_KEY 已写入托管块：NVIDIA_API_KEY = sk-abc********123456")).toBeTruthy();
+    expect(queryByText("sk-abcdefghijklmnopqrstuvwxyz123456")).toBeNull();
     await waitFor(() => expect((input as HTMLInputElement).value).toBe(""));
   });
 

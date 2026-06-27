@@ -15,5 +15,8 @@ docs/superpowers/plans/
 # Cursor IDE 本地配置与 hooks 状态
 .cursor/
 
+# 本机私有 agent 补充规则，不进入公开仓库
+AGENTS.local.md
+
 # 仓库内 builtin 预设数据 — 运行时从 ~/.oc-switch/presets/builtin/ 读取
 presets/builtin/

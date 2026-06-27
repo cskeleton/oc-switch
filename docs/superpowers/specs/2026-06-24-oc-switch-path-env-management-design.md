@@ -306,7 +306,7 @@ envUpdateOptions?: {
 
 - `GET /api/env` 不返回 value。
 - `POST /api/env/preview` 不接收或返回 value。
-- `POST /api/env` 可接收新值，但响应不回显。
+- `POST /api/env` 可接收新值，但响应不回显明文 value；成功时返回 `envWrite` 摘要（见 §7.1）。
 - manifest 不保存 value。
 - 日志不记录 value。
 - Web DOM 不渲染 value。
@@ -317,6 +317,15 @@ envUpdateOptions?: {
 
 - `.env` 文件本身和备份内 `.env` 必须包含明文，否则 OpenClaw 无法使用。
 - 本设计不承诺密钥在本机文件系统中加密保存。
+
+### 7.1 写后校验反馈（2026-06-27 增补）
+
+Provider and Settings env writes perform server-side write-after-read verification before returning success feedback. The server compares the managed-block value with the submitted value in memory and returns only `verified`, `envVar`, `managed`, and optional `maskedValue`; it never returns the plaintext key or the mismatched disk value.
+
+- 校验仅读取 `# oc-switch:start/end` 托管块内的最终值。
+- `maskedValue` 为可选短指纹（长度不足 16 时不返回），用于 Web 成功提示。
+- 校验失败时事务回滚并返回错误响应；响应不含明文、不含磁盘上的错误值，也不把失败写入成功反馈。
+- Web 成功文案必须基于 `envWrite.verified === true`，不得仅凭前端输入乐观展示「已写入」。
 
 ## 8. 备份与恢复
 
@@ -455,7 +464,8 @@ Core 是唯一文件读写层。Server/Web 不直接读写本地文件。
 - 创建备份
 - 更新 `.env`
 - 更新 manifest metadata
-- 返回 `{ ok: true, backupId }`
+- 写后校验托管块内值与提交值一致（§7.1）
+- 返回 `{ ok: true, backupId, envWrite? }`；`envWrite` 不含明文 value
 
 ## 11. Web 设计
 

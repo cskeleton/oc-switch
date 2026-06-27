@@ -20,4 +20,5 @@ export * from "./manifest-manager";
 export * from "./env-inspector";
 export * from "./env-operations";
 export * from "./env-updates";
+export * from "./env-verification";
 export * from "./openclaw-compat";

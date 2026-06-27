@@ -92,7 +92,11 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
           return addProviderFromPreset(config, preset, enabledModels).config;
         }
       });
-      return c.json({ ok: true, backupId: result.backupDir.split("/").pop() });
+      return c.json({
+        ok: true,
+        backupId: result.backupDir.split("/").pop(),
+        ...(result.envWrite ? { envWrite: result.envWrite } : {})
+      });
     } catch (error) {
       return jsonError(c, error);
     }
@@ -160,7 +164,11 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
           return addCustomProvider(config, input).config;
         }
       });
-      return c.json({ ok: true, backupId: result.backupDir.split("/").pop() });
+      return c.json({
+        ok: true,
+        backupId: result.backupDir.split("/").pop(),
+        ...(result.envWrite ? { envWrite: result.envWrite } : {})
+      });
     } catch (error) {
       return jsonError(c, error);
     }
@@ -314,7 +322,11 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
           return editProvider(config, providerId, changes).config;
         }
       });
-      return c.json({ ok: true, backupId: result.backupDir.split("/").pop() });
+      return c.json({
+        ok: true,
+        backupId: result.backupDir.split("/").pop(),
+        ...(result.envWrite ? { envWrite: result.envWrite } : {})
+      });
     } catch (error) {
       return jsonError(c, error);
     }

@@ -4,6 +4,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DataTable } from "../components/DataTable";
 import { DiffSummary } from "../components/DiffSummary";
 import { EnvMigrationConfirmDialog } from "../components/EnvMigrationConfirmDialog";
+import { formatEnvWriteSuccess } from "../env-feedback";
 import type { ApiClient, ConfigDiffSummary, EnvPreview, PresetEntry } from "../api";
 
 interface PresetsViewProps {
@@ -20,6 +21,7 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
   const [diff, setDiff] = useState<ConfigDiffSummary | null>(null);
   const [envPreview, setEnvPreview] = useState<EnvPreview | null>(null);
   const [confirmAdd, setConfirmAdd] = useState(false);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [submittedKey, setSubmittedKey] = useState("");
 
   const load = useCallback(async () => {
@@ -38,8 +40,10 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
   }, [load]);
 
   async function handleImport() {
+    setSuccessMessage(null);
     try {
       await client.importPresets();
+      setSuccessMessage("当前配置已导入为自定义预设。");
       await load();
       onRefresh?.();
     } catch (err) {
@@ -48,8 +52,10 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
   }
 
   async function handleExport(providerId: string) {
+    setSuccessMessage(null);
     try {
       await client.exportPreset(providerId);
+      setSuccessMessage(`Provider ${providerId} 已导出为自定义预设。`);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "导出失败");
@@ -62,6 +68,7 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
       return;
     }
     setError(null);
+    setSuccessMessage(null);
     try {
       const currentDiff = await client.previewAddProvider(selectedPreset);
       setDiff(currentDiff);
@@ -75,11 +82,16 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
   async function confirmAddProvider(flags?: { confirmMigration?: boolean; confirmComplex?: boolean }) {
     if (!selectedPreset || !apiKeyInput) return;
     try {
-      await client.addProvider(selectedPreset, apiKeyInput, undefined, flags);
+      const result = await client.addProvider(selectedPreset, apiKeyInput, undefined, flags);
       setSubmittedKey("");
       setApiKeyInput("");
       setConfirmAdd(false);
       setEnvPreview(null);
+      setSuccessMessage(formatEnvWriteSuccess({
+        label: `Provider ${selectedPreset} 的 API Key`,
+        envWrite: result.envWrite,
+        fallback: `Provider ${selectedPreset} 已添加`
+      }));
       await load();
       onRefresh?.();
     } catch (err) {
@@ -129,6 +141,7 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
       </div>
 
       {error ? <p className="mb-3 text-destructive">{error}</p> : null}
+      {successMessage ? <p className="mb-3 text-sm text-emerald-600 dark:text-emerald-400">{successMessage}</p> : null}
 
       <div className="mb-6 rounded-lg border border-border bg-muted/40 p-4">
         <h2 className="mb-3 text-sm font-medium text-foreground">从预设添加 Provider</h2>

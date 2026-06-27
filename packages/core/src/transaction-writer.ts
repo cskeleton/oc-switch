@@ -9,6 +9,7 @@ import { listProviderEnvRefs } from "./env-inspector";
 import { readManifest } from "./manifest-manager";
 import { withFileLock } from "./lock";
 import { markProviderEnvOrphan, upsertProviderEnvManifest, type ManifestProviderMetadata } from "./manifest-manager";
+import { verifyEnvWrite, type EnvWriteVerification } from "./env-verification";
 import type { OpenClawConfig } from "./types";
 
 export type ManifestUpdate =
@@ -30,6 +31,7 @@ export interface TransactionInput {
 
 export interface TransactionResult {
   backupDir: string;
+  envWrite?: EnvWriteVerification;
 }
 
 function sha256(value: string): string {
@@ -85,6 +87,8 @@ export async function writeOpenClawTransaction(input: TransactionInput): Promise
       beforeHash
     });
 
+    let envWrite: EnvWriteVerification | undefined;
+
     mkdirSync(dirname(input.openclawPath), { recursive: true });
     mkdirSync(dirname(input.envPath), { recursive: true });
     const configTmp = `${input.openclawPath}.tmp`;
@@ -96,6 +100,10 @@ export async function writeOpenClawTransaction(input: TransactionInput): Promise
         renameSync(envTmp, input.envPath);
       }
       renameSync(configTmp, input.openclawPath);
+      if (hasEnvUpdates) {
+        envWrite = verifyEnvWrite(readFileSync(input.envPath, "utf8"), input.envUpdates!);
+        if (!envWrite.verified) throw new Error("env write verification failed");
+      }
       applyManifestUpdates(input.stateDir, input.manifestUpdates);
       input.afterWrite?.();
     } catch (error) {
@@ -105,7 +113,10 @@ export async function writeOpenClawTransaction(input: TransactionInput): Promise
       throw error;
     }
 
-    return { backupDir };
+    return {
+      backupDir,
+      ...(envWrite ? { envWrite } : {})
+    };
   });
 }
 
@@ -116,6 +127,7 @@ export interface EnvTransactionInput {
   reason: string;
   pathSources?: { openclawPath?: string; envPath?: string };
   mutateEnv(content: string): string;
+  verifyEnvUpdates?: Record<string, string>;
   afterWrite?: () => void;
 }
 
@@ -135,11 +147,17 @@ export async function writeEnvTransaction(input: EnvTransactionInput): Promise<T
       ...(input.pathSources ? { pathSources: input.pathSources } : {})
     });
 
+    let envWrite: EnvWriteVerification | undefined;
+
     mkdirSync(dirname(input.envPath), { recursive: true });
     const envTmp = `${input.envPath}.tmp`;
     try {
       writeFileSync(envTmp, afterEnv, { mode: 0o600 });
       renameSync(envTmp, input.envPath);
+      if (input.verifyEnvUpdates) {
+        envWrite = verifyEnvWrite(readFileSync(input.envPath, "utf8"), input.verifyEnvUpdates);
+        if (!envWrite.verified) throw new Error("env write verification failed");
+      }
       input.afterWrite?.();
     } catch (error) {
       restoreFromBackup(backupDir, input.openclawPath, input.envPath);
@@ -147,6 +165,9 @@ export async function writeEnvTransaction(input: EnvTransactionInput): Promise<T
       throw error;
     }
 
-    return { backupDir };
+    return {
+      backupDir,
+      ...(envWrite ? { envWrite } : {})
+    };
   });
 }

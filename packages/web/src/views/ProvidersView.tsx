@@ -6,6 +6,7 @@ import { DataTable } from "../components/DataTable";
 import { EnvMigrationConfirmDialog } from "../components/EnvMigrationConfirmDialog";
 import { MergeCaseDuplicateDialog } from "../components/MergeCaseDuplicateDialog";
 import { ProviderModelsDialog } from "../components/ProviderModelsDialog";
+import { formatEnvWriteSuccess } from "../env-feedback";
 import type { ApiClient, CaseDuplicateGroup, ModelSummary, ProviderSummary } from "../api";
 
 interface ProvidersViewProps {
@@ -110,18 +111,20 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
   }
 
   async function submitProviderUpdate(providerId: string, changes: { baseUrl?: string; apiKey?: string; confirmMigration?: boolean; confirmComplex?: boolean }) {
-    await client.updateProvider(providerId, changes);
+    const result = await client.updateProvider(providerId, changes);
     setEditTarget(null);
     setEditApiKey("");
     setPendingEnvConfirm(null);
     if (changes.apiKey) {
-      setSuccessMessage(
-        changes.confirmMigration
+      setSuccessMessage(formatEnvWriteSuccess({
+        label: `Provider ${providerId} 的 API Key`,
+        envWrite: result.envWrite,
+        fallback: changes.confirmMigration
           ? `Provider ${providerId} 的 API Key 已迁入托管块并更新`
           : changes.confirmComplex
             ? `Provider ${providerId} 的 API Key 已改写为标准格式并更新`
             : `Provider ${providerId} 的 API Key 已更新`
-      );
+      }));
     } else {
       setSuccessMessage(`Provider ${providerId} 已更新`);
     }
@@ -369,8 +372,13 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
         open={addingProvider}
         client={client}
         onCancel={() => setAddingProvider(false)}
-        onSaved={() => {
+        onSaved={(result) => {
           setAddingProvider(false);
+          setSuccessMessage(formatEnvWriteSuccess({
+            label: `Provider ${result.providerId} 的 API Key`,
+            envWrite: result.envWrite,
+            fallback: `Provider ${result.providerId} 已添加`
+          }));
           void load();
           onRefresh?.();
         }}

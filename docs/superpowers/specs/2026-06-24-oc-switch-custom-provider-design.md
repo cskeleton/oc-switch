@@ -356,7 +356,7 @@ CLI 采用同一 core 操作与事务写入路径。
 4. 页面显示 `DiffSummary`
 5. 用户确认
 6. 前端调用 `/api/providers/custom`
-7. 成功后清空 API Key、关闭表单、刷新 Providers 和 Dashboard
+7. 成功后清空 API Key、关闭表单、刷新 Providers 和 Dashboard；成功提示基于响应 `envWrite.verified` 与可选 `maskedValue`（见 Path & Env 规格 §7.1），不得仅凭前端输入展示「已写入」
 
 ### 9.3 表单默认值
 
@@ -393,7 +393,7 @@ CLI 采用同一 core 操作与事务写入路径。
 
 - preview 返回 diff 且不写文件
 - commit 写入 `openclaw.json`、`.env`、manifest
-- commit 响应不泄漏 API Key
+- commit 响应不泄漏 API Key；含 API Key 写入时返回 `envWrite` 校验摘要（`verified`、`envVar`、`managed`、可选 `maskedValue`），不含明文或磁盘不匹配值
 - 错误输入返回 400
 
 ### 11.3 CLI
@@ -426,6 +426,7 @@ CLI 采用同一 core 操作与事务写入路径。
 
 - 用户无需创建 preset 文件即可添加自定义 Provider
 - API Key 不出现在 `openclaw.json`、API 响应、Web DOM 文本中
+- Provider and Settings env writes perform server-side write-after-read verification before returning success feedback. The server compares the managed-block value with the submitted value in memory and returns only `verified`, `envVar`, `managed`, and optional `maskedValue`; it never returns the plaintext key or the mismatched disk value.
 - 添加前可以看到 diff preview
 - 添加后 provider 出现在 Providers 页面，模型出现在 Models 页面
 - 默认启用时 allowlist 包含所有输入模型

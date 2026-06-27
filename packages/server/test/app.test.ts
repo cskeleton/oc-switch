@@ -287,13 +287,27 @@ describe("server write endpoints", () => {
       method: "POST",
       body: JSON.stringify({
         presetId: "testprov",
-        apiKey: "super-secret-key-value",
+        apiKey: "sk-abcdefghijklmnopqrstuvwxyz123456",
         models: ["vendor/model"]
       })
     });
 
     expect(response.status).toBe(200);
-    expect(JSON.stringify(json)).not.toContain("super-secret-key-value");
+    expect(json).toMatchObject({
+      ok: true,
+      envWrite: {
+        verified: true,
+        entries: [
+          {
+            envVar: "TESTPROV_API_KEY",
+            verified: true,
+            managed: true,
+            maskedValue: "sk-abc********123456"
+          }
+        ]
+      }
+    });
+    expect(JSON.stringify(json)).not.toContain("sk-abcdefghijklmnopqrstuvwxyz123456");
     const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
     expect(config.models.providers.testprov.baseUrl).toBe("https://test.example/v1");
     expect(config.agents.defaults.models["testprov/vendor/model"]).toEqual({ alias: "vm" });
@@ -344,14 +358,28 @@ describe("server write endpoints", () => {
   test("POST /api/providers/custom writes provider env and manifest without leaking key", async () => {
     const ws = workspace();
     const app = createTestApp(ws);
-    const body = { ...customProviderBody(), apiKey: "sk-test-custom-secret" };
+    const body = { ...customProviderBody(), apiKey: "sk-abcdefghijklmnopqrstuvwxyz123456" };
     const { response, json } = await jsonRequest(app, "/api/providers/custom", {
       method: "POST",
       body: JSON.stringify(body)
     });
 
     expect(response.status).toBe(200);
-    expect(JSON.stringify(json)).not.toContain("sk-test-custom-secret");
+    expect(json).toMatchObject({
+      ok: true,
+      envWrite: {
+        verified: true,
+        entries: [
+          {
+            envVar: "CUSTOM_OPENAI_API_KEY",
+            verified: true,
+            managed: true,
+            maskedValue: "sk-abc********123456"
+          }
+        ]
+      }
+    });
+    expect(JSON.stringify(json)).not.toContain("sk-abcdefghijklmnopqrstuvwxyz123456");
     const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
     expect(config.models.providers["custom-openai"]).toMatchObject({
       baseUrl: "https://api.custom.example/v1",
@@ -359,7 +387,7 @@ describe("server write endpoints", () => {
       apiKey: "${CUSTOM_OPENAI_API_KEY}"
     });
     expect(config.agents.defaults.models["custom-openai/vendor/model-b"]).toEqual({ alias: "b" });
-    expect(readFileSync(ws.paths.envPath, "utf8")).toContain("CUSTOM_OPENAI_API_KEY=sk-test-custom-secret");
+    expect(readFileSync(ws.paths.envPath, "utf8")).toContain("CUSTOM_OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456");
     const manifest = JSON.parse(readFileSync(join(ws.paths.stateDir, "manifest.json"), "utf8"));
     expect(manifest.providers["custom-openai"]).toMatchObject({
       providerId: "custom-openai",
@@ -448,13 +476,28 @@ describe("server write endpoints", () => {
     writeFileSync(ws.paths.openclawPath, `${JSON.stringify(config, null, 2)}\n`);
     writeFileSync(ws.paths.envPath, "# oc-switch:start\nNVIDIA_API_KEY=old-secret\n# oc-switch:end\n");
     const app = createTestApp(ws);
-    const { response } = await jsonRequest(app, "/api/providers/nvidia", {
+    const { response, json } = await jsonRequest(app, "/api/providers/nvidia", {
       method: "PUT",
-      body: JSON.stringify({ apiKey: "new-secret" })
+      body: JSON.stringify({ apiKey: "sk-abcdefghijklmnopqrstuvwxyz123456" })
     });
 
     expect(response.status).toBe(200);
-    expect(readFileSync(ws.paths.envPath, "utf8")).toContain("NVIDIA_API_KEY=new-secret");
+    expect(json).toMatchObject({
+      ok: true,
+      envWrite: {
+        verified: true,
+        entries: [
+          {
+            envVar: "NVIDIA_API_KEY",
+            verified: true,
+            managed: true,
+            maskedValue: "sk-abc********123456"
+          }
+        ]
+      }
+    });
+    expect(JSON.stringify(json)).not.toContain("sk-abcdefghijklmnopqrstuvwxyz123456");
+    expect(readFileSync(ws.paths.envPath, "utf8")).toContain("NVIDIA_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456");
   });
 
   test("DELETE /api/providers/:id removes provider with newPrimary in body", async () => {
