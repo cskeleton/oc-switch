@@ -188,6 +188,57 @@ function buildHealthIssues(health: ConfigHealthReport): ConfigStatusIssue[] {
   });
 }
 
+function isEnvRefObject(input: unknown): boolean {
+  return typeof input === "object" && input !== null && (input as { source?: string }).source === "env";
+}
+
+function isLegacyEnvObject(input: unknown): boolean {
+  return isEnvRefObject(input) && (input as { provider?: unknown }).provider === undefined;
+}
+
+function buildCompatibilityIssues(config: OpenClawConfig): ConfigStatusIssue[] {
+  const issues: ConfigStatusIssue[] = [];
+
+  for (const [providerId, provider] of Object.entries(config.models?.providers ?? {})) {
+    if (isLegacyEnvObject(provider.apiKey)) {
+      issues.push({
+        id: issueId("health", "legacy-env-ref", providerId),
+        severity: "blocking",
+        source: "health",
+        title: `Provider ${providerId} 的 apiKey 使用旧版 EnvRef，与 OpenClaw 2026.6.8 不兼容`,
+        detail: "应迁移为 \"${ENV_VAR}\" 字符串格式",
+        action: "oc-switch health repair"
+      });
+    }
+
+    if (isEnvRefObject(provider.authHeader)) {
+      issues.push({
+        id: issueId("health", "invalid-auth-header-ref", providerId),
+        severity: "blocking",
+        source: "health",
+        title: `Provider ${providerId} 的 authHeader 错写为密钥引用，与 OpenClaw 2026.6.8 不兼容`,
+        detail: "authHeader 应为 boolean；密钥应写在 apiKey",
+        action: "oc-switch health repair"
+      });
+    }
+
+    for (const model of provider.models ?? []) {
+      if (!model.name?.trim()) {
+        const subject = `${providerId}/${model.id}`;
+        issues.push({
+          id: issueId("health", "missing-model-name", subject),
+          severity: "blocking",
+          source: "health",
+          title: `模型 ${subject} 缺少 OpenClaw 2026.6.8 必填 name`,
+          action: "oc-switch health repair"
+        });
+      }
+    }
+  }
+
+  return issues;
+}
+
 function buildEnvIssues(
   envInspection: ReturnType<typeof inspectEnvFile>,
   orphanEnvKeys: string[]
@@ -292,6 +343,7 @@ export function inspectConfigStatus(input: InspectConfigStatusInput): ConfigStat
   for (const issue of [
     ...buildPathIssues(input.paths, input.configReadError),
     ...buildHealthIssues(health),
+    ...(input.config ? buildCompatibilityIssues(input.config) : []),
     ...buildEnvIssues(envInspection, orphanEnvKeys),
     ...buildDisabledProviderIssues(disabledProviders)
   ]) {

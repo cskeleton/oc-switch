@@ -72,9 +72,9 @@ Providers 页面顶部新增“添加 Provider”按钮。
 | API 类型 | 是 | `provider.api` | 支持 `openai-completions`、`anthropic-messages`、`google-generative-ai` |
 | 请求地址 | 是 | `provider.baseUrl` | 写入 OpenClaw provider 的 `baseUrl` |
 | 完整 URL | 否 | manifest metadata | 控制表单输入辅助行为，不改变 OpenClaw schema |
-| API Key env 名 | 是 | `provider.apiKey.id` 或 `provider.authHeader.id` | 默认由 Provider ID 生成 |
+| API Key env 名 | 是 | `provider.apiKey`，写入 OpenClaw 2026.6.8 兼容的 `"${ENV_VAR}"` 字符串；`authHeader` 仅作为 boolean 兼容开关，不保存密钥引用 | 默认由 Provider ID 生成 |
 | API Key | 是 | `.env` managed block | 只写入 `.env`，不回显 |
-| 模型列表 | 是 | `provider.models[]` | 一行一个 model id，可带 alias |
+| 模型列表 | 是 | `provider.models[]` | 表格式输入：每行 `id`、可选 `name`、可选 `alias` |
 
 高级字段：
 
@@ -85,19 +85,12 @@ Providers 页面顶部新增“添加 Provider”按钮。
 
 ### 4.3 模型列表输入格式
 
-表单使用多行文本输入：
-
-```text
-gpt-4.1
-gpt-4.1-mini | gpt41-mini
-deepseek-ai/deepseek-v4-flash | ds-flash
-```
+模型列表使用表格式输入。每行包含 `id`、可选 `name`、可选 `alias`。默认展示 3 行空输入，点击加号追加更多行。
 
 解析规则：
 
-- 每个非空行表示一个模型
-- `|` 左侧为 `model.id`
-- `|` 右侧为 allowlist alias，可选
+- 仅提交 `id` 非空的行
+- `name` 与 `alias` 可选；省略 `name` 时由 core 从 `id` 生成 fallback
 - `model.id` 可以包含 `/`，不做路径拆分
 - 重复 model id 报错，不静默覆盖
 
@@ -131,6 +124,7 @@ export interface CustomProviderInput {
   apiKeyEnv: string;
   models: Array<{
     id: string;
+    name?: string;
     alias?: string;
   }>;
   enableAllModels: boolean;
@@ -149,8 +143,8 @@ export interface CustomProviderInput {
   "baseUrl": "https://api.example.com/v1",
   "apiKeyEnv": "MY_PROVIDER_API_KEY",
   "models": [
-    { "id": "model-a", "alias": "a" },
-    { "id": "vendor/model-b", "alias": "b" }
+    { "id": "model-a", "name": "Model A", "alias": "a" },
+    { "id": "vendor/model-b", "name": "Vendor Model B", "alias": "b" }
   ],
   "enableAllModels": true
 }
@@ -165,10 +159,10 @@ export interface CustomProviderInput {
       "my-provider": {
         "baseUrl": "https://api.example.com/v1",
         "api": "openai-completions",
-        "apiKey": { "source": "env", "id": "MY_PROVIDER_API_KEY" },
+        "apiKey": "${MY_PROVIDER_API_KEY}",
         "models": [
-          { "id": "model-a" },
-          { "id": "vendor/model-b" }
+          { "id": "model-a", "name": "Model A" },
+          { "id": "vendor/model-b", "name": "Vendor Model B" }
         ]
       }
     }
@@ -229,12 +223,10 @@ MY_PROVIDER_API_KEY=sk-...
 
 ### 6.2 auth 字段选择
 
-首版规则：
+首版规则（OpenClaw 2026.6.8 兼容）：
 
-- `openai-completions` 与 `google-generative-ai` 写 `apiKey: { source: "env", id }`
-- `anthropic-messages` 写 `authHeader: { source: "env", id }`
-
-原因：当前样例中 Anthropic 兼容 provider 使用 `authHeader`，OpenAI 兼容 provider 使用 `apiKey`。
+- 所有 API 类型统一写 `apiKey: "${ENV_VAR}"` 字符串
+- 不在新写入中使用 `authHeader` 保存密钥；`authHeader` 仅作为 boolean 兼容开关（修复旧配置时可为 `true`）
 
 ### 6.3 manifest metadata
 
@@ -393,7 +385,7 @@ CLI 采用同一 core 操作与事务写入路径。
 
 - `addCustomProvider` 写入 provider、models、allowlist
 - `model.id` 包含 `/` 时 ref 正确
-- `anthropic-messages` 使用 `authHeader`
+- 所有 API 类型写入 `apiKey: "${ENV_VAR}"` 且填充 model `name`
 - `openai-completions` 在 `isFullUrl=false` 时补 `/v1`
 - providerId/env/baseUrl/models 校验失败
 

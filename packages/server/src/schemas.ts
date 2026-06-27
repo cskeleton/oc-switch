@@ -107,9 +107,11 @@ export function requireCustomProviderInput(body: Record<string, unknown>): Custo
       if (!model || typeof model !== "object") throw new Error(`models.${index} must be an object`);
       const entry = model as Record<string, unknown>;
       const alias = optionalString(entry.alias, `models.${index}.alias`);
-      const parsed: { id: string; alias?: string } = {
+      const name = optionalString(entry.name, `models.${index}.name`);
+      const parsed: { id: string; name?: string; alias?: string } = {
         id: requireString(entry.id, `models.${index}.id`)
       };
+      if (name !== undefined) parsed.name = name;
       if (alias !== undefined) parsed.alias = alias;
       return parsed;
     }),

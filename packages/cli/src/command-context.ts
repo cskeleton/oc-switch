@@ -1,4 +1,4 @@
-import { defaultPresetDirs, getActivePaths, isProviderDisabled, type FetchImpl, type OpenClawConfig } from "@oc-switch/core";
+import { defaultPresetDirs, getActivePaths, isProviderDisabled, providerEnvVar as coreProviderEnvVar, type FetchImpl, type OpenClawConfig } from "@oc-switch/core";
 import JSON5 from "json5";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -28,8 +28,7 @@ function assertProviderCanEnable(providerId: string): void {
 }
 
 function providerEnvVar(config: OpenClawConfig, providerId: string): string | undefined {
-  const provider = config.models?.providers?.[providerId];
-  return provider?.apiKey?.id ?? provider?.authHeader?.id;
+  return coreProviderEnvVar(config.models?.providers?.[providerId]);
 }
 
 function presetDirs() {

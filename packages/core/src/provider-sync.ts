@@ -1,4 +1,5 @@
 import { readEnvValue } from "./env-manager";
+import { ensureModelName, providerEnvVar } from "./openclaw-compat";
 import type { OpenClawConfig, OpenClawProvider } from "./types";
 
 export interface ProviderSyncResult {
@@ -28,7 +29,7 @@ export function applySyncedModels(
   const existing = new Set((provider.models ?? []).map((model) => model.id));
   for (const modelId of modelIds) {
     if (existing.has(modelId)) continue;
-    provider.models = [...(provider.models ?? []), { id: modelId }];
+    provider.models = [...(provider.models ?? []), ensureModelName({ id: modelId })];
     existing.add(modelId);
   }
 
@@ -57,11 +58,11 @@ function providerAuthHeaders(
   provider: OpenClawProvider,
   envContent: string | undefined
 ): Record<string, string> {
-  const envRef = provider.apiKey ?? provider.authHeader;
-  if (!envRef) return {};
+  const envVar = providerEnvVar(provider);
+  if (!envVar) return {};
   if (envContent === undefined) return {};
-  const value = readEnvValue(envContent, envRef.id);
-  if (!value) throw new Error(`Env var ${envRef.id} for provider ${providerId} not found`);
+  const value = readEnvValue(envContent, envVar);
+  if (!value) throw new Error(`Env var ${envVar} for provider ${providerId} not found`);
   return provider.apiKey ? { Authorization: `Bearer ${value}` } : { Authorization: value };
 }
 

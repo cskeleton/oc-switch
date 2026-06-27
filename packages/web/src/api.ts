@@ -177,6 +177,7 @@ export type ApiType = "openai-completions" | "anthropic-messages" | "google-gene
 
 export interface CustomProviderModelInput {
   id: string;
+  name?: string;
   alias?: string;
 }
 

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { formatModelRef } from "./model-ref";
+import { providerEnvVar } from "./openclaw-compat";
 import type { OpenClawConfig, ProviderPreset } from "./types";
 
 export interface PresetDirs {
@@ -80,7 +81,7 @@ export function exportProviderPreset(config: OpenClawConfig, providerId: string)
   const provider = config.models?.providers?.[providerId];
   if (!provider) throw new Error(`Provider ${providerId} not found`);
 
-  const apiKeyEnv = provider.apiKey?.id ?? provider.authHeader?.id;
+  const apiKeyEnv = providerEnvVar(provider);
   if (!apiKeyEnv) throw new Error(`Provider ${providerId} has no env key reference`);
 
   const allowlist = config.agents?.defaults?.models ?? {};

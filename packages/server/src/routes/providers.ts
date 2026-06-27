@@ -219,8 +219,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       const envUpdates: Record<string, string> = {};
       if (body.apiKey !== undefined) {
         const config = readConfig(runtime.currentPaths());
-        const providerConfig = config.models?.providers?.[providerId];
-        const envId = providerConfig?.apiKey?.id ?? providerConfig?.authHeader?.id;
+        const envId = providerEnvVar(config, providerId);
         if (!envId) throw new Error(`Provider ${providerId} has no env key reference`);
         envUpdates[envId] = requireString(body.apiKey, "apiKey");
       }

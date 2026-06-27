@@ -5,6 +5,14 @@ export interface EnvRef {
   id: string;
 }
 
+export interface OpenClawSecretRef {
+  source: "env" | "file" | "exec";
+  provider: string;
+  id: string;
+}
+
+export type OpenClawSecretInput = string | EnvRef | OpenClawSecretRef;
+
 export interface OpenClawModel {
   id: string;
   name?: string;
@@ -21,8 +29,8 @@ export interface OpenClawModel {
 export interface OpenClawProvider {
   baseUrl?: string;
   api?: ApiType;
-  apiKey?: EnvRef;
-  authHeader?: EnvRef;
+  apiKey?: OpenClawSecretInput;
+  authHeader?: boolean | EnvRef;
   models?: OpenClawModel[];
   [key: string]: unknown;
 }
@@ -97,6 +105,7 @@ export interface ProviderPreset {
 
 export interface CustomProviderModelInput {
   id: string;
+  name?: string;
   alias?: string;
 }
 

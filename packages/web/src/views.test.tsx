@@ -518,6 +518,9 @@ describe("ProvidersView", () => {
     );
 
     await userEvent.click(await findByText("添加 Provider"));
+    expect(await findByLabelText("模型 ID 1")).toBeTruthy();
+    expect(await findByLabelText("模型 ID 2")).toBeTruthy();
+    expect(await findByLabelText("模型 ID 3")).toBeTruthy();
     await userEvent.type(await findByLabelText("供应商名称"), "Custom OpenAI");
     const providerIdInput = await findByLabelText("Provider ID");
     await userEvent.clear(providerIdInput);
@@ -526,7 +529,14 @@ describe("ProvidersView", () => {
     await userEvent.type(await findByLabelText("备注"), "Company account");
     await userEvent.type(await findByLabelText("API Key"), "sk-test-custom-secret");
     await userEvent.type(await findByLabelText("请求地址"), "https://api.custom.example");
-    await userEvent.type(await findByLabelText("模型列表"), "model-a | a\nvendor/model-b | b");
+    await userEvent.type(await findByLabelText("模型 ID 1"), "model-a");
+    await userEvent.type(await findByLabelText("模型名称 1"), "Model A");
+    await userEvent.type(await findByLabelText("模型 Alias 1"), "a");
+    await userEvent.type(await findByLabelText("模型 ID 2"), "vendor/model-b");
+    await userEvent.type(await findByLabelText("模型名称 2"), "Vendor Model B");
+    await userEvent.type(await findByLabelText("模型 Alias 2"), "b");
+    await userEvent.click(await findByLabelText("添加模型行"));
+    expect(await findByLabelText("模型 ID 4")).toBeTruthy();
     await userEvent.click(getByText("预览并添加"));
     expect(await findByText("custom-openai/model-a")).toBeTruthy();
     await userEvent.click(getByText("确认"));
@@ -541,8 +551,8 @@ describe("ProvidersView", () => {
       isFullUrl: false,
       apiKeyEnv: "CUSTOM_OPENAI_API_KEY",
       models: [
-        { id: "model-a", alias: "a" },
-        { id: "vendor/model-b", alias: "b" }
+        { id: "model-a", name: "Model A", alias: "a" },
+        { id: "vendor/model-b", name: "Vendor Model B", alias: "b" }
       ],
       enableAllModels: true
     });
@@ -556,8 +566,8 @@ describe("ProvidersView", () => {
       isFullUrl: false,
       apiKeyEnv: "CUSTOM_OPENAI_API_KEY",
       models: [
-        { id: "model-a", alias: "a" },
-        { id: "vendor/model-b", alias: "b" }
+        { id: "model-a", name: "Model A", alias: "a" },
+        { id: "vendor/model-b", name: "Vendor Model B", alias: "b" }
       ],
       enableAllModels: true
     }, "sk-test-custom-secret");

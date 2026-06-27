@@ -192,3 +192,36 @@ describe("removeProviderModel", () => {
     expect(withNewPrimary.config.models?.providers?.["minimax-portal"]?.models?.map((m) => m.id)).not.toContain("MiniMax-M3");
   });
 });
+
+describe("model name fallback", () => {
+  test("adds model with default name when name is omitted", () => {
+    const config = cloneSample();
+    const result = addProviderModel(config, "nvidia", {
+      id: "vendor/model-x",
+      enabled: true
+    });
+    expect(result.config.models?.providers?.nvidia?.models?.find((m) => m.id === "vendor/model-x")?.name)
+      .toBe("Vendor Model X");
+  });
+
+  test("does not delete model name when update omits name", () => {
+    const config = cloneSample();
+    config.models!.providers!.nvidia!.models![0]!.name = "DeepSeek Flash";
+    const result = updateProviderModel(config, "nvidia/deepseek-ai/deepseek-v4-flash", {
+      id: "deepseek-ai/deepseek-v4-flash",
+      enabled: true
+    });
+    expect(result.config.models?.providers?.nvidia?.models?.[0]?.name).toBe("DeepSeek Flash");
+  });
+
+  test("keeps existing model name when update submits blank name", () => {
+    const config = cloneSample();
+    config.models!.providers!.nvidia!.models![0]!.name = "DeepSeek Flash";
+    const result = updateProviderModel(config, "nvidia/deepseek-ai/deepseek-v4-flash", {
+      id: "deepseek-ai/deepseek-v4-flash",
+      name: "",
+      enabled: true
+    });
+    expect(result.config.models?.providers?.nvidia?.models?.[0]?.name).toBe("DeepSeek Flash");
+  });
+});

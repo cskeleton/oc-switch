@@ -49,7 +49,7 @@ describe("addProviderFromPreset", () => {
     };
 
     const result = addProviderFromPreset(config, preset, ["vendor/model"]);
-    expect(result.config.models?.providers?.custom?.apiKey).toEqual({ source: "env", id: "CUSTOM_API_KEY" });
+    expect(result.config.models?.providers?.custom?.apiKey).toBe("${CUSTOM_API_KEY}");
     expect(result.config.models?.providers?.custom?.models?.[0]?.id).toBe("vendor/model");
     expect(result.config.agents?.defaults?.models?.["custom/vendor/model"]).toEqual({ alias: "vendor" });
   });
@@ -89,6 +89,31 @@ describe("addProviderFromPreset", () => {
       alias: "nv-ds-pro"
     });
   });
+
+  test("removes legacy authHeader env ref when preset rewrites credentials", () => {
+    const config = cloneSample();
+    config.models!.providers!.custom = {
+      baseUrl: "https://old.example/v1",
+      apiKey: { source: "env", id: "OLD_KEY" },
+      authHeader: { source: "env", id: "OLD_AUTH_KEY" },
+      models: [{ id: "old-model", name: "Old Model" }]
+    };
+    const preset: ProviderPreset = {
+      id: "custom",
+      name: "Custom",
+      provider: {
+        api: "openai-completions",
+        baseUrl: "https://custom.example/v1",
+        apiKeyEnv: "CUSTOM_API_KEY"
+      },
+      models: [{ id: "vendor/model", name: "Vendor Model" }]
+    };
+
+    const result = addProviderFromPreset(config, preset, ["vendor/model"]);
+    const provider = result.config.models?.providers?.custom;
+    expect(provider?.apiKey).toBe("${CUSTOM_API_KEY}");
+    expect(provider?.authHeader).toBeUndefined();
+  });
 });
 
 describe("provider add from preset", () => {
@@ -123,9 +148,22 @@ describe("editProvider", () => {
 
     const provider = result.config.models?.providers?.nvidia;
     expect(provider?.baseUrl).toBe("https://updated.example/v1");
-    expect(provider?.apiKey).toEqual({ source: "env", id: "NEW_NVIDIA_KEY" });
+    expect(provider?.apiKey).toBe("${NEW_NVIDIA_KEY}");
     expect(provider?.timeoutSeconds).toBe(42);
     expect(provider?.models?.[0]?.id).toBe("deepseek-ai/deepseek-v4-flash");
+  });
+
+  test("removes legacy authHeader env ref when editing api key env", () => {
+    const config = cloneSample();
+    config.models!.providers!.nvidia!.authHeader = { source: "env", id: "OLD_AUTH_KEY" };
+
+    const result = editProvider(config, "nvidia", {
+      apiKeyEnv: "NEW_NVIDIA_KEY"
+    });
+
+    const provider = result.config.models?.providers?.nvidia;
+    expect(provider?.apiKey).toBe("${NEW_NVIDIA_KEY}");
+    expect(provider?.authHeader).toBeUndefined();
   });
 });
 
@@ -169,14 +207,18 @@ describe("addCustomProvider", () => {
     expect(result.config.models?.providers?.["custom-openai"]).toMatchObject({
       baseUrl: "https://api.custom.example/v1",
       api: "openai-completions",
-      apiKey: { source: "env", id: "CUSTOM_OPENAI_API_KEY" },
-      models: [{ id: "model-a" }, { id: "vendor/model-b" }]
+      apiKey: "${CUSTOM_OPENAI_API_KEY}",
+      models: [
+        { id: "model-a", name: "Model A" },
+        { id: "vendor/model-b", name: "Vendor Model B" }
+      ]
     });
+    expect(result.config.models?.providers?.["custom-openai"]?.authHeader).toBeUndefined();
     expect(result.config.agents?.defaults?.models?.["custom-openai/model-a"]).toEqual({ alias: "a" });
     expect(result.config.agents?.defaults?.models?.["custom-openai/vendor/model-b"]).toEqual({ alias: "b" });
   });
 
-  test("uses authHeader for anthropic provider and can skip allowlist", () => {
+  test("writes apiKey for anthropic provider and can skip allowlist", () => {
     const config = cloneSample();
     const result = addCustomProvider(config, {
       providerId: "custom-anthropic",
@@ -192,9 +234,10 @@ describe("addCustomProvider", () => {
     expect(result.config.models?.providers?.["custom-anthropic"]).toMatchObject({
       baseUrl: "https://anthropic.custom.example",
       api: "anthropic-messages",
-      authHeader: { source: "env", id: "CUSTOM_ANTHROPIC_API_KEY" },
-      models: [{ id: "claude-4" }]
+      apiKey: "${CUSTOM_ANTHROPIC_API_KEY}",
+      models: [{ id: "claude-4", name: "Claude 4" }]
     });
+    expect(result.config.models?.providers?.["custom-anthropic"]?.authHeader).toBeUndefined();
     expect(result.config.agents?.defaults?.models?.["custom-anthropic/claude-4"]).toBeUndefined();
   });
 

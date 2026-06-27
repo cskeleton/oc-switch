@@ -1,4 +1,5 @@
 import { formatModelRef, parseModelRef } from "./model-ref";
+import { defaultModelName } from "./openclaw-compat";
 import { ensureDefaults, hasProviderModel, type OperationResult } from "./operation-common";
 import type { AllowlistEntry, OpenClawConfig, OpenClawModel, ProviderModelInput } from "./types";
 
@@ -64,9 +65,21 @@ function assertProviderModelInput(input: ProviderModelInput): void {
 
 function applyProviderModelInput(existing: OpenClawModel | undefined, input: ProviderModelInput): OpenClawModel {
   const next: OpenClawModel = { ...(existing ?? {}), id: input.id };
-  for (const key of ["name", "api", "reasoning", "contextWindow", "maxTokens", "input"] as const) {
+
+  if (input.name !== undefined) {
+    const trimmed = input.name.trim();
+    if (trimmed) {
+      next.name = trimmed;
+    } else if (!existing?.name?.trim()) {
+      next.name = defaultModelName(input.id);
+    }
+  } else if (!existing?.name?.trim()) {
+    next.name = defaultModelName(input.id);
+  }
+
+  for (const key of ["api", "reasoning", "contextWindow", "maxTokens", "input"] as const) {
     const value = input[key];
-    if (value === undefined || value === "" || (Array.isArray(value) && value.length === 0)) {
+    if (value === undefined || (Array.isArray(value) && value.length === 0)) {
       delete next[key];
     } else {
       next[key] = value as never;

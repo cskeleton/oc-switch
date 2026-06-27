@@ -1,4 +1,5 @@
 import { formatModelRef } from "./model-ref";
+import { providerEnvVar } from "./openclaw-compat";
 import type { OperationResult } from "./operations";
 import type { AllowlistEntry, OpenClawConfig, OpenClawModel, OpenClawProvider } from "./types";
 
@@ -53,10 +54,7 @@ function normalizeBaseUrl(url: string | undefined): string | undefined {
 
 /** env 变量归一：剥离 `${...}` 包裹，仅取变量名，便于跨写法比较 */
 function normalizeEnvVar(ref: OpenClawProvider | undefined): string | undefined {
-  const raw = ref?.apiKey?.id ?? ref?.authHeader?.id;
-  if (raw === undefined) return undefined;
-  const match = raw.match(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/);
-  return match ? match[1] : raw.trim();
+  return providerEnvVar(ref);
 }
 
 /** 安全解析 allowlist key 的 provider 前缀（不抛错） */

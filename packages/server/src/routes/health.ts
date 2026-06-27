@@ -3,7 +3,9 @@ import {
   inspectConfigHealth,
   inspectConfigStatus,
   listBackups,
-  summarizeConfigDiff
+  repairOpenClawCompatibility,
+  summarizeConfigDiff,
+  writeOpenClawTransaction
 } from "@oc-switch/core";
 import type { Hono } from "hono";
 import JSON5 from "json5";
@@ -55,6 +57,32 @@ export function registerHealthRoutes(app: Hono, runtime: AppRuntime): void {
       const before = JSON5.parse(readFileSync(join(latest.path, "openclaw.json"), "utf8")) as OpenClawConfig;
       const after = readConfig(runtime.currentPaths());
       return c.json(summarizeConfigDiff(before, after));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/health/repair", async (c) => {
+    try {
+      const paths = runtime.currentPaths();
+      const before = readConfig(paths);
+      const repaired = repairOpenClawCompatibility(structuredClone(before));
+      if (!repaired.changed) {
+        return c.json({ ok: true, changed: false, warnings: repaired.warnings });
+      }
+      const result = await writeOpenClawTransaction({
+        ...paths,
+        reason: "repair OpenClaw compatibility",
+        mutate() {
+          return repaired.config;
+        }
+      });
+      return c.json({
+        ok: true,
+        changed: true,
+        warnings: repaired.warnings,
+        backupId: result.backupDir.split("/").pop()
+      });
     } catch (error) {
       return jsonError(c, error);
     }

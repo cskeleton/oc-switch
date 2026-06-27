@@ -1,7 +1,15 @@
 import { formatModelRef, parseModelRef } from "./model-ref";
 import { setPrimaryModel } from "./model-operations";
+import { formatEnvRefForOpenClaw, ensureModelName } from "./openclaw-compat";
 import { ensureDefaults, type OperationResult } from "./operation-common";
 import type { CustomProviderInput, OpenClawConfig, OpenClawModel, ProviderPreset } from "./types";
+
+function removeLegacyAuthHeaderRef<T extends { authHeader?: unknown }>(provider: T): T {
+  if (typeof provider.authHeader === "object" && provider.authHeader !== null) {
+    delete provider.authHeader;
+  }
+  return provider;
+}
 
 function assertProviderPrimaryRemovalAllowed(
   config: OpenClawConfig,
@@ -58,13 +66,8 @@ export function editProvider(
 
   if (changes.baseUrl !== undefined) provider.baseUrl = changes.baseUrl;
   if (changes.apiKeyEnv !== undefined) {
-    if (provider.apiKey) {
-      provider.apiKey = { ...provider.apiKey, id: changes.apiKeyEnv };
-    } else if (provider.authHeader) {
-      provider.authHeader = { ...provider.authHeader, id: changes.apiKeyEnv };
-    } else {
-      provider.apiKey = { source: "env", id: changes.apiKeyEnv };
-    }
+    provider.apiKey = formatEnvRefForOpenClaw(changes.apiKeyEnv);
+    removeLegacyAuthHeaderRef(provider);
   }
 
   return { config, warnings: [] };
@@ -88,13 +91,13 @@ export function addProviderFromPreset(
     modelsById.set(model.id, existingModel ? { ...existingModel, ...model } : model);
   }
 
-  config.models!.providers![preset.id] = {
+  config.models!.providers![preset.id] = removeLegacyAuthHeaderRef({
     ...existingProvider,
     baseUrl: preset.provider.baseUrl,
-    apiKey: { source: "env", id: preset.provider.apiKeyEnv },
+    apiKey: formatEnvRefForOpenClaw(preset.provider.apiKeyEnv),
     api: preset.provider.api,
-    models: Array.from(modelsById.values())
-  };
+    models: Array.from(modelsById.values()).map((model) => ensureModelName(model))
+  });
 
   for (const model of preset.models) {
     const ref = formatModelRef(preset.id, model.id);
@@ -111,7 +114,7 @@ export function addProviderFromPreset(
   return { config, warnings: [] };
 }
 
-const ENV_VAR_PATTERN = /^[A-Z_][A-Z0-9_]*$/;
+const ENV_VAR_PATTERN = /^[A-Z][A-Z0-9_]{0,127}$/;
 const CUSTOM_PROVIDER_API_TYPES = new Set<CustomProviderInput["api"]>([
   "openai-completions",
   "anthropic-messages",
@@ -161,13 +164,17 @@ export function addCustomProvider(config: OpenClawConfig, input: CustomProviderI
   assertCustomProviderInput(config, input);
 
   const baseUrl = normalizeCustomProviderBaseUrl(input.api, input.baseUrl, input.isFullUrl);
-  const models = input.models.map((model): OpenClawModel => ({ id: model.id }));
-  const envRef = { source: "env" as const, id: input.apiKeyEnv };
+  const models = input.models.map((model): OpenClawModel =>
+    ensureModelName({
+      id: model.id,
+      ...(model.name !== undefined ? { name: model.name } : {})
+    })
+  );
 
   config.models!.providers![input.providerId] = {
     baseUrl,
     api: input.api,
-    ...(input.api === "anthropic-messages" ? { authHeader: envRef } : { apiKey: envRef }),
+    apiKey: formatEnvRefForOpenClaw(input.apiKeyEnv),
     models
   };
 

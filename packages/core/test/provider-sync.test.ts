@@ -104,4 +104,24 @@ describe("syncProviderModels", () => {
     expect(result.addedModelIds).toEqual([]);
     expect(JSON.stringify(config)).toBe(before);
   });
+
+  test("sync uses legacy env string for auth headers", async () => {
+    const config = structuredClone(sampleConfig);
+    config.models!.providers!.nvidia!.apiKey = "${NVIDIA_API_KEY}";
+    const result = await syncProviderModels(config, "nvidia", {
+      envContent: "NVIDIA_API_KEY=secret\n",
+      fetchImpl: async (_url, init) => {
+        expect((init?.headers as Record<string, string>).Authorization).toBe("Bearer secret");
+        return Response.json({ data: [] });
+      }
+    });
+    expect(result.addedModelIds).toEqual([]);
+  });
+
+  test("applies synced models with default names", () => {
+    const config = structuredClone(sampleConfig);
+    const next = applySyncedModels(config, "nvidia", ["vendor/model-c"]);
+    expect(next.models?.providers?.nvidia?.models?.find((m) => m.id === "vendor/model-c")?.name)
+      .toBe("Vendor Model C");
+  });
 });

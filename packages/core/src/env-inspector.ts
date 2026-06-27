@@ -1,4 +1,5 @@
 import type { OcSwitchManifest } from "./manifest-manager";
+import { providerEnvVar } from "./openclaw-compat";
 import type { OpenClawConfig } from "./types";
 
 const START = "# oc-switch:start";
@@ -53,7 +54,7 @@ function parseEnvLine(line: string, managed: boolean): ParsedEnvLine | undefined
 export function listProviderEnvRefs(config: OpenClawConfig): ProviderEnvRef[] {
   return Object.entries(config.models?.providers ?? {})
     .flatMap(([providerId, provider]) => {
-      const envVar = provider.apiKey?.id ?? provider.authHeader?.id;
+      const envVar = providerEnvVar(provider);
       return envVar ? [{ providerId, envVar }] : [];
     })
     .sort((a, b) => a.envVar.localeCompare(b.envVar) || a.providerId.localeCompare(b.providerId));

@@ -5,15 +5,37 @@ import type { OcSwitchManifest, OpenClawConfig } from "../src";
 const config: OpenClawConfig = {
   models: {
     providers: {
-      nvidia: { apiKey: { source: "env", id: "NVIDIA_API_KEY" }, models: [{ id: "a" }] },
-      minimax: { authHeader: { source: "env", id: "MINIMAX_API_KEY" }, models: [{ id: "b" }] }
+      nvidia: { apiKey: "${NVIDIA_API_KEY}", models: [{ id: "a" }] },
+      legacy: { apiKey: { source: "env", id: "LEGACY_KEY" }, models: [{ id: "b" }] },
+      canonical: { apiKey: { source: "env", provider: "default", id: "CANONICAL_KEY" }, models: [{ id: "c" }] },
+      literal: { apiKey: "sk-live-secret", models: [{ id: "d" }] },
+      minimax: { authHeader: { source: "env", id: "MINIMAX_API_KEY" }, models: [{ id: "e" }] }
     }
   }
 };
 
 describe("listProviderEnvRefs", () => {
-  test("collects provider apiKey and authHeader env refs", () => {
+  test("collects provider env refs from string, legacy, and canonical shapes", () => {
+    expect(listProviderEnvRefs({
+      models: {
+        providers: {
+          nvidia: { apiKey: "${NVIDIA_API_KEY}" },
+          legacy: { apiKey: { source: "env", id: "LEGACY_KEY" } },
+          canonical: { apiKey: { source: "env", provider: "default", id: "CANONICAL_KEY" } },
+          literal: { apiKey: "sk-live-secret" }
+        }
+      }
+    })).toEqual([
+      { providerId: "canonical", envVar: "CANONICAL_KEY" },
+      { providerId: "legacy", envVar: "LEGACY_KEY" },
+      { providerId: "nvidia", envVar: "NVIDIA_API_KEY" }
+    ]);
+  });
+
+  test("collects provider apiKey and legacy authHeader env refs", () => {
     expect(listProviderEnvRefs(config)).toEqual([
+      { providerId: "canonical", envVar: "CANONICAL_KEY" },
+      { providerId: "legacy", envVar: "LEGACY_KEY" },
       { providerId: "minimax", envVar: "MINIMAX_API_KEY" },
       { providerId: "nvidia", envVar: "NVIDIA_API_KEY" }
     ]);
@@ -97,6 +119,8 @@ describe("inspectEnvFile", () => {
     });
 
     expect(result.variables.filter((item) => item.missing).map((item) => item.envVar)).toEqual([
+      "CANONICAL_KEY",
+      "LEGACY_KEY",
       "MINIMAX_API_KEY",
       "NVIDIA_API_KEY"
     ]);

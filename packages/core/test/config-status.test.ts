@@ -44,7 +44,11 @@ describe("inspectConfigStatus", () => {
     const config: OpenClawConfig = {
       models: {
         providers: {
-          test: { baseUrl: "https://api.test/v1", apiKey: { source: "env", id: "TEST_KEY" }, models: [{ id: "m" }] }
+          test: {
+            baseUrl: "https://api.test/v1",
+            apiKey: "${TEST_KEY}",
+            models: [{ id: "m", name: "Model M" }]
+          }
         }
       },
       agents: { defaults: { model: "test/m", models: { "test/m": {} } } }
@@ -184,5 +188,62 @@ describe("inspectConfigStatus", () => {
     } else {
       expect(existsSync(paths.envPath)).toBe(true);
     }
+  });
+});
+
+describe("OpenClaw compatibility issues", () => {
+  test("reports legacy env ref, invalid authHeader ref, and missing model names", () => {
+    const { paths } = workspace();
+    const config: OpenClawConfig = {
+      models: {
+        providers: {
+          nvidia: {
+            apiKey: { source: "env", id: "NVIDIA_API_KEY" },
+            models: [{ id: "vendor/model-a" }]
+          },
+          anthropicProxy: {
+            authHeader: { source: "env", id: "ANTHROPIC_API_KEY" },
+            models: [{ id: "claude-proxy", name: "Proxy" }]
+          }
+        }
+      },
+      agents: { defaults: { models: {} } }
+    };
+    const report = inspect(paths, { config });
+    expect(report.issues).toContainEqual(expect.objectContaining({
+      id: "health:legacy-env-ref:nvidia",
+      severity: "blocking",
+      source: "health",
+      title: expect.stringContaining("OpenClaw 2026.6.8")
+    }));
+    expect(report.issues).toContainEqual(expect.objectContaining({
+      id: "health:invalid-auth-header-ref:anthropicProxy",
+      severity: "blocking",
+      source: "health"
+    }));
+    expect(report.issues).toContainEqual(expect.objectContaining({
+      id: `health:missing-model-name:${encodeURIComponent("nvidia/vendor/model-a")}`,
+      severity: "blocking",
+      source: "health"
+    }));
+  });
+
+  test("does not report canonical SecretRef objects as legacy env refs", () => {
+    const { paths } = workspace();
+    const config: OpenClawConfig = {
+      models: {
+        providers: {
+          vaultBacked: {
+            apiKey: { source: "env", provider: "custom-env", id: "NVIDIA_API_KEY" },
+            models: [{ id: "vendor/model-a", name: "Vendor Model A" }]
+          }
+        }
+      },
+      agents: { defaults: { models: {} } }
+    };
+
+    const report = inspect(paths, { config });
+    expect(report.issues.some((issue) => issue.id === "health:legacy-env-ref:vaultBacked")).toBe(false);
+    expect(report.summary.blockingIssueCount).toBe(0);
   });
 });

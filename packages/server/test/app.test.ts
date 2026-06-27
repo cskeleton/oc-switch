@@ -341,7 +341,7 @@ describe("server write endpoints", () => {
     expect(config.models.providers["custom-openai"]).toMatchObject({
       baseUrl: "https://api.custom.example/v1",
       api: "openai-completions",
-      apiKey: { source: "env", id: "CUSTOM_OPENAI_API_KEY" }
+      apiKey: "${CUSTOM_OPENAI_API_KEY}"
     });
     expect(config.agents.defaults.models["custom-openai/vendor/model-b"]).toEqual({ alias: "b" });
     expect(readFileSync(ws.paths.envPath, "utf8")).toContain("CUSTOM_OPENAI_API_KEY=sk-test-custom-secret");
@@ -380,6 +380,22 @@ describe("server write endpoints", () => {
     expect(response.status).toBe(200);
     const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
     expect(config.models.providers.nvidia.baseUrl).toBe("https://new-nvidia.example/v1");
+  });
+
+  test("PUT /api/providers/:id updates env key for ${VAR} apiKey format", async () => {
+    const ws = workspace();
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    config.models.providers.nvidia.apiKey = "${NVIDIA_API_KEY}";
+    writeFileSync(ws.paths.openclawPath, `${JSON.stringify(config, null, 2)}\n`);
+    writeFileSync(ws.paths.envPath, "# oc-switch:start\nNVIDIA_API_KEY=old-secret\n# oc-switch:end\n");
+    const app = createTestApp(ws);
+    const { response } = await jsonRequest(app, "/api/providers/nvidia", {
+      method: "PUT",
+      body: JSON.stringify({ apiKey: "new-secret" })
+    });
+
+    expect(response.status).toBe(200);
+    expect(readFileSync(ws.paths.envPath, "utf8")).toContain("NVIDIA_API_KEY=new-secret");
   });
 
   test("DELETE /api/providers/:id removes provider with newPrimary in body", async () => {
@@ -646,6 +662,29 @@ describe("server write endpoints", () => {
     const issueIds = report.issues.map((issue) => issue.id);
     expect(new Set(issueIds).size).toBe(issueIds.length);
     expect(JSON.stringify(json)).not.toContain("sk-");
+  });
+
+  test("POST /api/health/repair migrates legacy apiKey and fills model names", async () => {
+    const ws = workspace();
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    config.models.providers.compat = {
+      apiKey: { source: "env", id: "COMPAT_API_KEY" },
+      models: [{ id: "vendor/model-a" }]
+    };
+    writeFileSync(ws.paths.openclawPath, `${JSON.stringify(config, null, 2)}\n`);
+    const app = createTestApp(ws);
+
+    const unchanged = await jsonRequest(app, "/api/health/repair", { method: "POST" });
+    expect(unchanged.response.status).toBe(200);
+    expect(unchanged.json.changed).toBe(true);
+
+    const repaired = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(repaired.models.providers.compat.apiKey).toBe("${COMPAT_API_KEY}");
+    expect(repaired.models.providers.compat.models[0].name).toBe("Vendor Model A");
+
+    const again = await jsonRequest(app, "/api/health/repair", { method: "POST" });
+    expect(again.response.status).toBe(200);
+    expect(again.json.changed).toBe(false);
   });
 
   test("GET /api/config-status 在 openclaw.json 缺失时仍返回 200 与 path blocking issue", async () => {

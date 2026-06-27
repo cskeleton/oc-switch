@@ -39,7 +39,7 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 
 - **配置路径**：默认 `OPENCLAW_CONFIG_PATH` 或 `~/.openclaw/openclaw.json`；活动路径持久化于 `~/.oc-switch/settings.json`，可在 Settings 切换（`GET/PUT /api/settings/paths`）。
 - **`.env`**：默认 `~/.openclaw/.env`；oc-switch 写入限定在 `# oc-switch:start` … `# oc-switch:end` 托管块内。
-- **API Key**：仅存 `.env`；`openclaw.json` 用 `{ "source": "env", "id": "…" }` 引用。CLI / API / Web **不回显**完整密钥；env preview 不收 value。
+- **API Key**：仅存 `.env`；`openclaw.json` 的 `models.providers.*.apiKey` 写 `"${ENV_VAR}"`。OpenClaw 2026.6.8+ 不接受 oc-switch 旧版两字段 `{ "source": "env", "id": "..." }` 作为新写入格式。`authHeader` 是 boolean 开关，不保存密钥。CLI / API / Web **不回显**完整密钥；env preview 不收 value。
 - **`baseUrl`**：遵循 OpenClaw——`openai-completions` 含 `/v1`；`anthropic-messages` 通常不带末尾 `/v1`。
 
 ### 写入与安全

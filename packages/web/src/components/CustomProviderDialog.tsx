@@ -6,7 +6,6 @@ import { DiffSummary } from "./DiffSummary";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
-import { Textarea } from "./ui/textarea";
 
 interface CustomProviderDialogProps {
   open: boolean;
@@ -14,6 +13,18 @@ interface CustomProviderDialogProps {
   onCancel: () => void;
   onSaved: () => void;
 }
+
+interface ModelRow {
+  id: string;
+  name: string;
+  alias: string;
+}
+
+const emptyModelRows = (): ModelRow[] => [
+  { id: "", name: "", alias: "" },
+  { id: "", name: "", alias: "" },
+  { id: "", name: "", alias: "" }
+];
 
 function providerIdFromName(name: string): string {
   return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -23,18 +34,25 @@ function envNameFromProviderId(providerId: string): string {
   return `${providerId.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").toUpperCase()}_API_KEY`;
 }
 
-function parseModels(value: string): CustomProviderModelInput[] {
-  return value.split(/\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const parts = line.split("|").map((part) => part.trim());
-      const idPart = parts[0] ?? "";
-      const aliasPart = parts[1];
-      const parsed: CustomProviderModelInput = { id: idPart };
-      if (aliasPart) parsed.alias = aliasPart;
-      return parsed;
-    });
+function modelsFromRows(rows: ModelRow[]): CustomProviderModelInput[] {
+  return rows
+    .map((row) => ({
+      id: row.id.trim(),
+      name: row.name.trim(),
+      alias: row.alias.trim()
+    }))
+    .filter((row) => row.id.length > 0)
+    .map((row) => ({
+      id: row.id,
+      ...(row.name ? { name: row.name } : {}),
+      ...(row.alias ? { alias: row.alias } : {})
+    }));
+}
+
+function updateModelRow(rows: ModelRow[], index: number, key: keyof ModelRow, value: string): ModelRow[] {
+  return rows.map((row, rowIndex) =>
+    rowIndex === index ? { ...row, [key]: value } : row
+  );
 }
 
 /** 手工添加自定义 Provider 的模态表单 */
@@ -51,7 +69,7 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
   const [apiKey, setApiKey] = useState("");
   const [isFullUrl, setIsFullUrl] = useState(false);
   const [enableAllModels, setEnableAllModels] = useState(true);
-  const [modelText, setModelText] = useState("");
+  const [modelRows, setModelRows] = useState<ModelRow[]>(emptyModelRows);
   const [diff, setDiff] = useState<ConfigDiffSummary | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,7 +95,7 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
     setApiKey("");
     setIsFullUrl(false);
     setEnableAllModels(true);
-    setModelText("");
+    setModelRows(emptyModelRows());
     setDiff(null);
     setConfirming(false);
     setError(null);
@@ -96,7 +114,7 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
       baseUrl,
       isFullUrl,
       apiKeyEnv,
-      models: parseModels(modelText),
+      models: modelsFromRows(modelRows),
       enableAllModels
     };
     if (notes) parsed.notes = notes;
@@ -192,8 +210,48 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
             </div>
 
             <div className="grid gap-2 md:col-span-2 mt-2">
-              <Label>模型列表</Label>
-              <Textarea aria-label="模型列表" value={modelText} onChange={(event) => setModelText(event.target.value)} rows={5} className="font-mono" placeholder={"model-a | a\nvendor/model-b | b"} />
+              <div className="flex items-center justify-between gap-3">
+                <Label>模型列表</Label>
+                <button
+                  type="button"
+                  onClick={() => setModelRows((rows) => [...rows, { id: "", name: "", alias: "" }])}
+                  aria-label="添加模型行"
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-input bg-background hover:bg-accent hover:text-accent-foreground"
+                >
+                  <Plus className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="overflow-x-auto rounded-md border border-border">
+                <div className="grid min-w-[720px] grid-cols-[minmax(220px,1.4fr)_minmax(180px,1fr)_minmax(160px,0.8fr)] border-b border-border bg-muted/50 px-3 py-2 text-xs font-medium text-muted-foreground">
+                  <div>模型 ID</div>
+                  <div>模型名称</div>
+                  <div>Alias</div>
+                </div>
+                <div className="divide-y divide-border">
+                  {modelRows.map((row, index) => (
+                    <div key={index} className="grid min-w-[720px] grid-cols-[minmax(220px,1.4fr)_minmax(180px,1fr)_minmax(160px,0.8fr)] gap-3 px-3 py-2">
+                      <Input
+                        aria-label={`模型 ID ${index + 1}`}
+                        value={row.id}
+                        onChange={(event) => setModelRows((rows) => updateModelRow(rows, index, "id", event.target.value))}
+                        placeholder="vendor/model-a"
+                      />
+                      <Input
+                        aria-label={`模型名称 ${index + 1}`}
+                        value={row.name}
+                        onChange={(event) => setModelRows((rows) => updateModelRow(rows, index, "name", event.target.value))}
+                        placeholder="Vendor Model A"
+                      />
+                      <Input
+                        aria-label={`模型 Alias ${index + 1}`}
+                        value={row.alias}
+                        onChange={(event) => setModelRows((rows) => updateModelRow(rows, index, "alias", event.target.value))}
+                        placeholder="a"
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
 
             <details className="md:col-span-2 mt-2 rounded border p-3 group">

@@ -156,8 +156,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
       const envUpdates: Record<string, string> = {};
       if (options.key) {
         const config = context.readConfig();
-        const providerConfig = config.models?.providers?.[name];
-        const envId = providerConfig?.apiKey?.id ?? providerConfig?.authHeader?.id;
+        const envId = context.providerEnvVar(config, name);
         if (!envId) throw new Error(`Provider ${name} has no env key reference`);
         envUpdates[envId] = options.key;
       }

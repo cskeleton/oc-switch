@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sample from "../../core/test/fixtures/openclaw.sample.json";
+import type { OpenClawConfig } from "@oc-switch/core";
 
 const tempDirs: string[] = [];
 
@@ -47,6 +48,31 @@ describe("cli read commands", () => {
     expect(result.stdout).toContain("nvidia");
     expect(result.stdout).toContain("enabled");
     expect(result.stdout).toContain("minimax-portal");
+  });
+
+  test("health repair dry-run previews compatibility fixes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "openclaw.json");
+    const config = structuredClone(sample) as OpenClawConfig;
+    config.models!.providers!.repairme = {
+      apiKey: { source: "env", id: "REPAIRME_API_KEY" },
+      models: [{ id: "model-x" }]
+    };
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    const dry = await runCli(["health", "repair", "--dry-run"], { OPENCLAW_CONFIG_PATH: configPath, HOME: dir });
+    expect(dry.code).toBe(0);
+    expect(dry.stdout).toContain("repairme");
+    expect(JSON.parse(readFileSync(configPath, "utf8")).models.providers.repairme.apiKey).toEqual({
+      source: "env",
+      id: "REPAIRME_API_KEY"
+    });
+
+    const repair = await runCli(["health", "repair"], { OPENCLAW_CONFIG_PATH: configPath, HOME: dir });
+    expect(repair.code).toBe(0);
+    expect(repair.stdout).toContain("Repaired OpenClaw compatibility");
+    expect(JSON.parse(readFileSync(configPath, "utf8")).models.providers.repairme.apiKey).toBe("${REPAIRME_API_KEY}");
   });
 });
 
@@ -329,7 +355,8 @@ describe("cli provider crud", () => {
 
     expect(result.code).toBe(0);
     const config = JSON.parse(readFileSync(configPath, "utf8"));
-    expect(config.models.providers["custom-disabled"].authHeader).toEqual({ source: "env", id: "CUSTOM_DISABLED_API_KEY" });
+    expect(config.models.providers["custom-disabled"].apiKey).toBe("${CUSTOM_DISABLED_API_KEY}");
+    expect(config.models.providers["custom-disabled"].authHeader).toBeUndefined();
     expect(config.agents.defaults.models["custom-disabled/claude-4"]).toBeUndefined();
   });
 
@@ -460,7 +487,9 @@ test("uses persisted oc-switch env path when OPENCLAW_CONFIG_PATH overrides only
   const envPath = join(dir, "custom.env");
   const stateDir = join(dir, ".oc-switch");
   mkdirSync(stateDir, { recursive: true });
-  writeFileSync(openclawPath, `${JSON.stringify(sample, null, 2)}\n`);
+  const config = structuredClone(sample) as OpenClawConfig;
+  config.models!.providers!.nvidia!.apiKey = "${NVIDIA_API_KEY}";
+  writeFileSync(openclawPath, `${JSON.stringify(config, null, 2)}\n`);
   writeFileSync(envPath, "");
   writeFileSync(join(stateDir, "settings.json"), JSON.stringify({ envPath }, null, 2));
 

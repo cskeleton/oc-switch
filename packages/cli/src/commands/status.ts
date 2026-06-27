@@ -1,4 +1,4 @@
-import { createConfigAdapter, inspectConfigHealth } from "@oc-switch/core";
+import { createConfigAdapter, inspectConfigHealth, repairOpenClawCompatibility, summarizeConfigDiff, writeOpenClawTransaction } from "@oc-switch/core";
 import type { Command } from "commander";
 import type { CommandContext } from "../command-context";
 
@@ -11,7 +11,37 @@ export function registerStatusCommands(program: Command, context: CommandContext
     console.log(`Allowlist models: ${status.allowlistModelCount}`);
   });
 
-  program.command("health").action(() => {
+  const health = program.command("health");
+
+  health.command("repair")
+    .option("--dry-run", "预览修复差异，不写入配置")
+    .action(async (options: { dryRun?: boolean }) => {
+      const paths = context.activePaths();
+      const before = context.readConfig();
+      const repaired = repairOpenClawCompatibility(structuredClone(before));
+      if (options.dryRun) {
+        console.log(JSON.stringify(summarizeConfigDiff(before, repaired.config), null, 2));
+        for (const warning of repaired.warnings) console.warn(warning);
+        console.log(repaired.changed ? "Would repair OpenClaw compatibility issues" : "No compatibility repairs needed");
+        return;
+      }
+      if (!repaired.changed) {
+        console.log("No compatibility repairs needed");
+        for (const warning of repaired.warnings) console.warn(warning);
+        return;
+      }
+      const result = await writeOpenClawTransaction({
+        ...paths,
+        reason: "repair OpenClaw compatibility",
+        mutate() {
+          return repaired.config;
+        }
+      });
+      console.log(`Repaired OpenClaw compatibility (backup: ${result.backupDir.split("/").pop()})`);
+      for (const warning of repaired.warnings) console.warn(warning);
+    });
+
+  health.action(() => {
     const report = inspectConfigHealth(context.readConfig());
     if (report.caseDuplicateGroups.length === 0) {
       console.log("未发现 Provider 大小写重复");

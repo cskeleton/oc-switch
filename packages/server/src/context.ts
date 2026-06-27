@@ -2,6 +2,7 @@ import {
   defaultPresetDirs,
   getActivePaths,
   isProviderDisabled,
+  providerEnvVar as coreProviderEnvVar,
   readProviderStates,
   type FetchImpl,
   type OcSwitchPaths,
@@ -60,8 +61,7 @@ export function readEnvContent(paths: OcSwitchPaths): string | undefined {
 }
 
 export function providerEnvVar(config: OpenClawConfig, providerId: string): string | undefined {
-  const provider = config.models?.providers?.[providerId];
-  return provider?.apiKey?.id ?? provider?.authHeader?.id;
+  return coreProviderEnvVar(config.models?.providers?.[providerId]);
 }
 
 function disabledProviderError(providerId: string): Error {
