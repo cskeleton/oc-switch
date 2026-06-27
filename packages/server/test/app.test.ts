@@ -119,6 +119,21 @@ describe("server read endpoints", () => {
     expect(JSON.stringify(json)).not.toContain("sk-");
   });
 
+  test("GET /api/providers includes apiKey env status", async () => {
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, "NVIDIA_API_KEY=outside\n");
+    const app = createTestApp(ws);
+    const { response, json } = await jsonRequest(app, "/api/providers");
+
+    expect(response.status).toBe(200);
+    const nvidia = (json.providers as Array<{ id: string }>).find((item) => item.id === "nvidia");
+    expect(nvidia).toMatchObject({
+      apiKeyEnv: "NVIDIA_API_KEY",
+      apiKeyEnvManaged: false,
+      apiKeyEnvStatus: "unmanaged"
+    });
+  });
+
   test("GET /api/models lists allowlist models", async () => {
     const ws = workspace();
     const app = createTestApp(ws);
@@ -380,6 +395,50 @@ describe("server write endpoints", () => {
     expect(response.status).toBe(200);
     const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
     expect(config.models.providers.nvidia.baseUrl).toBe("https://new-nvidia.example/v1");
+  });
+
+  test("POST /api/providers/preview includes envPreview for preset key", async () => {
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, "TESTPROV_API_KEY=old-secret\n");
+    writeFileSync(join(ws.presetDirs.customDir, "testprov.json"), JSON.stringify({
+      id: "testprov",
+      name: "Test Provider",
+      provider: { api: "openai-completions", baseUrl: "https://test.example/v1", apiKeyEnv: "TESTPROV_API_KEY" },
+      models: [{ id: "vendor/model" }]
+    }));
+    const app = createTestApp(ws);
+    const { response, json } = await jsonRequest(app, "/api/providers/preview", {
+      method: "POST",
+      body: JSON.stringify({ presetId: "testprov" })
+    });
+
+    expect(response.status).toBe(200);
+  expect(json.envPreview).toMatchObject({
+    affectedKeys: ["TESTPROV_API_KEY"],
+    requiresConfirmation: true,
+    requiresMigration: true,
+    requiresComplex: false
+  });
+    expect(JSON.stringify(json)).not.toContain("old-secret");
+  });
+
+  test("PUT /api/providers/:id migrates unmanaged key only when confirmed", async () => {
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, "NVIDIA_API_KEY=old-secret\n");
+    const app = createTestApp(ws);
+
+    const rejected = await jsonRequest(app, "/api/providers/nvidia", {
+      method: "PUT",
+      body: JSON.stringify({ apiKey: "new-secret" })
+    });
+    expect(rejected.response.status).toBe(400);
+
+    const accepted = await jsonRequest(app, "/api/providers/nvidia", {
+      method: "PUT",
+      body: JSON.stringify({ apiKey: "new-secret", confirmMigration: true })
+    });
+    expect(accepted.response.status).toBe(200);
+    expect(readFileSync(ws.paths.envPath, "utf8")).toContain("NVIDIA_API_KEY=new-secret");
   });
 
   test("PUT /api/providers/:id updates env key for ${VAR} apiKey format", async () => {
@@ -937,7 +996,9 @@ describe("server env APIs", () => {
     expect(response.status).toBe(200);
     expect(json).toMatchObject({
       affectedKeys: ["SOME_MCP_EPID"],
-      requiresConfirmation: true
+      requiresConfirmation: true,
+      requiresMigration: true,
+      requiresComplex: false
     });
     expect(JSON.stringify(json)).not.toContain("old-secret");
   });

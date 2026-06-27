@@ -3,7 +3,8 @@ import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DataTable } from "../components/DataTable";
 import { DiffSummary } from "../components/DiffSummary";
-import type { ApiClient, ConfigDiffSummary, PresetEntry } from "../api";
+import { EnvMigrationConfirmDialog } from "../components/EnvMigrationConfirmDialog";
+import type { ApiClient, ConfigDiffSummary, EnvPreview, PresetEntry } from "../api";
 
 interface PresetsViewProps {
   client: ApiClient;
@@ -17,6 +18,7 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
   const [selectedPreset, setSelectedPreset] = useState<string>("");
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [diff, setDiff] = useState<ConfigDiffSummary | null>(null);
+  const [envPreview, setEnvPreview] = useState<EnvPreview | null>(null);
   const [confirmAdd, setConfirmAdd] = useState(false);
   const [submittedKey, setSubmittedKey] = useState("");
 
@@ -63,24 +65,34 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
     try {
       const currentDiff = await client.previewAddProvider(selectedPreset);
       setDiff(currentDiff);
+      setEnvPreview(currentDiff.envPreview ?? null);
       setConfirmAdd(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "预览失败");
     }
   }
 
-  async function confirmAddProvider() {
+  async function confirmAddProvider(flags?: { confirmMigration?: boolean; confirmComplex?: boolean }) {
     if (!selectedPreset || !apiKeyInput) return;
     try {
-      await client.addProvider(selectedPreset, apiKeyInput);
+      await client.addProvider(selectedPreset, apiKeyInput, undefined, flags);
       setSubmittedKey("");
       setApiKeyInput("");
       setConfirmAdd(false);
+      setEnvPreview(null);
       await load();
       onRefresh?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "添加失败");
     }
+  }
+
+  function envConfirmFlags(preview: EnvPreview | null) {
+    if (!preview?.requiresConfirmation) return undefined;
+    return {
+      ...(preview.requiresMigration ? { confirmMigration: true } : {}),
+      ...(preview.requiresComplex ? { confirmComplex: true } : {})
+    };
   }
 
   return (
@@ -187,16 +199,31 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
         ]}
       />
 
-      <ConfirmDialog
-        open={confirmAdd}
-        title="确认添加 Provider"
-        message="以下变更将在确认后写入配置（自动备份）。"
-        onCancel={() => setConfirmAdd(false)}
-        onConfirm={() => {
-          setSubmittedKey("");
-          void confirmAddProvider();
-        }}
-      />
+      {envPreview?.requiresConfirmation ? (
+        <EnvMigrationConfirmDialog
+          open={confirmAdd}
+          warnings={envPreview.warnings}
+          confirmMigration={envPreview.requiresMigration}
+          confirmComplex={envPreview.requiresComplex}
+          title="确认添加 Provider"
+          onCancel={() => setConfirmAdd(false)}
+          onConfirm={() => {
+            setSubmittedKey("");
+            void confirmAddProvider(envConfirmFlags(envPreview));
+          }}
+        />
+      ) : (
+        <ConfirmDialog
+          open={confirmAdd}
+          title="确认添加 Provider"
+          message="以下变更将在确认后写入配置（自动备份）。"
+          onCancel={() => setConfirmAdd(false)}
+          onConfirm={() => {
+            setSubmittedKey("");
+            void confirmAddProvider();
+          }}
+        />
+      )}
       {confirmAdd && diff ? (
         <div className="mt-3">
           <DiffSummary diff={diff} />

@@ -8,6 +8,17 @@ export interface StatusResponse {
   allowlistModelCount: number;
 }
 
+export interface EnvPreview {
+  affectedKeys: string[];
+  requiresConfirmation: boolean;
+  requiresMigration: boolean;
+  requiresComplex: boolean;
+  warnings: string[];
+  backupWillIncludeSecrets: boolean;
+}
+
+export type ApiKeyEnvStatus = "managed" | "unmanaged" | "missing" | "complex" | "duplicate";
+
 export interface ProviderSummary {
   id: string;
   api: string | undefined;
@@ -16,6 +27,9 @@ export interface ProviderSummary {
   enabledModelCount: number;
   containsPrimary: boolean;
   disabled: boolean;
+  apiKeyEnv: string | null;
+  apiKeyEnvManaged: boolean;
+  apiKeyEnvStatus: ApiKeyEnvStatus;
 }
 
 export interface ModelSummary {
@@ -268,26 +282,40 @@ export function createApiClient(options: ApiClientOptions) {
     exportPreset: (providerId: string) =>
       request<{ ok: boolean; id: string }>(`/api/presets/export/${providerId}`, { method: "POST" }),
     previewAddProvider: (presetId: string, models?: string[]) =>
-      request<ConfigDiffSummary>("/api/providers/preview", {
+      request<ConfigDiffSummary & { envPreview?: EnvPreview }>("/api/providers/preview", {
         method: "POST",
         body: JSON.stringify({ presetId, models })
       }),
-    addProvider: (presetId: string, apiKey: string, models?: string[]) =>
+    addProvider: (
+      presetId: string,
+      apiKey: string,
+      models?: string[],
+      flags?: { confirmMigration?: boolean; confirmComplex?: boolean }
+    ) =>
       request<{ ok: boolean }>("/api/providers", {
         method: "POST",
-        body: JSON.stringify({ presetId, apiKey, models })
+        body: JSON.stringify({ presetId, apiKey, models, ...flags })
       }),
     previewCustomProvider: (input: CustomProviderInput) =>
-      request<ConfigDiffSummary>("/api/providers/custom/preview", {
+      request<ConfigDiffSummary & { envPreview?: EnvPreview }>("/api/providers/custom/preview", {
         method: "POST",
         body: JSON.stringify(input)
       }),
-    addCustomProvider: (input: CustomProviderInput, apiKey: string) =>
+    addCustomProvider: (
+      input: CustomProviderInput,
+      apiKey: string,
+      flags?: { confirmMigration?: boolean; confirmComplex?: boolean }
+    ) =>
       request<{ ok: boolean; backupId?: string }>("/api/providers/custom", {
         method: "POST",
-        body: JSON.stringify({ ...input, apiKey })
+        body: JSON.stringify({ ...input, apiKey, ...flags })
       }),
-    updateProvider: (id: string, changes: { baseUrl?: string; apiKey?: string }) =>
+    previewUpdateProvider: (id: string, changes: { baseUrl?: string; includeApiKeyEnv?: boolean }) =>
+      request<ConfigDiffSummary & { envPreview?: EnvPreview }>(`/api/providers/${id}/preview`, {
+        method: "POST",
+        body: JSON.stringify(changes)
+      }),
+    updateProvider: (id: string, changes: { baseUrl?: string; apiKey?: string; confirmMigration?: boolean; confirmComplex?: boolean }) =>
       request<{ ok: boolean }>(`/api/providers/${id}`, {
         method: "PUT",
         body: JSON.stringify(changes)
@@ -356,7 +384,7 @@ export function createApiClient(options: ApiClientOptions) {
       | { type: "upsert" | "delete"; envVar: string; note?: string }
       | { type: "rename"; fromEnvVar: string; toEnvVar: string; note?: string }
     ) =>
-      request<{ affectedKeys: string[]; requiresConfirmation: boolean; warnings: string[]; backupWillIncludeSecrets: boolean }>("/api/env/preview", {
+      request<EnvPreview>("/api/env/preview", {
         method: "POST",
         body: JSON.stringify(body)
       }),

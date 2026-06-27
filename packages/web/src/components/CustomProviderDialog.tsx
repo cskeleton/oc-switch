@@ -1,7 +1,8 @@
 import { Plus } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { ApiClient, ApiType, ConfigDiffSummary, CustomProviderInput, CustomProviderModelInput } from "../api";
+import type { ApiClient, ApiType, ConfigDiffSummary, CustomProviderInput, CustomProviderModelInput, EnvPreview } from "../api";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { EnvMigrationConfirmDialog } from "./EnvMigrationConfirmDialog";
 import { DiffSummary } from "./DiffSummary";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Input } from "./ui/input";
@@ -71,6 +72,7 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
   const [enableAllModels, setEnableAllModels] = useState(true);
   const [modelRows, setModelRows] = useState<ModelRow[]>(emptyModelRows);
   const [diff, setDiff] = useState<ConfigDiffSummary | null>(null);
+  const [envPreview, setEnvPreview] = useState<EnvPreview | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -97,6 +99,7 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
     setEnableAllModels(true);
     setModelRows(emptyModelRows());
     setDiff(null);
+    setEnvPreview(null);
     setConfirming(false);
     setError(null);
   }
@@ -128,21 +131,30 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
       const nextInput = input();
       const nextDiff = await client.previewCustomProvider(nextInput);
       setDiff(nextDiff);
+      setEnvPreview(nextDiff.envPreview ?? null);
       setConfirming(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "预览失败");
     }
   }
 
-  async function confirm() {
+  async function confirm(flags?: { confirmMigration?: boolean; confirmComplex?: boolean }) {
     setError(null);
     try {
-      await client.addCustomProvider(input(), apiKey);
+      await client.addCustomProvider(input(), apiKey, flags);
       resetForm();
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "添加失败");
     }
+  }
+
+  function envConfirmFlags(preview: EnvPreview | null) {
+    if (!preview?.requiresConfirmation) return undefined;
+    return {
+      ...(preview.requiresMigration ? { confirmMigration: true } : {}),
+      ...(preview.requiresComplex ? { confirmComplex: true } : {})
+    };
   }
 
   const selectClassName = "flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-base shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring md:text-sm";
@@ -269,6 +281,11 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
                   <Label>API Key env 名</Label>
                   <Input aria-label="API Key env 名" value={apiKeyEnv} onChange={(event) => { setApiKeyEnvTouched(true); setApiKeyEnv(event.target.value); }} />
                 </div>
+                {envPreview?.requiresConfirmation ? (
+                  <p className="md:col-span-2 text-sm text-amber-500">
+                    {apiKeyEnv} 当前在托管块外或存在复杂语法；确认添加后将迁移到 oc-switch 托管区。
+                  </p>
+                ) : null}
               </div>
               <div className="flex items-center space-x-2 mt-4">
                 <input
@@ -300,13 +317,25 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
         </DialogContent>
       </Dialog>
 
-      <ConfirmDialog
-        open={confirming}
-        title="确认添加 Provider"
-        message="以下变更将在确认后写入配置，并自动创建备份。"
-        onCancel={() => setConfirming(false)}
-        onConfirm={() => void confirm()}
-      />
+      {envPreview?.requiresConfirmation ? (
+        <EnvMigrationConfirmDialog
+          open={confirming}
+          warnings={envPreview.warnings}
+          confirmMigration={envPreview.requiresMigration}
+          confirmComplex={envPreview.requiresComplex}
+          title="确认添加 Provider"
+          onCancel={() => setConfirming(false)}
+          onConfirm={() => void confirm(envConfirmFlags(envPreview))}
+        />
+      ) : (
+        <ConfirmDialog
+          open={confirming}
+          title="确认添加 Provider"
+          message="以下变更将在确认后写入配置，并自动创建备份。"
+          onCancel={() => setConfirming(false)}
+          onConfirm={() => void confirm()}
+        />
+      )}
     </>
   );
 }

@@ -570,7 +570,7 @@ describe("ProvidersView", () => {
         { id: "vendor/model-b", name: "Vendor Model B", alias: "b" }
       ],
       enableAllModels: true
-    }, "sk-test-custom-secret");
+    }, "sk-test-custom-secret", undefined);
     expect(queryByText("sk-test-custom-secret")).toBeNull();
   });
 
@@ -600,18 +600,37 @@ describe("ProvidersView", () => {
 
   test("edits provider base URL and API key without rendering the key", async () => {
     const updateProvider = mock(async () => ({ ok: true }));
+    const previewUpdateProvider = mock(async () => ({
+      providersAdded: [],
+      providersRemoved: [],
+      providersChanged: [],
+      modelsEnabled: [],
+      modelsDisabled: [],
+      primaryChanged: null,
+      envPreview: {
+        affectedKeys: ["NVIDIA_API_KEY"],
+        requiresConfirmation: false,
+        requiresMigration: false,
+        requiresComplex: false,
+        warnings: [],
+        backupWillIncludeSecrets: true
+      }
+    }));
     const getProviders = mock(async () => ({
       providers: [
         providerSummary({
           id: "nvidia",
           baseUrl: "https://integrate.api.nvidia.com/v1",
-          modelCount: 2
+          modelCount: 2,
+          apiKeyEnv: "NVIDIA_API_KEY",
+          apiKeyEnvManaged: true,
+          apiKeyEnvStatus: "managed"
         })
       ]
     }));
 
-    const { findByLabelText, getByText, queryByText } = render(
-      <ProvidersView client={mockClient({ getProviders, updateProvider })} />
+    const { findByLabelText, findByText, getByText, queryByText } = render(
+      <ProvidersView client={mockClient({ getProviders, previewUpdateProvider, updateProvider })} />
     );
 
     await userEvent.click(await findByLabelText("编辑 nvidia"));
@@ -625,7 +644,59 @@ describe("ProvidersView", () => {
       baseUrl: "https://new-nvidia.example/v1",
       apiKey: "sk-new-secret"
     });
+    expect(await findByText("Provider nvidia 的 API Key 已更新")).toBeTruthy();
     expect(queryByText("sk-new-secret")).toBeNull();
+  });
+
+  test("provider edit previews unmanaged API key migration before saving", async () => {
+    const previewUpdateProvider = mock(async () => ({
+      providersAdded: [],
+      providersRemoved: [],
+      providersChanged: [],
+      modelsEnabled: [],
+      modelsDisabled: [],
+      primaryChanged: null,
+      envPreview: {
+        affectedKeys: ["NVIDIA_API_KEY"],
+        requiresConfirmation: true,
+        requiresMigration: true,
+        requiresComplex: false,
+        warnings: ["NVIDIA_API_KEY 将迁入 oc-switch 托管块"],
+        backupWillIncludeSecrets: true
+      }
+    }));
+    const updateProvider = mock(async () => ({ ok: true }));
+
+    const { findByLabelText, findByText, getByText } = render(<ProvidersView client={mockClient({
+      getProviders: async () => ({ providers: [{
+        id: "nvidia",
+        api: "openai-completions",
+        baseUrl: "https://example.com/v1",
+        modelCount: 1,
+        enabledModelCount: 1,
+        containsPrimary: false,
+        disabled: false,
+        apiKeyEnv: "NVIDIA_API_KEY",
+        apiKeyEnvManaged: false,
+        apiKeyEnvStatus: "unmanaged"
+      }] }),
+      getHealth: async () => ({ caseDuplicateGroups: [], summary: { duplicateGroupCount: 0, affectedProviderCount: 0, affectedAllowlistCount: 0 } }),
+      previewUpdateProvider,
+      updateProvider
+    })} />);
+
+    await userEvent.click(await findByLabelText("编辑 nvidia"));
+    expect(await findByText(/NVIDIA_API_KEY.*托管块外/)).toBeTruthy();
+    await userEvent.type(await findByLabelText("Provider API Key 新值"), "new-secret");
+    await userEvent.click(getByText("保存 Provider"));
+    expect(await findByText(/不在 oc-switch 托管区/)).toBeTruthy();
+    await userEvent.click(getByText("确认"));
+    await waitFor(() => expect(updateProvider).toHaveBeenCalledWith("nvidia", {
+      baseUrl: "https://example.com/v1",
+      apiKey: "new-secret",
+      confirmMigration: true
+    }));
+    expect(await findByText("Provider nvidia 的 API Key 已迁入托管块并更新")).toBeTruthy();
   });
 
   test("syncs provider models and shows added model count", async () => {
@@ -755,7 +826,7 @@ describe("PresetsView", () => {
     await userEvent.click(getByText("确认"));
 
     expect(previewAddProvider).toHaveBeenCalledWith("nvidia");
-    expect(addProvider).toHaveBeenCalledWith("nvidia", "sk-test-secret-key");
+    expect(addProvider).toHaveBeenCalledWith("nvidia", "sk-test-secret-key", undefined, undefined);
     expect(getDiff).not.toHaveBeenCalled();
     expect(queryByText("sk-test-secret-key")).toBeNull();
   });
@@ -1054,6 +1125,8 @@ describe("SettingsView", () => {
     const previewEnvVar = mock(async () => ({
       affectedKeys: ["NVIDIA_API_KEY"],
       requiresConfirmation: false,
+      requiresMigration: false,
+      requiresComplex: false,
       warnings: [],
       backupWillIncludeSecrets: true
     }));
@@ -1112,6 +1185,8 @@ describe("SettingsView", () => {
     const previewEnvVar = mock(async () => ({
       affectedKeys: ["NVIDIA_API_KEY"],
       requiresConfirmation: true,
+      requiresMigration: true,
+      requiresComplex: false,
       warnings: ["NVIDIA_API_KEY will be migrated into the oc-switch managed block"],
       backupWillIncludeSecrets: true
     }));
@@ -1163,12 +1238,15 @@ describe("SettingsView", () => {
       value: "new-secret",
       confirmMigration: true
     }));
+    expect(await findByText("NVIDIA_API_KEY 已迁入托管块并写入新值")).toBeTruthy();
   });
 
   test("renames advanced managed env var without rendering its secret", async () => {
     const previewEnvVar = mock(async () => ({
       affectedKeys: ["SOME_MCP_EPID", "SOME_MCP_EPID_NEXT"],
       requiresConfirmation: false,
+      requiresMigration: false,
+      requiresComplex: false,
       warnings: [],
       backupWillIncludeSecrets: true
     }));

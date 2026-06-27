@@ -61,7 +61,9 @@ export function registerProviderCommands(program: Command, context: CommandConte
     .argument("<preset-id>")
     .requiredOption("--key <api-key>", "API key value")
     .option("--models <ids>", "Comma-separated model ids to enable", (value: string) => value.split(",").map((id) => id.trim()).filter(Boolean))
-    .action(async (presetId: string, options: { key: string; models?: string[] }) => {
+    .option("--confirm-migration", "确认将块外同名 env 变量迁入 oc-switch 托管块")
+    .option("--confirm-complex", "确认将重复或复杂 env 语法改写成标准 KEY=<new value>")
+    .action(async (presetId: string, options: { key: string; models?: string[]; confirmMigration?: boolean; confirmComplex?: boolean }) => {
       const paths = context.activePaths();
       const preset = loadPreset(context.presetDirs(), presetId);
       const enabledModels = options.models ?? preset.models.map((model) => model.id);
@@ -69,6 +71,10 @@ export function registerProviderCommands(program: Command, context: CommandConte
         ...paths,
         reason: `add provider ${presetId}`,
         envUpdates: { [preset.provider.apiKeyEnv]: options.key },
+        envUpdateOptions: {
+          ...(options.confirmMigration ? { confirmMigration: true } : {}),
+          ...(options.confirmComplex ? { confirmComplex: true } : {})
+        },
         manifestUpdates: [
           { type: "upsert-provider-env", providerId: presetId, envVar: preset.provider.apiKeyEnv }
         ],
@@ -92,6 +98,8 @@ export function registerProviderCommands(program: Command, context: CommandConte
     .option("--website <url>")
     .option("--full-url")
     .option("--disable-by-default")
+    .option("--confirm-migration", "确认将块外同名 env 变量迁入 oc-switch 托管块")
+    .option("--confirm-complex", "确认将重复或复杂 env 语法改写成标准 KEY=<new value>")
     .action(async (options: {
       id: string;
       name: string;
@@ -105,6 +113,8 @@ export function registerProviderCommands(program: Command, context: CommandConte
       website?: string;
       fullUrl?: boolean;
       disableByDefault?: boolean;
+      confirmMigration?: boolean;
+      confirmComplex?: boolean;
     }) => {
       const paths = context.activePaths();
       const aliasMap = context.parseAliasMap(options.aliases);
@@ -127,6 +137,10 @@ export function registerProviderCommands(program: Command, context: CommandConte
         ...paths,
         reason: `add custom provider ${input.providerId}`,
         envUpdates: { [input.apiKeyEnv]: options.key },
+        envUpdateOptions: {
+          ...(options.confirmMigration ? { confirmMigration: true } : {}),
+          ...(options.confirmComplex ? { confirmComplex: true } : {})
+        },
         manifestUpdates: [
           {
             type: "upsert-provider-env",
@@ -151,7 +165,9 @@ export function registerProviderCommands(program: Command, context: CommandConte
     .argument("<name>")
     .option("--base-url <url>")
     .option("--key <api-key>", "API key value")
-    .action(async (name: string, options: { baseUrl?: string; key?: string }) => {
+    .option("--confirm-migration", "确认将块外同名 env 变量迁入 oc-switch 托管块")
+    .option("--confirm-complex", "确认将重复或复杂 env 语法改写成标准 KEY=<new value>")
+    .action(async (name: string, options: { baseUrl?: string; key?: string; confirmMigration?: boolean; confirmComplex?: boolean }) => {
       const paths = context.activePaths();
       const envUpdates: Record<string, string> = {};
       if (options.key) {
@@ -166,6 +182,10 @@ export function registerProviderCommands(program: Command, context: CommandConte
         ...(Object.keys(envUpdates).length ? { envUpdates } : {}),
         ...(Object.keys(envUpdates).length
           ? {
+              envUpdateOptions: {
+                ...(options.confirmMigration ? { confirmMigration: true } : {}),
+                ...(options.confirmComplex ? { confirmComplex: true } : {})
+              },
               manifestUpdates: Object.keys(envUpdates).map((envVar) => ({
                 type: "upsert-provider-env" as const,
                 providerId: name,

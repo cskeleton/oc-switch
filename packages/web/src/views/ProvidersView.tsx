@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { CustomProviderDialog } from "../components/CustomProviderDialog";
 import { DataTable } from "../components/DataTable";
+import { EnvMigrationConfirmDialog } from "../components/EnvMigrationConfirmDialog";
 import { MergeCaseDuplicateDialog } from "../components/MergeCaseDuplicateDialog";
 import { ProviderModelsDialog } from "../components/ProviderModelsDialog";
 import type { ApiClient, CaseDuplicateGroup, ModelSummary, ProviderSummary } from "../api";
@@ -27,8 +28,16 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
   const [selectedNewPrimary, setSelectedNewPrimary] = useState("");
   const [syncing, setSyncing] = useState<string | null>(null);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [modelTarget, setModelTarget] = useState<ProviderSummary | null>(null);
   const [stateTarget, setStateTarget] = useState<ProviderSummary | null>(null);
+  const [pendingEnvConfirm, setPendingEnvConfirm] = useState<{
+    providerId: string;
+    changes: { baseUrl?: string; apiKey?: string };
+    warnings: string[];
+    confirmMigration?: boolean;
+    confirmComplex?: boolean;
+  } | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -56,6 +65,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
 
   async function openDelete(row: ProviderSummary) {
     setError(null);
+    setSuccessMessage(null);
     setDeleteTarget(row);
     setNewPrimaryCandidates([]);
     setSelectedNewPrimary("");
@@ -93,9 +103,30 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
 
   function openEdit(row: ProviderSummary) {
     setError(null);
+    setSuccessMessage(null);
     setEditTarget(row);
     setEditBaseUrl(row.baseUrl ?? "");
     setEditApiKey("");
+  }
+
+  async function submitProviderUpdate(providerId: string, changes: { baseUrl?: string; apiKey?: string; confirmMigration?: boolean; confirmComplex?: boolean }) {
+    await client.updateProvider(providerId, changes);
+    setEditTarget(null);
+    setEditApiKey("");
+    setPendingEnvConfirm(null);
+    if (changes.apiKey) {
+      setSuccessMessage(
+        changes.confirmMigration
+          ? `Provider ${providerId} 的 API Key 已迁入托管块并更新`
+          : changes.confirmComplex
+            ? `Provider ${providerId} 的 API Key 已改写为标准格式并更新`
+            : `Provider ${providerId} 的 API Key 已更新`
+      );
+    } else {
+      setSuccessMessage(`Provider ${providerId} 已更新`);
+    }
+    await load();
+    onRefresh?.();
   }
 
   async function confirmEdit() {
@@ -108,14 +139,44 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
       setError("请输入 baseUrl 或 API Key 新值");
       return;
     }
+    setError(null);
+    setSuccessMessage(null);
     try {
-      await client.updateProvider(editTarget.id, changes);
-      setEditTarget(null);
-      setEditApiKey("");
-      await load();
-      onRefresh?.();
+      if (changes.apiKey) {
+        const preview = await client.previewUpdateProvider(editTarget.id, {
+          ...(changes.baseUrl ? { baseUrl: changes.baseUrl } : {}),
+          includeApiKeyEnv: true
+        });
+        const envPreview = preview.envPreview;
+        if (envPreview?.requiresConfirmation) {
+          setPendingEnvConfirm({
+            providerId: editTarget.id,
+            changes,
+            warnings: envPreview.warnings,
+            ...(envPreview.requiresMigration ? { confirmMigration: true } : {}),
+            ...(envPreview.requiresComplex ? { confirmComplex: true } : {})
+          });
+          return;
+        }
+      }
+      await submitProviderUpdate(editTarget.id, changes);
     } catch (err) {
       setError(err instanceof Error ? err.message : "保存失败");
+    }
+  }
+
+  async function confirmEnvMigration() {
+    if (!pendingEnvConfirm) return;
+    setError(null);
+    try {
+      await submitProviderUpdate(pendingEnvConfirm.providerId, {
+        ...pendingEnvConfirm.changes,
+        ...(pendingEnvConfirm.confirmMigration ? { confirmMigration: true } : {}),
+        ...(pendingEnvConfirm.confirmComplex ? { confirmComplex: true } : {})
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存失败");
+      setPendingEnvConfirm(null);
     }
   }
 
@@ -138,6 +199,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
     setSyncing(row.id);
     setSyncMessage(null);
     setError(null);
+    setSuccessMessage(null);
     try {
       const result = await client.syncProvider(row.id);
       if (result.unsupportedReason) {
@@ -179,6 +241,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
       </div>
 
       {error ? <p className="mb-3 text-destructive">{error}</p> : null}
+      {successMessage ? <p className="mb-3 text-sm text-emerald-600 dark:text-emerald-400">{successMessage}</p> : null}
       {syncMessage ? <p className="mb-3 text-sm text-emerald-500 dark:text-emerald-400">{syncMessage}</p> : null}
 
       <DataTable
@@ -382,6 +445,11 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
                   autoComplete="off"
                 />
               </label>
+              {editTarget.apiKeyEnvStatus === "unmanaged" && editTarget.apiKeyEnv ? (
+                <p className="text-sm text-amber-500">
+                  {editTarget.apiKeyEnv} 当前在托管块外；保存新 API Key 时会迁移到 oc-switch 托管区。
+                </p>
+              ) : null}
             </div>
             <div className="mt-4 flex justify-end gap-2">
               <button
@@ -405,6 +473,16 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
           </div>
         </div>
       ) : null}
+
+      <EnvMigrationConfirmDialog
+        open={Boolean(pendingEnvConfirm)}
+        warnings={pendingEnvConfirm?.warnings ?? []}
+        {...(pendingEnvConfirm?.confirmMigration ? { confirmMigration: true } : {})}
+        {...(pendingEnvConfirm?.confirmComplex ? { confirmComplex: true } : {})}
+        title="确认 API Key 写入"
+        onCancel={() => setPendingEnvConfirm(null)}
+        onConfirm={() => void confirmEnvMigration()}
+      />
 
       <MergeCaseDuplicateDialog
         open={Boolean(mergeTarget)}

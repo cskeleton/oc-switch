@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ApiClient, EnvIndexResponse, EnvVariableSummary, PathSettingsResponse, SettingsResponse } from "../api";
+import { EnvMigrationConfirmDialog } from "../components/EnvMigrationConfirmDialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../components/ui/card";
 
@@ -47,6 +48,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
   const [newExtraValue, setNewExtraValue] = useState("");
   const [newExtraNote, setNewExtraNote] = useState("");
   const [pendingAction, setPendingAction] = useState<PendingEnvAction | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -87,11 +89,12 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
       return;
     }
     setError(null);
+    setSuccessMessage(null);
     try {
       const preview = await client.previewEnvVar({ type: "upsert", envVar, ...(note ? { note } : {}) });
       const summary = envIndex?.variables.find((item) => item.envVar === envVar);
-      const needsMigration = Boolean(summary?.present && !summary.managed);
-      const needsComplex = Boolean(summary?.complex || summary?.duplicate);
+      const needsMigration = preview.requiresMigration || Boolean(summary?.present && !summary.managed);
+      const needsComplex = preview.requiresComplex || Boolean(summary?.complex || summary?.duplicate);
       if (preview.requiresConfirmation || needsMigration || needsComplex) {
         setPendingAction({
           envVar,
@@ -106,6 +109,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
       }
       await client.updateEnvVar({ type: "upsert", envVar, value, ...(note ? { note } : {}) });
       setValueInputs((prev) => ({ ...prev, [envVar]: "" }));
+      setSuccessMessage(`${envVar} 已写入新值`);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "更新失败");
@@ -114,10 +118,11 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
 
   async function submitEnvDelete(envVar: string) {
     setError(null);
+    setSuccessMessage(null);
     try {
       const preview = await client.previewEnvVar({ type: "delete", envVar });
       const summary = envIndex?.variables.find((item) => item.envVar === envVar);
-      const needsComplex = Boolean(summary?.complex || summary?.duplicate);
+      const needsComplex = preview.requiresComplex || Boolean(summary?.complex || summary?.duplicate);
       if (preview.requiresConfirmation || needsComplex) {
         setPendingAction({
           envVar,
@@ -128,6 +133,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
         return;
       }
       await client.deleteEnvVar({ type: "delete", envVar });
+      setSuccessMessage(`${envVar} 已删除`);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "删除失败");
@@ -140,11 +146,12 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
       return;
     }
     setError(null);
+    setSuccessMessage(null);
     try {
       const nextName = toEnvVar.trim();
       const preview = await client.previewEnvVar({ type: "rename", fromEnvVar, toEnvVar: nextName, ...(note ? { note } : {}) });
       const summary = envIndex?.variables.find((item) => item.envVar === fromEnvVar);
-      const needsComplex = Boolean(summary?.complex || summary?.duplicate);
+      const needsComplex = preview.requiresComplex || Boolean(summary?.complex || summary?.duplicate);
       if (preview.requiresConfirmation || needsComplex) {
         setPendingAction({
           fromEnvVar,
@@ -158,6 +165,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
       }
       await client.renameEnvVar({ type: "rename", fromEnvVar, toEnvVar: nextName, ...(note ? { note } : {}) });
       setRenameInputs((prev) => ({ ...prev, [fromEnvVar]: "" }));
+      setSuccessMessage(`${fromEnvVar} 已重命名为 ${nextName}`);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "重命名失败");
@@ -167,6 +175,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
   async function confirmPendingAction() {
     if (!pendingAction) return;
     setError(null);
+    setSuccessMessage(null);
     try {
       if (pendingAction.type === "upsert" && pendingAction.value && pendingAction.envVar) {
         const envVar = pendingAction.envVar;
@@ -179,12 +188,20 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
           ...(pendingAction.confirmComplex ? { confirmComplex: true } : {})
         });
         setValueInputs((prev) => ({ ...prev, [envVar]: "" }));
+        setSuccessMessage(
+          pendingAction.confirmMigration
+            ? `${envVar} 已迁入托管块并写入新值`
+            : pendingAction.confirmComplex
+              ? `${envVar} 已改写为标准格式并写入新值`
+              : `${envVar} 已写入新值`
+        );
       } else if (pendingAction.type === "delete" && pendingAction.envVar) {
         await client.deleteEnvVar({
           type: "delete",
           envVar: pendingAction.envVar,
           ...(pendingAction.confirmComplex ? { confirmComplex: true } : {})
         });
+        setSuccessMessage(`${pendingAction.envVar} 已删除`);
       } else if (pendingAction.type === "rename" && pendingAction.fromEnvVar && pendingAction.toEnvVar) {
         const fromEnvVar = pendingAction.fromEnvVar;
         await client.renameEnvVar({
@@ -195,6 +212,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
           ...(pendingAction.confirmComplex ? { confirmComplex: true } : {})
         });
         setRenameInputs((prev) => ({ ...prev, [fromEnvVar]: "" }));
+        setSuccessMessage(`${fromEnvVar} 已重命名为 ${pendingAction.toEnvVar}`);
       }
       setPendingAction(null);
       if (pendingAction.type === "upsert" && pendingAction.envVar === newExtraVar) {
@@ -210,7 +228,9 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
 
   async function handleCleanupOrphans() {
     try {
+      setSuccessMessage(null);
       await client.cleanupOrphanEnvKeys();
+      setSuccessMessage("orphan keys 已清理");
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "清理失败");
@@ -219,8 +239,10 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
 
   async function handleSwitchPaths() {
     try {
+      setSuccessMessage(null);
       await client.updatePathSettings(selectedOpenClawPath, selectedEnvPath);
       await load();
+      setSuccessMessage("路径已切换");
     } catch (err) {
       setError(err instanceof Error ? err.message : "切换路径失败");
     }
@@ -262,6 +284,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
       </div>
 
       {error ? <p className="text-sm font-medium text-destructive">{error}</p> : null}
+      {successMessage ? <p className="text-sm font-medium text-emerald-600 dark:text-emerald-400">{successMessage}</p> : null}
 
       <Tabs defaultValue="general" className="w-full">
         <TabsList className="mb-4">
@@ -603,41 +626,14 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
       </Tabs>
 
       {pendingAction ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm" role="dialog" aria-label="确认环境变量操作">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
-            <h3 className="text-lg font-semibold leading-none tracking-tight">确认操作</h3>
-            <p className="mt-4 text-sm text-muted-foreground">
-              {pendingAction.confirmMigration
-                ? "该变量当前不在 oc-switch 托管区。更新后会迁移到托管块；旧值不会显示。"
-                : pendingAction.confirmComplex
-                  ? "该变量存在重复或复杂 .env 语法。迁移会写成标准 KEY=<新值>，可能改变 OpenClaw 解析结果。"
-                  : "请确认继续此环境变量操作。备份将包含 .env 明文。"}
-            </p>
-            {pendingAction.warnings.length ? (
-              <ul className="mt-4 list-inside list-disc text-sm font-medium text-amber-500">
-                {pendingAction.warnings.map((warning) => (
-                  <li key={warning}>{warning}</li>
-                ))}
-              </ul>
-            ) : null}
-            <div className="mt-6 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setPendingAction(null)}
-                className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                onClick={() => void confirmPendingAction()}
-                className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                确认
-              </button>
-            </div>
-          </div>
-        </div>
+        <EnvMigrationConfirmDialog
+          open
+          warnings={pendingAction.warnings}
+          {...(pendingAction.confirmMigration ? { confirmMigration: true } : {})}
+          {...(pendingAction.confirmComplex ? { confirmComplex: true } : {})}
+          onCancel={() => setPendingAction(null)}
+          onConfirm={() => void confirmPendingAction()}
+        />
       ) : null}
 
       <p className="mt-6 text-xs text-muted-foreground text-center">

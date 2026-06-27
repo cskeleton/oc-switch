@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { inspectEnvFile, listProviderEnvRefs } from "./env-inspector";
-import { migrateEnvVarToManagedBlock, removeManagedEnvKeys, renameManagedEnvKey, updateManagedEnv } from "./env-manager";
+import { applyEnvUpdates, previewEnvUpdates } from "./env-updates";
+import { removeManagedEnvKeys, renameManagedEnvKey } from "./env-manager";
 import { readManifest, removeExtraEnvManifest, upsertExtraEnvManifest } from "./manifest-manager";
 import { writeEnvTransaction } from "./transaction-writer";
 import type { OcSwitchPaths } from "./paths";
@@ -18,6 +19,8 @@ export type EnvOperation =
 export interface EnvPreview {
   affectedKeys: string[];
   requiresConfirmation: boolean;
+  requiresMigration: boolean;
+  requiresComplex: boolean;
   warnings: string[];
   backupWillIncludeSecrets: boolean;
 }
@@ -57,6 +60,14 @@ export function previewEnvOperation(input: {
   const envVar = input.operation.type === "rename" ? input.operation.fromEnvVar : input.operation.envVar;
   assertEnvVar(envVar);
   if (input.operation.type === "rename") assertEnvVar(input.operation.toEnvVar);
+  if (input.operation.type === "upsert") {
+    return previewEnvUpdates({
+      content: readEnv(input.paths),
+      providerRefs: listProviderEnvRefs(readConfig(input.paths)),
+      manifest: readManifest(input.paths.stateDir),
+      updates: { [input.operation.envVar]: "" }
+    });
+  }
   const summary = inspect(input.paths).variables.find((item) => item.envVar === envVar);
   const unmanaged = Boolean(summary?.present && !summary.managed);
   const complex = Boolean(summary?.complex || summary?.duplicate);
@@ -64,6 +75,8 @@ export function previewEnvOperation(input: {
   return {
     affectedKeys,
     requiresConfirmation: unmanaged || complex,
+    requiresMigration: unmanaged,
+    requiresComplex: complex,
     warnings: [
       ...(unmanaged ? [`${envVar} will be migrated into the oc-switch managed block`] : []),
       ...(complex ? [`${envVar} has duplicate or complex syntax and requires explicit confirmation`] : [])
@@ -82,19 +95,17 @@ export async function applyEnvOperation(input: { paths: OcSwitchPaths; operation
 
   const inspection = inspect(input.paths);
   const summary = inspection.variables.find((item) => item.envVar === envVar);
-  const unmanaged = Boolean(summary?.present && !summary.managed);
-  const complex = Boolean(summary?.complex || summary?.duplicate);
   if (input.operation.type === "rename" && summary?.providerRef) {
     throw new Error("provider env var cannot be renamed from env management");
   }
   if (input.operation.type === "rename" && !summary?.managed) {
     throw new Error("managed env var is required for rename");
   }
-  if (unmanaged && input.operation.type !== "rename" && !("confirmMigration" in input.operation && input.operation.confirmMigration)) {
-    throw new Error("env var migration requires confirmation");
-  }
-  if (complex && !input.operation.confirmComplex) {
-    throw new Error("complex env var requires confirmation");
+  if (input.operation.type === "delete" || input.operation.type === "rename") {
+    const complex = Boolean(summary?.complex || summary?.duplicate);
+    if (complex && !input.operation.confirmComplex) {
+      throw new Error("complex env var requires confirmation");
+    }
   }
 
   const result = await writeEnvTransaction({
@@ -109,10 +120,16 @@ export async function applyEnvOperation(input: { paths: OcSwitchPaths; operation
       if (input.operation.type === "rename") {
         return renameManagedEnvKey(content, input.operation.fromEnvVar, input.operation.toEnvVar).content;
       }
-      if (unmanaged) {
-        return migrateEnvVarToManagedBlock(content, input.operation.envVar, input.operation.value!).content;
-      }
-      return updateManagedEnv(content, { [input.operation.envVar]: input.operation.value! }).content;
+      return applyEnvUpdates({
+        content,
+        providerRefs: listProviderEnvRefs(readConfig(input.paths)),
+        manifest: readManifest(input.paths.stateDir),
+        updates: { [input.operation.envVar]: input.operation.value! },
+        options: {
+          ...(input.operation.confirmMigration ? { confirmMigration: true } : {}),
+          ...(input.operation.confirmComplex ? { confirmComplex: true } : {})
+        }
+      }).content;
     },
     afterWrite() {
       if (input.operation.type === "upsert" && !summary?.providerRef) {

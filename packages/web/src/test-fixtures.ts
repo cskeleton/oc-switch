@@ -21,6 +21,9 @@ export function providerSummary({ id, ...overrides }: ProviderSummaryInput): Pro
     enabledModelCount: 1,
     containsPrimary: false,
     disabled: false,
+    apiKeyEnv: null,
+    apiKeyEnvManaged: false,
+    apiKeyEnvStatus: "missing",
     ...overrides
   };
 }

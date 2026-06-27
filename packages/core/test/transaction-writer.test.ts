@@ -56,7 +56,7 @@ describe("writeOpenClawTransaction", () => {
         config.agents!.defaults!.model = "nvidia/deepseek-ai/deepseek-v4-flash";
         return config;
       }
-    })).rejects.toThrow("Refusing to overwrite unmanaged env var USER_DEFINED_API_KEY");
+    })).rejects.toThrow("env var migration requires confirmation");
 
     expect(readFileSync(ws.openclawPath, "utf8")).toContain("minimax-portal/MiniMax-M3");
   });

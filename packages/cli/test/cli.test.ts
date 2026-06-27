@@ -288,6 +288,35 @@ describe("cli provider crud", () => {
     expect(config.models.providers.nvidia.models[0].id).toBe("deepseek-ai/deepseek-v4-flash");
   });
 
+  test("provider edit --key rejects unmanaged env without --confirm-migration", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "openclaw.json");
+    const envPath = join(dir, ".openclaw", ".env");
+    mkdirSync(join(dir, ".openclaw"), { recursive: true });
+    const config = structuredClone(sample) as OpenClawConfig;
+    config.models!.providers!.nvidia!.apiKey = "${NVIDIA_API_KEY}";
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    writeFileSync(envPath, "NVIDIA_API_KEY=old-secret\n");
+
+    const rejected = await runCli(["provider", "edit", "nvidia", "--key", "new-secret"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+    expect(rejected.code).not.toBe(0);
+    expect(rejected.stderr).toContain("env var migration requires confirmation");
+
+    const accepted = await runCli([
+      "provider", "edit", "nvidia", "--key", "new-secret", "--confirm-migration"
+    ], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+    expect(accepted.code).toBe(0);
+    expect(readFileSync(envPath, "utf8")).toContain("NVIDIA_API_KEY=new-secret");
+    expect(readFileSync(envPath, "utf8")).not.toContain("old-secret");
+  });
+
   test("deletes provider with new primary", async () => {
     const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
     const configPath = join(dir, "openclaw.json");

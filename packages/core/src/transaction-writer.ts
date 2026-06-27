@@ -4,7 +4,9 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, 
 import { dirname, join } from "node:path";
 import { createBackup } from "./backup-manager";
 import { assertAllowedSemanticChange } from "./diff-guard";
-import { updateManagedEnv } from "./env-manager";
+import { applyEnvUpdates, type EnvUpdateOptions } from "./env-updates";
+import { listProviderEnvRefs } from "./env-inspector";
+import { readManifest } from "./manifest-manager";
 import { withFileLock } from "./lock";
 import { markProviderEnvOrphan, upsertProviderEnvManifest, type ManifestProviderMetadata } from "./manifest-manager";
 import type { OpenClawConfig } from "./types";
@@ -19,6 +21,7 @@ export interface TransactionInput {
   stateDir: string;
   reason: string;
   envUpdates?: Record<string, string>;
+  envUpdateOptions?: EnvUpdateOptions;
   manifestUpdates?: ManifestUpdate[];
   mutate(config: OpenClawConfig): OpenClawConfig;
   /** openclaw.json 写入成功后、写锁释放前的钩子，失败时事务回滚 */
@@ -64,7 +67,15 @@ export async function writeOpenClawTransaction(input: TransactionInput): Promise
     assertAllowedSemanticChange(beforeConfig, afterConfig);
     const afterRaw = `${JSON.stringify(afterConfig, null, 2)}\n`;
     const hasEnvUpdates = Boolean(input.envUpdates && Object.keys(input.envUpdates).length);
-    const afterEnv = hasEnvUpdates ? updateManagedEnv(beforeEnv, input.envUpdates!).content : beforeEnv;
+    const afterEnv = hasEnvUpdates
+      ? applyEnvUpdates({
+          content: beforeEnv,
+          providerRefs: listProviderEnvRefs(afterConfig),
+          manifest: readManifest(input.stateDir),
+          updates: input.envUpdates!,
+          ...(input.envUpdateOptions ? { options: input.envUpdateOptions } : {})
+        }).content
+      : beforeEnv;
 
     const backupDir = createBackup({
       stateDir: input.stateDir,

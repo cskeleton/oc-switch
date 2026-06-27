@@ -5,8 +5,13 @@ import {
   createConfigAdapter,
   disableProvider,
   editProvider,
-  mergeProviderCaseDuplicates,
+  inspectEnvFile,
+  listProviderEnvRefs,
   loadPreset,
+  mergeProviderCaseDuplicates,
+  previewEnvUpdates,
+  providerEnvVar,
+  readManifest,
   readProviderStates,
   removeDisabledProviderState,
   removeProvider,
@@ -14,18 +19,55 @@ import {
   summarizeConfigDiff,
   syncProviderModels,
   upsertDisabledProviderState,
-  writeOpenClawTransaction
+  writeOpenClawTransaction,
+  type EnvVariableSummary,
+  type OcSwitchPaths
 } from "@oc-switch/core";
 import type { Hono } from "hono";
-import { providerEnvVar, readConfig, readEnvContent, withDisabledStatus, type AppRuntime } from "../context";
+import { providerEnvVar as contextProviderEnvVar, readConfig, readEnvContent, withDisabledStatus, type AppRuntime } from "../context";
 import { jsonError } from "../errors";
-import { requireBoolean, requireCustomProviderInput, requireMergeCaseDuplicateInput, requireString } from "../schemas";
+import { optionalEnvUpdateOptions, requireBoolean, requireCustomProviderInput, requireMergeCaseDuplicateInput, requireString } from "../schemas";
+
+function envStatus(summary: EnvVariableSummary | undefined) {
+  if (!summary?.present) return "missing";
+  if (summary.duplicate) return "duplicate";
+  if (summary.complex) return "complex";
+  return summary.managed ? "managed" : "unmanaged";
+}
+
+function providerEnvPreview(paths: OcSwitchPaths, envVar: string) {
+  const config = readConfig(paths);
+  return previewEnvUpdates({
+    content: readEnvContent(paths) ?? "",
+    providerRefs: listProviderEnvRefs(config),
+    manifest: readManifest(paths.stateDir),
+    updates: { [envVar]: "" }
+  });
+}
 
 export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
   app.get("/api/providers", (c) => {
     const paths = runtime.currentPaths();
-    const adapter = createConfigAdapter(readConfig(paths));
-    return c.json({ providers: withDisabledStatus(paths, adapter.listProviders()) });
+    const config = readConfig(paths);
+    const adapter = createConfigAdapter(config);
+    const envInspection = inspectEnvFile({
+      content: readEnvContent(paths) ?? "",
+      providerRefs: listProviderEnvRefs(config),
+      manifest: readManifest(paths.stateDir)
+    });
+    const providers = withDisabledStatus(paths, adapter.listProviders()).map((provider) => {
+      const apiKeyEnv = providerEnvVar(config.models?.providers?.[provider.id]) ?? null;
+      const summary = apiKeyEnv
+        ? envInspection.variables.find((item) => item.envVar === apiKeyEnv)
+        : undefined;
+      return {
+        ...provider,
+        apiKeyEnv,
+        apiKeyEnvManaged: Boolean(summary?.managed),
+        apiKeyEnvStatus: apiKeyEnv ? envStatus(summary) : "missing"
+      };
+    });
+    return c.json({ providers });
   });
 
   app.post("/api/providers", async (c) => {
@@ -42,6 +84,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
         ...runtime.currentPaths(),
         reason: `add provider ${presetId}`,
         envUpdates: { [preset.provider.apiKeyEnv]: apiKey },
+        envUpdateOptions: optionalEnvUpdateOptions(body as Record<string, unknown>),
         manifestUpdates: [
           { type: "upsert-provider-env", providerId: presetId, envVar: preset.provider.apiKeyEnv }
         ],
@@ -66,7 +109,10 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       const before = readConfig(runtime.currentPaths());
       const enabledModels = models ?? preset.models.map((model) => model.id);
       const after = addProviderFromPreset(structuredClone(before), preset, enabledModels).config;
-      return c.json(summarizeConfigDiff(before, after));
+      return c.json({
+        ...summarizeConfigDiff(before, after),
+        envPreview: providerEnvPreview(runtime.currentPaths(), preset.provider.apiKeyEnv)
+      });
     } catch (error) {
       return jsonError(c, error);
     }
@@ -78,7 +124,10 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       const input = requireCustomProviderInput(body);
       const before = readConfig(runtime.currentPaths());
       const after = addCustomProvider(structuredClone(before), input).config;
-      return c.json(summarizeConfigDiff(before, after));
+      return c.json({
+        ...summarizeConfigDiff(before, after),
+        envPreview: providerEnvPreview(runtime.currentPaths(), input.apiKeyEnv)
+      });
     } catch (error) {
       return jsonError(c, error);
     }
@@ -93,6 +142,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
         ...runtime.currentPaths(),
         reason: `add custom provider ${input.providerId}`,
         envUpdates: { [input.apiKeyEnv]: apiKey },
+        envUpdateOptions: optionalEnvUpdateOptions(body),
         manifestUpdates: [
           {
             type: "upsert-provider-env",
@@ -212,6 +262,27 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
     }
   });
 
+  app.post("/api/providers/:id/preview", async (c) => {
+    try {
+      const providerId = c.req.param("id");
+      const body = await c.req.json() as Record<string, unknown>;
+      const paths = runtime.currentPaths();
+      const config = readConfig(paths);
+      const changes: { baseUrl?: string } = {};
+      if (body.baseUrl !== undefined) changes.baseUrl = requireString(body.baseUrl, "baseUrl");
+      const after = editProvider(structuredClone(config), providerId, changes).config;
+      const diff = summarizeConfigDiff(config, after);
+      if (body.includeApiKeyEnv === true) {
+        const envVar = contextProviderEnvVar(config, providerId);
+        if (!envVar) throw new Error(`Provider ${providerId} has no env key reference`);
+        return c.json({ ...diff, envPreview: providerEnvPreview(paths, envVar) });
+      }
+      return c.json(diff);
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
   app.put("/api/providers/:id", async (c) => {
     try {
       const providerId = c.req.param("id");
@@ -219,7 +290,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       const envUpdates: Record<string, string> = {};
       if (body.apiKey !== undefined) {
         const config = readConfig(runtime.currentPaths());
-        const envId = providerEnvVar(config, providerId);
+        const envId = contextProviderEnvVar(config, providerId);
         if (!envId) throw new Error(`Provider ${providerId} has no env key reference`);
         envUpdates[envId] = requireString(body.apiKey, "apiKey");
       }
@@ -229,6 +300,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
         ...(Object.keys(envUpdates).length ? { envUpdates } : {}),
         ...(Object.keys(envUpdates).length
           ? {
+              envUpdateOptions: optionalEnvUpdateOptions(body as Record<string, unknown>),
               manifestUpdates: Object.keys(envUpdates).map((envVar) => ({
                 type: "upsert-provider-env" as const,
                 providerId,
@@ -259,7 +331,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
         removeOptions.newPrimary = requireString(body.newPrimary, "newPrimary");
       }
       const config = readConfig(runtime.currentPaths());
-      const envVar = providerEnvVar(config, providerId);
+      const envVar = contextProviderEnvVar(config, providerId);
       const result = await writeOpenClawTransaction({
         ...runtime.currentPaths(),
         reason: `delete provider ${providerId}`,

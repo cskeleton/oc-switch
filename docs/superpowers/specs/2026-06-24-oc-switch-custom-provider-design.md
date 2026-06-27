@@ -376,7 +376,7 @@ CLI 采用同一 core 操作与事务写入路径。
 | 请求地址不是 http/https | 返回 400 |
 | 模型列表为空 | 返回 400 |
 | 模型 ID 重复 | 返回 400 |
-| `.env` 非托管变量冲突 | 复用 `updateManagedEnv`，拒绝写入 |
+| `.env` 非托管变量冲突 | 与 Path & Env 规格 §6.2 一致：preview 返回 `requiresConfirmation`；commit 须 `confirmMigration`（complex 须 `confirmComplex`），确认后 `migrateEnvVarToManagedBlock` |
 | diff guard 拦截 | 拒绝写入并返回错误 |
 
 ## 11. 测试策略

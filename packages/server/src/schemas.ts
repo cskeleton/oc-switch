@@ -91,6 +91,13 @@ export function optionalRestoreBackupTarget(body: Record<string, unknown>): Rest
   return target;
 }
 
+export function optionalEnvUpdateOptions(body: Record<string, unknown>) {
+  return {
+    ...(body.confirmMigration !== undefined ? { confirmMigration: requireBoolean(body.confirmMigration, "confirmMigration") } : {}),
+    ...(body.confirmComplex !== undefined ? { confirmComplex: requireBoolean(body.confirmComplex, "confirmComplex") } : {})
+  };
+}
+
 export function requireCustomProviderInput(body: Record<string, unknown>): CustomProviderInput {
   const modelsValue = body.models;
   if (!Array.isArray(modelsValue)) throw new Error("models must be an array");
