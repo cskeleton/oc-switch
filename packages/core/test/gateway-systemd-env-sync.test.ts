@@ -39,7 +39,7 @@ describe("readManagedBlockEntries", () => {
 });
 
 describe("syncManagedBlockToGatewaySystemdEnv", () => {
-  test("merges managed keys into existing gateway.systemd.env and preserves unrelated keys", () => {
+  test("replaces only the oc-switch block and preserves same-name keys outside the block", () => {
     const ws = workspace();
     writeFileSync(ws.envPath, [
       "# oc-switch:start",
@@ -47,20 +47,27 @@ describe("syncManagedBlockToGatewaySystemdEnv", () => {
       "ELY_API_KEY=ely-secret",
       "# oc-switch:end"
     ].join("\n") + "\n");
-    writeFileSync(ws.gatewayPath, "HTTP_PROXY=http://proxy\nNVIDIA_API_KEY=old-secret\n");
+    writeFileSync(ws.gatewayPath, [
+      "HTTP_PROXY=http://proxy",
+      "NVIDIA_API_KEY=old-secret",
+      "# oc-switch:start",
+      "NVIDIA_API_KEY=managed-old",
+      "# oc-switch:end"
+    ].join("\n") + "\n");
 
     const result = syncManagedBlockToGatewaySystemdEnv({ envPath: ws.envPath, gatewaySystemdEnvPath: ws.gatewayPath });
 
     expect(result.ok).toBe(true);
     expect(result.syncedKeys.sort()).toEqual(["ELY_API_KEY", "NVIDIA_API_KEY"]);
+    expect(result.warnings).toContain("NVIDIA_API_KEY also exists outside oc-switch block in gateway.systemd.env");
     const content = readFileSync(ws.gatewayPath, "utf8");
     expect(content).toContain("HTTP_PROXY=http://proxy");
-    expect(content).toContain("NVIDIA_API_KEY=new-secret");
-    expect(content).toContain("ELY_API_KEY=ely-secret");
+    expect(content).toContain("NVIDIA_API_KEY=old-secret");
+    expect(content).toContain("# oc-switch:start\nNVIDIA_API_KEY=new-secret\nELY_API_KEY=ely-secret\n# oc-switch:end");
     expect(readGatewaySystemdEnv(content).HTTP_PROXY).toBe("http://proxy");
   });
 
-  test("adds new managed key to gateway.systemd.env", () => {
+  test("appends an oc-switch block when gateway.systemd.env has no managed block", () => {
     const ws = workspace();
     writeFileSync(ws.envPath, [
       "# oc-switch:start",
@@ -70,27 +77,34 @@ describe("syncManagedBlockToGatewaySystemdEnv", () => {
 
     syncManagedBlockToGatewaySystemdEnv({ envPath: ws.envPath, gatewaySystemdEnvPath: ws.gatewayPath });
 
-    expect(readFileSync(ws.gatewayPath, "utf8")).toContain("NEW_KEY=value");
+    expect(readFileSync(ws.gatewayPath, "utf8")).toBe("# oc-switch:start\nNEW_KEY=value\n# oc-switch:end\n");
   });
 
-  test("removes keys listed in removedKeys", () => {
+  test("removes stale keys from the existing oc-switch block", () => {
     const ws = workspace();
     writeFileSync(ws.envPath, [
       "# oc-switch:start",
       "KEEP_KEY=keep",
       "# oc-switch:end"
     ].join("\n") + "\n");
-    writeFileSync(ws.gatewayPath, "REMOVE_KEY=gone\nKEEP_KEY=old\n");
+    writeFileSync(ws.gatewayPath, [
+      "REMOVE_KEY=user-owned",
+      "# oc-switch:start",
+      "REMOVE_KEY=managed-gone",
+      "KEEP_KEY=old",
+      "# oc-switch:end"
+    ].join("\n") + "\n");
 
-    syncManagedBlockToGatewaySystemdEnv({
+    const result = syncManagedBlockToGatewaySystemdEnv({
       envPath: ws.envPath,
-      gatewaySystemdEnvPath: ws.gatewayPath,
-      removedKeys: ["REMOVE_KEY"]
+      gatewaySystemdEnvPath: ws.gatewayPath
     });
 
     const content = readFileSync(ws.gatewayPath, "utf8");
-    expect(content).not.toContain("REMOVE_KEY=");
+    expect(content).toContain("REMOVE_KEY=user-owned");
+    expect(content).not.toContain("REMOVE_KEY=managed-gone");
     expect(content).toContain("KEEP_KEY=keep");
+    expect(result.removedKeys).toEqual(["REMOVE_KEY"]);
   });
 
   test("rejects empty managed values without writing gateway file", () => {

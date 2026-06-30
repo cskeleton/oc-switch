@@ -982,6 +982,37 @@ describe("BackupsView", () => {
 
     expect(restoreBackup).toHaveBeenCalledWith("backup-a", "current");
   });
+
+  test("shows gateway restart hint after backup restore syncs env", async () => {
+    const restoreBackup = mock(async () => ({
+      ok: true,
+      id: "backup-a",
+      gatewayRestartRequired: true,
+      gatewayEnvSync: { ok: true, syncedKeys: ["RESTORED_KEY"], removedKeys: ["CURRENT_KEY"], warnings: [] }
+    }));
+    const { findByLabelText, findByText, getAllByText } = render(
+      <BackupsView
+        client={mockClient({
+          getBackups: async () => ({
+            backups: [{
+              id: "backup-a",
+              createdAt: "2024-01-01",
+              reason: "test write",
+              openclawPath: "/default/openclaw.json",
+              envPath: "/default/.env",
+              pathMatchesActive: true
+            }]
+          }),
+          restoreBackup
+        })}
+      />
+    );
+
+    await userEvent.click(await findByLabelText("恢复备份 backup-a"));
+    await userEvent.click(getAllByText("恢复").at(-1)!);
+
+    expect(await findByText("备份已恢复，Gateway 环境已同步；请重启 Gateway 使运行中进程加载恢复后的密钥。")).toBeTruthy();
+  });
 });
 
 describe("DiffSummary", () => {
@@ -1363,7 +1394,11 @@ describe("SettingsView", () => {
       warnings: [],
       backupWillIncludeSecrets: true
     }));
-    const renameEnvVar = mock(async () => ({ ok: true as const, affectedKeys: ["SOME_MCP_EPID", "SOME_MCP_EPID_NEXT"] }));
+    const renameEnvVar = mock(async () => ({
+      ok: true as const,
+      affectedKeys: ["SOME_MCP_EPID", "SOME_MCP_EPID_NEXT"],
+      gatewayEnvSync: { ok: true, syncedKeys: ["SOME_MCP_EPID_NEXT"], removedKeys: ["SOME_MCP_EPID"], warnings: [] }
+    }));
 
     const { findByLabelText, findByText, getByText, queryByText } = render(
       <SettingsView
@@ -1412,6 +1447,7 @@ describe("SettingsView", () => {
       note: "MCP endpoint id"
     }));
     expect(queryByText("epid-secret")).toBeNull();
+    expect(await findByText(`SOME_MCP_EPID 已重命名为 SOME_MCP_EPID_NEXT ${GATEWAY_NEXT_STEP_HINT}`)).toBeTruthy();
   });
 });
 

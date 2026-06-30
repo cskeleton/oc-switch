@@ -65,45 +65,48 @@ function assertSystemdFriendlyValue(key: string, value: string): void {
 
 function mergeGatewayEnvContent(
   existingContent: string,
-  managed: Record<string, string>,
-  removedKeys: string[]
+  managed: Record<string, string>
 ): string {
-  const removed = new Set(removedKeys);
-  const managedKeys = new Set(Object.keys(managed));
   const lines = existingContent.length ? existingContent.split(/\n/) : [];
-  const writtenKeys = new Set<string>();
-  const result: string[] = [];
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) {
-      result.push(line);
-      continue;
-    }
-    const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
-    if (!match?.[1]) {
-      result.push(line);
-      continue;
-    }
-    const key = match[1];
-    if (removed.has(key)) continue;
-    if (managedKeys.has(key)) {
-      result.push(`${key}=${managed[key]}`);
-      writtenKeys.add(key);
-    } else {
-      result.push(line);
-    }
-  }
-
-  for (const [key, value] of Object.entries(managed)) {
-    if (!writtenKeys.has(key) && !removed.has(key)) {
-      result.push(`${key}=${value}`);
-    }
-  }
-
+  if (lines.at(-1) === "") lines.pop();
+  const startIndex = lines.indexOf(START);
+  const endIndex = lines.indexOf(END);
+  const hasBlock = startIndex >= 0 && endIndex > startIndex;
+  const block = managedBlockLines(managed);
+  const result = hasBlock
+    ? [...lines.slice(0, startIndex), ...block, ...lines.slice(endIndex + 1)]
+    : [...lines, ...block];
   if (result.length === 0) return "";
-  const normalized = result.join("\n");
-  return normalized.endsWith("\n") ? normalized : `${normalized}\n`;
+  return `${result.join("\n")}\n`;
+}
+
+function managedBlockLines(managed: Record<string, string>): string[] {
+  const result: string[] = [];
+  for (const [key, value] of Object.entries(managed)) {
+    result.push(`${key}=${value}`);
+  }
+  return result.length ? [START, ...result, END] : [];
+}
+
+function collectOutsideKeyConflicts(existingContent: string, managedKeys: string[]): string[] {
+  const lines = existingContent.length ? existingContent.split(/\n/) : [];
+  const startIndex = lines.indexOf(START);
+  const endIndex = lines.indexOf(END);
+  const hasBlock = startIndex >= 0 && endIndex > startIndex;
+  const managedSet = new Set(managedKeys);
+  const conflicts = new Set<string>();
+  lines.forEach((line, index) => {
+    const insideBlock = hasBlock && index > startIndex && index < endIndex;
+    if (insideBlock) return;
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) return;
+    const normalized = trimmed.startsWith("export ") ? trimmed.slice("export ".length).trimStart() : trimmed;
+    const match = normalized.match(/^([A-Za-z_][A-Za-z0-9_]*)=/);
+    if (match?.[1] && managedSet.has(match[1])) conflicts.add(match[1]);
+  });
+  return Array.from(conflicts)
+    .sort()
+    .map((key) => `${key} also exists outside oc-switch block in gateway.systemd.env`);
 }
 
 function collectManagedKeyWarnings(syncedKeys: string[]): string[] {
@@ -131,7 +134,8 @@ export function syncManagedBlockToGatewaySystemdEnv(input: {
   }
 
   const existingContent = existsSync(gatewaySystemdEnvPath) ? readFileSync(gatewaySystemdEnvPath, "utf8") : "";
-  const merged = mergeGatewayEnvContent(existingContent, managed, removedKeys);
+  const existingManaged = readManagedBlockEntries(existingContent);
+  const merged = mergeGatewayEnvContent(existingContent, managed);
 
   mkdirSync(dirname(gatewaySystemdEnvPath), { recursive: true });
   const tmpPath = `${gatewaySystemdEnvPath}.tmp`;
@@ -139,10 +143,17 @@ export function syncManagedBlockToGatewaySystemdEnv(input: {
   renameSync(tmpPath, gatewaySystemdEnvPath);
 
   const syncedKeys = Object.keys(managed).filter((key) => !removedKeys.includes(key));
+  const removedSet = new Set([
+    ...Object.keys(existingManaged).filter((key) => managed[key] === undefined),
+    ...removedKeys.filter((key) => existingManaged[key] !== undefined)
+  ]);
   return {
     ok: true,
     syncedKeys,
-    removedKeys: removedKeys.filter((key) => readGatewaySystemdEnv(existingContent)[key] !== undefined || managed[key] !== undefined),
-    warnings: collectManagedKeyWarnings(syncedKeys)
+    removedKeys: Array.from(removedSet).sort(),
+    warnings: [
+      ...collectOutsideKeyConflicts(existingContent, syncedKeys),
+      ...collectManagedKeyWarnings(syncedKeys)
+    ]
   };
 }

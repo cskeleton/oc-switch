@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import {
+  syncManagedBlockToGatewaySystemdEnv,
+  type GatewaySystemdEnvSyncResult
+} from "./gateway-systemd-env-sync";
 
 export const DEFAULT_BACKUP_RETENTION = 20;
 
@@ -144,6 +148,7 @@ export interface SafeRestoreBackupInput extends RestoreBackupInput {
 
 export interface SafeRestoreBackupResult {
   safetyBackupDir: string;
+  gatewayEnvSync?: GatewaySystemdEnvSyncResult;
 }
 
 export interface BackupPathMismatch {
@@ -200,5 +205,6 @@ export function restoreBackupSafely(input: SafeRestoreBackupInput): SafeRestoreB
     protectedBackupDirs: [input.backupDir]
   });
   restoreBackup(input);
-  return { safetyBackupDir };
+  const gatewayEnvSync = syncManagedBlockToGatewaySystemdEnv({ envPath: input.envPath });
+  return { safetyBackupDir, gatewayEnvSync };
 }

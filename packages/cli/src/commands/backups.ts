@@ -20,13 +20,16 @@ export function registerBackupCommands(program: Command, context: CommandContext
     .action((id: string) => {
       const paths = context.activePaths();
       try {
-        restoreBackupSafely({
+        const result = restoreBackupSafely({
           stateDir: paths.stateDir,
           backupDir: join(paths.stateDir, "backups", id),
           openclawPath: paths.openclawPath,
           envPath: paths.envPath
         });
         console.log(`Restored backup ${id}`);
+        if (result.gatewayEnvSync?.ok) {
+          console.log(`Synced ${result.gatewayEnvSync.syncedKeys.length} gateway env key(s); restart Gateway to apply restored secrets`);
+        }
       } catch (error) {
         console.error(error instanceof Error ? error.message : String(error));
         process.exit(1);

@@ -52,7 +52,15 @@ export function registerBackupRoutes(app: Hono, runtime: AppRuntime): void {
         envPath: restorePaths.envPath,
         ...(target === "current" ? { allowPathMismatch: true } : {})
       });
-      return c.json({ ok: true, id, safetyBackupId: result.safetyBackupDir.split("/").pop() });
+      return c.json({
+        ok: true,
+        id,
+        safetyBackupId: result.safetyBackupDir.split("/").pop(),
+        ...(result.gatewayEnvSync ? {
+          gatewayEnvSync: result.gatewayEnvSync,
+          gatewayRestartRequired: true
+        } : {})
+      });
     } catch (error) {
       return jsonError(c, error);
     }

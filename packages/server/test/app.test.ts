@@ -5,7 +5,7 @@ import { join } from "node:path";
 import sample from "../../core/test/fixtures/openclaw.sample.json";
 import { createApp } from "../src/app";
 import type { FetchImpl, OcSwitchPaths, PresetDirs } from "@oc-switch/core";
-import { upsertDisabledProviderState } from "@oc-switch/core";
+import { createBackup, upsertDisabledProviderState } from "@oc-switch/core";
 
 const tempDirs: string[] = [];
 const TOKEN = "test-secret";
@@ -596,6 +596,38 @@ describe("server write endpoints", () => {
       backup.reason.includes(`before restore ${backupId}`)
     );
     expect(safetyBackup).toBeTruthy();
+  });
+
+  test("POST /api/backups/:id/restore syncs restored env block to gateway.systemd.env", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+    writeFileSync(ws.paths.envPath, "# oc-switch:start\nRESTORED_KEY=restored-secret\n# oc-switch:end\n");
+    const backupDir = createBackup({
+      ...ws.paths,
+      reason: "restore gateway env",
+      beforeHash: "hash"
+    });
+    const backupId = backupDir.split("/").pop();
+    writeFileSync(ws.paths.envPath, "# oc-switch:start\nCURRENT_KEY=current-secret\n# oc-switch:end\n");
+    writeFileSync(join(ws.dir, "gateway.systemd.env"), [
+      "HTTP_PROXY=http://proxy",
+      "# oc-switch:start",
+      "CURRENT_KEY=current-secret",
+      "# oc-switch:end"
+    ].join("\n") + "\n");
+
+    const { response, json } = await jsonRequest(app, `/api/backups/${backupId}/restore`, { method: "POST" });
+
+    expect(response.status).toBe(200);
+    expect(json.gatewayRestartRequired).toBe(true);
+    expect(json.gatewayEnvSync).toMatchObject({
+      ok: true,
+      syncedKeys: ["RESTORED_KEY"],
+      removedKeys: ["CURRENT_KEY"]
+    });
+    expect(readFileSync(join(ws.dir, "gateway.systemd.env"), "utf8")).toContain("RESTORED_KEY=restored-secret");
+    expect(readFileSync(join(ws.dir, "gateway.systemd.env"), "utf8")).not.toContain("CURRENT_KEY=current-secret");
+    expect(JSON.stringify(json)).not.toContain("restored-secret");
   });
 
   test("GET /api/backups includes path metadata and active path match", async () => {

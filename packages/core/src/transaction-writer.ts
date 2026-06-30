@@ -124,14 +124,14 @@ export async function writeOpenClawTransaction(input: TransactionInput): Promise
       if (hasEnvUpdates) {
         envWrite = verifyEnvWrite(readFileSync(input.envPath, "utf8"), input.envUpdates!);
         if (!envWrite.verified) throw new Error("env write verification failed");
-        gatewayEnvSync = runGatewayEnvSyncIfNeeded({
-          envPath: input.envPath,
-          envWrite,
-          ...(input.envRemovedKeys ? { envRemovedKeys: input.envRemovedKeys } : {})
-        });
       }
       applyManifestUpdates(input.stateDir, input.manifestUpdates);
       input.afterWrite?.();
+      gatewayEnvSync = runGatewayEnvSyncIfNeeded({
+        envPath: input.envPath,
+        ...(envWrite ? { envWrite } : {}),
+        ...(input.envRemovedKeys ? { envRemovedKeys: input.envRemovedKeys } : {})
+      });
     } catch (error) {
       restoreFromBackup(backupDir, input.openclawPath, input.envPath);
       rmSync(configTmp, { force: true });
@@ -188,12 +188,12 @@ export async function writeEnvTransaction(input: EnvTransactionInput): Promise<T
         envWrite = verifyEnvWrite(readFileSync(input.envPath, "utf8"), input.verifyEnvUpdates);
         if (!envWrite.verified) throw new Error("env write verification failed");
       }
+      input.afterWrite?.();
       gatewayEnvSync = runGatewayEnvSyncIfNeeded({
         envPath: input.envPath,
         ...(envWrite ? { envWrite } : {}),
         ...(input.envRemovedKeys ? { envRemovedKeys: input.envRemovedKeys } : {})
       });
-      input.afterWrite?.();
     } catch (error) {
       restoreFromBackup(backupDir, input.openclawPath, input.envPath);
       rmSync(envTmp, { force: true });

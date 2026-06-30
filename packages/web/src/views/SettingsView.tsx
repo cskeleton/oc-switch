@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ApiClient, EnvIndexResponse, EnvVariableSummary, EnvWriteVerification, GatewayEnvSyncResult, PathSettingsResponse, SettingsResponse } from "../api";
-import { formatEnvWriteSuccess } from "../env-feedback";
+import { formatEnvWriteSuccess, GATEWAY_NEXT_STEP_HINT } from "../env-feedback";
 import { EnvMigrationConfirmDialog } from "../components/EnvMigrationConfirmDialog";
 import { GatewayApplyBanner } from "../components/GatewayApplyBanner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
@@ -102,6 +102,10 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
     });
   }
 
+  function withGatewayHint(message: string, result: { gatewayEnvSync?: GatewayEnvSyncResult }) {
+    return result.gatewayEnvSync?.ok ? `${message} ${GATEWAY_NEXT_STEP_HINT}` : message;
+  }
+
   async function handleManualGatewayApply() {
     setGatewayManualLoading(true);
     setGatewayManualMessage(null);
@@ -171,8 +175,8 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
         });
         return;
       }
-      await client.deleteEnvVar({ type: "delete", envVar });
-      setSuccessMessage(`${envVar} 已删除`);
+      const result = await client.deleteEnvVar({ type: "delete", envVar });
+      setSuccessMessage(withGatewayHint(`${envVar} 已删除`, result));
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "删除失败");
@@ -202,9 +206,9 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
         });
         return;
       }
-      await client.renameEnvVar({ type: "rename", fromEnvVar, toEnvVar: nextName, ...(note ? { note } : {}) });
+      const result = await client.renameEnvVar({ type: "rename", fromEnvVar, toEnvVar: nextName, ...(note ? { note } : {}) });
       setRenameInputs((prev) => ({ ...prev, [fromEnvVar]: "" }));
-      setSuccessMessage(`${fromEnvVar} 已重命名为 ${nextName}`);
+      setSuccessMessage(withGatewayHint(`${fromEnvVar} 已重命名为 ${nextName}`, result));
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "重命名失败");
@@ -238,15 +242,15 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
         }));
         showGatewayApply(result);
       } else if (pendingAction.type === "delete" && pendingAction.envVar) {
-        await client.deleteEnvVar({
+        const result = await client.deleteEnvVar({
           type: "delete",
           envVar: pendingAction.envVar,
           ...(pendingAction.confirmComplex ? { confirmComplex: true } : {})
         });
-        setSuccessMessage(`${pendingAction.envVar} 已删除`);
+        setSuccessMessage(withGatewayHint(`${pendingAction.envVar} 已删除`, result));
       } else if (pendingAction.type === "rename" && pendingAction.fromEnvVar && pendingAction.toEnvVar) {
         const fromEnvVar = pendingAction.fromEnvVar;
-        await client.renameEnvVar({
+        const result = await client.renameEnvVar({
           type: "rename",
           fromEnvVar,
           toEnvVar: pendingAction.toEnvVar,
@@ -254,7 +258,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
           ...(pendingAction.confirmComplex ? { confirmComplex: true } : {})
         });
         setRenameInputs((prev) => ({ ...prev, [fromEnvVar]: "" }));
-        setSuccessMessage(`${fromEnvVar} 已重命名为 ${pendingAction.toEnvVar}`);
+        setSuccessMessage(withGatewayHint(`${fromEnvVar} 已重命名为 ${pendingAction.toEnvVar}`, result));
       }
       setPendingAction(null);
       if (pendingAction.type === "upsert" && pendingAction.envVar === newExtraVar) {

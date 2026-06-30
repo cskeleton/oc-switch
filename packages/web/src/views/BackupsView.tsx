@@ -13,6 +13,7 @@ interface BackupsViewProps {
 export function BackupsView({ client, onRefresh }: BackupsViewProps) {
   const [backups, setBackups] = useState<BackupEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [restoreTarget, setRestoreTarget] = useState<BackupEntry | null>(null);
   const [restoreMode, setRestoreMode] = useState<"backup" | "current">("backup");
 
@@ -33,13 +34,17 @@ export function BackupsView({ client, onRefresh }: BackupsViewProps) {
   async function confirmRestore() {
     if (!restoreTarget) return;
     try {
-      await client.restoreBackup(restoreTarget.id, restoreTarget.pathMatchesActive ? undefined : restoreMode);
+      const result = await client.restoreBackup(restoreTarget.id, restoreTarget.pathMatchesActive ? undefined : restoreMode);
       setRestoreTarget(null);
       setRestoreMode("backup");
+      setSuccessMessage(result.gatewayRestartRequired
+        ? "备份已恢复，Gateway 环境已同步；请重启 Gateway 使运行中进程加载恢复后的密钥。"
+        : "备份已恢复。");
       await load();
       onRefresh?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "恢复失败");
+      setSuccessMessage(null);
       setRestoreTarget(null);
     }
   }
@@ -59,6 +64,7 @@ export function BackupsView({ client, onRefresh }: BackupsViewProps) {
       </div>
 
       {error ? <p className="mb-3 text-destructive">{error}</p> : null}
+      {successMessage ? <p className="mb-3 text-sm text-emerald-600 dark:text-emerald-400">{successMessage}</p> : null}
 
       <DataTable
         rows={backups}

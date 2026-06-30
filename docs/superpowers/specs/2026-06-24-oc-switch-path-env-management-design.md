@@ -572,7 +572,7 @@ Core 是唯一文件读写层。Server/Web 不直接读写本地文件。
 
 ## 15. Gateway systemd 环境同步
 
-OpenClaw Gateway（systemd user service）在启动时从 `gateway.systemd.env` 注入环境变量，**不会**直接读取 `.env` 全文。oc-switch 写入的 Provider / 托管变量位于 `# oc-switch:start` … `# oc-switch:end` 块内；Gateway 要生效须将**托管块条目**合并进同目录下的 `gateway.systemd.env`，再重启 Gateway。
+OpenClaw Gateway（systemd user service）在启动时从 `gateway.systemd.env` 注入环境变量，**不会**直接读取 `.env` 全文。oc-switch 写入的 Provider / 托管变量位于 `.env` 的 `# oc-switch:start` … `# oc-switch:end` 块内；Gateway 要生效须将这个托管块同步到同目录下 `gateway.systemd.env` 的 oc-switch 托管块，再重启 Gateway。
 
 ### 15.1 同步源与目标
 
@@ -580,8 +580,9 @@ OpenClaw Gateway（systemd user service）在启动时从 `gateway.systemd.env` 
 | --- | --- |
 | 同步源 | **仅** `.env` 中 oc-switch 托管块内的 `KEY=VALUE` |
 | 同步目标 | `dirname(envPath)/gateway.systemd.env` |
-| 合并策略 | 托管块出现的 Key **覆盖**目标文件同名项；目标文件中其余 Key（如 `HTTP_PROXY`）**原样保留** |
-| 删除/重命名 | `removedKeys` 从 `gateway.systemd.env` **删除**对应行（Settings 删除、重命名 env 时传入旧 Key） |
+| 合并策略 | 只替换 `gateway.systemd.env` 中的 oc-switch 托管块；目标文件块外内容（如 `HTTP_PROXY`）**原样保留** |
+| 块外同名 Key | 不自动删除或改写；返回 warning，提示用户手动清理或迁移 |
+| 删除/重命名 | 通过整体替换目标托管块移除旧 Key；块外同名 Key 仍保留并告警 |
 | 块外 `.env` | **不读取、不同步** |
 | systemd unit | **不修改** `EnvironmentFile=` 或 `OPENCLAW_SERVICE_MANAGED_ENV_KEYS` |
 
@@ -590,13 +591,15 @@ OpenClaw Gateway（systemd user service）在启动时从 `gateway.systemd.env` 
 - 原子写：`gateway.systemd.env.tmp` → `rename`，mode `0600`。
 - 每个 value 不得含 `\r`/`\n`；空值拒绝同步并报错。
 - 若托管块 Key 不在 unit 内 `OPENCLAW_SERVICE_MANAGED_ENV_KEYS` 列表中，返回 **warning**（不阻断）；提示用户日后可 `openclaw gateway install` 更新列表。
+- 若目标文件块外存在同名 Key，返回 **warning**（不阻断）；oc-switch 不越权改写块外内容。
 - API / CLI / Web **不回显**密钥明文；sync 响应仅含 `syncedKeys`、`removedKeys`、`warnings`。
 
 ### 15.3 触发时机
 
-1. **自动 sync（无重启）**：`transaction-writer` 在 `envWrite.verified === true` 之后调用 `syncManagedBlockToGatewaySystemdEnv`（含 Provider Key 保存、Settings env upsert/delete/rename）。
+1. **自动 sync（无重启）**：`transaction-writer` 在 `envWrite.verified === true` 且其他写入钩子成功之后调用 `syncManagedBlockToGatewaySystemdEnv`（含 Provider Key 保存、Settings env upsert/delete/rename）。
 2. **手动补救**：CLI `oc-switch gateway sync-env`、Web 设置页「同步并重启 Gateway」、REST `POST /api/gateway/*`。
-3. **重启**：`openclaw gateway restart`；**不默认静默自动重启**（会打断会话），由用户点「同步并重启」或单独「重启」。
+3. **备份恢复**：恢复 `openclaw.json` / `.env` 后立即将恢复后的 `.env` 托管块同步到 `gateway.systemd.env`，响应标记 `gatewayRestartRequired: true`。
+4. **重启**：`openclaw gateway restart`；**不默认静默自动重启**（会打断会话），由用户点「同步并重启」或单独「重启」。
 
 ### 15.4 API / CLI
 
@@ -609,7 +612,7 @@ OpenClaw Gateway（systemd user service）在启动时从 `gateway.systemd.env` 
 | CLI | `oc-switch gateway restart` | 同 restart |
 | CLI | `oc-switch gateway apply` | 同 apply |
 
-写入类 API 在 `envWrite` 之后可附带 `gatewayEnvSync`（自动 sync 结果，不含 value）。
+写入类 API 在 `envWrite` 之后可附带 `gatewayEnvSync`（自动 sync 结果，不含 value）。备份恢复 API 成功时可附带 `gatewayEnvSync` 与 `gatewayRestartRequired: true`。
 
 ### 15.5 Web UI
 

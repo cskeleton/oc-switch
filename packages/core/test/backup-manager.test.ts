@@ -76,6 +76,36 @@ describe("backup manager", () => {
     expect(readFileSync(join(result.safetyBackupDir, ".env"), "utf8")).toBe("KEY=current\n");
   });
 
+  test("syncs restored managed env block to gateway.systemd.env after restore", () => {
+    const ws = workspace();
+    writeFileSync(ws.envPath, "# oc-switch:start\nRESTORED_KEY=restored-secret\n# oc-switch:end\n");
+    const restoreTarget = createBackup({ ...ws, reason: "restore-target", beforeHash: "hash" });
+    writeFileSync(ws.envPath, "# oc-switch:start\nCURRENT_KEY=current-secret\n# oc-switch:end\n");
+    writeFileSync(join(ws.dir, "gateway.systemd.env"), [
+      "HTTP_PROXY=http://proxy",
+      "# oc-switch:start",
+      "CURRENT_KEY=current-secret",
+      "# oc-switch:end"
+    ].join("\n") + "\n");
+
+    const result = restoreBackupSafely({
+      stateDir: ws.stateDir,
+      backupDir: restoreTarget,
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath
+    });
+
+    expect(result.gatewayEnvSync?.syncedKeys).toEqual(["RESTORED_KEY"]);
+    expect(result.gatewayEnvSync?.removedKeys).toEqual(["CURRENT_KEY"]);
+    expect(readFileSync(join(ws.dir, "gateway.systemd.env"), "utf8")).toBe([
+      "HTTP_PROXY=http://proxy",
+      "# oc-switch:start",
+      "RESTORED_KEY=restored-secret",
+      "# oc-switch:end",
+      ""
+    ].join("\n"));
+  });
+
   test("rejects restore when backup paths do not match active paths", () => {
     const ws = workspace();
     const backupDir = createBackup({ ...ws, reason: "path-bound", beforeHash: "hash" });

@@ -268,8 +268,11 @@ export function createApiClient(options: ApiClientOptions) {
       }
     });
     if (!response.ok) {
-      const body = (await response.json().catch(() => ({}))) as { error?: string };
-      throw new Error(body.error ?? `Request failed: ${response.status}`);
+      const body = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        restart?: { message?: string };
+      };
+      throw new Error(body.error ?? body.restart?.message ?? `Request failed: ${response.status}`);
     }
     return response.json() as Promise<T>;
   }
@@ -366,7 +369,7 @@ export function createApiClient(options: ApiClientOptions) {
       ),
     getBackups: () => request<{ backups: BackupEntry[] }>("/api/backups"),
     restoreBackup: (id: string, target?: "backup" | "current") =>
-      request<{ ok: boolean; id: string; safetyBackupId?: string }>(`/api/backups/${id}/restore`, {
+      request<{ ok: boolean; id: string; safetyBackupId?: string; gatewayEnvSync?: GatewayEnvSyncResult; gatewayRestartRequired?: boolean }>(`/api/backups/${id}/restore`, {
         method: "POST",
         ...(target ? { body: JSON.stringify({ target }) } : {})
       }),
@@ -397,12 +400,12 @@ export function createApiClient(options: ApiClientOptions) {
         body: JSON.stringify(body)
       }),
     deleteEnvVar: (body: { type: "delete"; envVar: string; confirmComplex?: boolean }) =>
-      request<{ ok: true; affectedKeys: string[]; backupId?: string }>("/api/env", {
+      request<{ ok: true; affectedKeys: string[]; backupId?: string; gatewayEnvSync?: GatewayEnvSyncResult }>("/api/env", {
         method: "POST",
         body: JSON.stringify(body)
       }),
     renameEnvVar: (body: { type: "rename"; fromEnvVar: string; toEnvVar: string; note?: string; confirmComplex?: boolean }) =>
-      request<{ ok: true; affectedKeys: string[]; backupId?: string }>("/api/env", {
+      request<{ ok: true; affectedKeys: string[]; backupId?: string; gatewayEnvSync?: GatewayEnvSyncResult }>("/api/env", {
         method: "POST",
         body: JSON.stringify(body)
       }),

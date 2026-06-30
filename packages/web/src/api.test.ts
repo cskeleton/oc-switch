@@ -56,6 +56,23 @@ describe("createApiClient", () => {
       newPrimary: "minimax-portal/MiniMax-M3"
     });
   });
+
+  test("surfaces structured gateway restart failures from non-2xx responses", async () => {
+    const client = createApiClient({
+      baseUrl: "http://localhost:7420",
+      token: "token",
+      fetchImpl: async () => new Response(JSON.stringify({
+        ok: false,
+        restart: {
+          ok: false,
+          exitCode: 1,
+          message: "systemd service not found"
+        }
+      }), { status: 400 })
+    });
+
+    await expect(client.restartGateway()).rejects.toThrow("systemd service not found");
+  });
 });
 
 test("health 与合并方法使用正确的方法与 JSON body", async () => {

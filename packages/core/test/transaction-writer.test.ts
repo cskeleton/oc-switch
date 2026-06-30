@@ -85,6 +85,28 @@ describe("writeOpenClawTransaction", () => {
     });
   });
 
+  test("does not sync gateway systemd env before afterWrite succeeds", async () => {
+    const ws = makeWorkspace();
+    writeFileSync(ws.envPath, "# oc-switch:start\nNVIDIA_API_KEY=old-secret\n# oc-switch:end\n");
+    writeFileSync(join(ws.dir, "gateway.systemd.env"), "# oc-switch:start\nNVIDIA_API_KEY=old-secret\n# oc-switch:end\n");
+
+    await expect(writeOpenClawTransaction({
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath,
+      stateDir: ws.stateDir,
+      reason: "afterWrite failure with env",
+      envUpdates: { NVIDIA_API_KEY: "new-secret" },
+      mutate(config) {
+        return config;
+      },
+      afterWrite() {
+        throw new Error("state write failed");
+      }
+    })).rejects.toThrow("state write failed");
+
+    expect(readFileSync(join(ws.dir, "gateway.systemd.env"), "utf8")).toBe("# oc-switch:start\nNVIDIA_API_KEY=old-secret\n# oc-switch:end\n");
+  });
+
   test("writeOpenClawTransaction returns verified env write summary", async () => {
     const ws = makeWorkspace();
     writeFileSync(ws.envPath, "# oc-switch:start\nELYSIVER_API_KEY=old-value\n# oc-switch:end\n");
