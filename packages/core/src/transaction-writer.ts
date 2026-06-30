@@ -10,6 +10,10 @@ import { readManifest } from "./manifest-manager";
 import { withFileLock } from "./lock";
 import { markProviderEnvOrphan, upsertProviderEnvManifest, type ManifestProviderMetadata } from "./manifest-manager";
 import { verifyEnvWrite, type EnvWriteVerification } from "./env-verification";
+import {
+  syncManagedBlockToGatewaySystemdEnv,
+  type GatewaySystemdEnvSyncResult
+} from "./gateway-systemd-env-sync";
 import type { OpenClawConfig } from "./types";
 
 export type ManifestUpdate =
@@ -23,6 +27,8 @@ export interface TransactionInput {
   reason: string;
   envUpdates?: Record<string, string>;
   envUpdateOptions?: EnvUpdateOptions;
+  /** delete/rename 时从 gateway.systemd.env 删除的旧 Key */
+  envRemovedKeys?: string[];
   manifestUpdates?: ManifestUpdate[];
   mutate(config: OpenClawConfig): OpenClawConfig;
   /** openclaw.json 写入成功后、写锁释放前的钩子，失败时事务回滚 */
@@ -32,6 +38,7 @@ export interface TransactionInput {
 export interface TransactionResult {
   backupDir: string;
   envWrite?: EnvWriteVerification;
+  gatewayEnvSync?: GatewaySystemdEnvSyncResult;
 }
 
 function sha256(value: string): string {
@@ -56,6 +63,19 @@ function applyManifestUpdates(stateDir: string, updates: ManifestUpdate[] | unde
       markProviderEnvOrphan(stateDir, update.providerId, update.envVar);
     }
   }
+}
+
+function runGatewayEnvSyncIfNeeded(input: {
+  envPath: string;
+  envWrite?: EnvWriteVerification;
+  envRemovedKeys?: string[];
+}): GatewaySystemdEnvSyncResult | undefined {
+  const shouldSync = Boolean(input.envWrite?.verified) || Boolean(input.envRemovedKeys?.length);
+  if (!shouldSync) return undefined;
+  return syncManagedBlockToGatewaySystemdEnv({
+    envPath: input.envPath,
+    ...(input.envRemovedKeys?.length ? { removedKeys: input.envRemovedKeys } : {})
+  });
 }
 
 export async function writeOpenClawTransaction(input: TransactionInput): Promise<TransactionResult> {
@@ -88,6 +108,7 @@ export async function writeOpenClawTransaction(input: TransactionInput): Promise
     });
 
     let envWrite: EnvWriteVerification | undefined;
+    let gatewayEnvSync: GatewaySystemdEnvSyncResult | undefined;
 
     mkdirSync(dirname(input.openclawPath), { recursive: true });
     mkdirSync(dirname(input.envPath), { recursive: true });
@@ -103,6 +124,11 @@ export async function writeOpenClawTransaction(input: TransactionInput): Promise
       if (hasEnvUpdates) {
         envWrite = verifyEnvWrite(readFileSync(input.envPath, "utf8"), input.envUpdates!);
         if (!envWrite.verified) throw new Error("env write verification failed");
+        gatewayEnvSync = runGatewayEnvSyncIfNeeded({
+          envPath: input.envPath,
+          envWrite,
+          ...(input.envRemovedKeys ? { envRemovedKeys: input.envRemovedKeys } : {})
+        });
       }
       applyManifestUpdates(input.stateDir, input.manifestUpdates);
       input.afterWrite?.();
@@ -115,7 +141,8 @@ export async function writeOpenClawTransaction(input: TransactionInput): Promise
 
     return {
       backupDir,
-      ...(envWrite ? { envWrite } : {})
+      ...(envWrite ? { envWrite } : {}),
+      ...(gatewayEnvSync ? { gatewayEnvSync } : {})
     };
   });
 }
@@ -126,6 +153,8 @@ export interface EnvTransactionInput {
   stateDir: string;
   reason: string;
   pathSources?: { openclawPath?: string; envPath?: string };
+  /** delete/rename 时从 gateway.systemd.env 删除的旧 Key */
+  envRemovedKeys?: string[];
   mutateEnv(content: string): string;
   verifyEnvUpdates?: Record<string, string>;
   afterWrite?: () => void;
@@ -148,6 +177,7 @@ export async function writeEnvTransaction(input: EnvTransactionInput): Promise<T
     });
 
     let envWrite: EnvWriteVerification | undefined;
+    let gatewayEnvSync: GatewaySystemdEnvSyncResult | undefined;
 
     mkdirSync(dirname(input.envPath), { recursive: true });
     const envTmp = `${input.envPath}.tmp`;
@@ -158,6 +188,11 @@ export async function writeEnvTransaction(input: EnvTransactionInput): Promise<T
         envWrite = verifyEnvWrite(readFileSync(input.envPath, "utf8"), input.verifyEnvUpdates);
         if (!envWrite.verified) throw new Error("env write verification failed");
       }
+      gatewayEnvSync = runGatewayEnvSyncIfNeeded({
+        envPath: input.envPath,
+        ...(envWrite ? { envWrite } : {}),
+        ...(input.envRemovedKeys ? { envRemovedKeys: input.envRemovedKeys } : {})
+      });
       input.afterWrite?.();
     } catch (error) {
       restoreFromBackup(backupDir, input.openclawPath, input.envPath);
@@ -167,7 +202,8 @@ export async function writeEnvTransaction(input: EnvTransactionInput): Promise<T
 
     return {
       backupDir,
-      ...(envWrite ? { envWrite } : {})
+      ...(envWrite ? { envWrite } : {}),
+      ...(gatewayEnvSync ? { gatewayEnvSync } : {})
     };
   });
 }

@@ -14,6 +14,8 @@ import {
 import JSON5 from "json5";
 import { existsSync, readFileSync } from "node:fs";
 
+import type { GatewayRouteOptions } from "./routes/gateway";
+
 export interface AppOptions {
   token: string;
   paths?: OcSwitchPaths;
@@ -23,6 +25,8 @@ export interface AppOptions {
   port?: number;
   /** 测试注入：覆盖运行实例发现 */
   runningInstances?: RunningOpenClawInstance[];
+  /** 测试注入：Gateway sync/restart */
+  gatewayRouteOptions?: GatewayRouteOptions;
 }
 
 export interface AppRuntime {

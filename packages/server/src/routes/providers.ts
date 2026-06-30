@@ -95,7 +95,8 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       return c.json({
         ok: true,
         backupId: result.backupDir.split("/").pop(),
-        ...(result.envWrite ? { envWrite: result.envWrite } : {})
+        ...(result.envWrite ? { envWrite: result.envWrite } : {}),
+        ...(result.gatewayEnvSync ? { gatewayEnvSync: result.gatewayEnvSync } : {})
       });
     } catch (error) {
       return jsonError(c, error);
@@ -167,7 +168,8 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       return c.json({
         ok: true,
         backupId: result.backupDir.split("/").pop(),
-        ...(result.envWrite ? { envWrite: result.envWrite } : {})
+        ...(result.envWrite ? { envWrite: result.envWrite } : {}),
+        ...(result.gatewayEnvSync ? { gatewayEnvSync: result.gatewayEnvSync } : {})
       });
     } catch (error) {
       return jsonError(c, error);
@@ -325,7 +327,8 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       return c.json({
         ok: true,
         backupId: result.backupDir.split("/").pop(),
-        ...(result.envWrite ? { envWrite: result.envWrite } : {})
+        ...(result.envWrite ? { envWrite: result.envWrite } : {}),
+        ...(result.gatewayEnvSync ? { gatewayEnvSync: result.gatewayEnvSync } : {})
       });
     } catch (error) {
       return jsonError(c, error);

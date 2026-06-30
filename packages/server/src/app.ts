@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { createAppRuntime, type AppOptions } from "./context";
 import { registerBackupRoutes } from "./routes/backups";
 import { registerEnvRoutes } from "./routes/env";
+import { registerGatewayRoutes } from "./routes/gateway";
 import { registerHealthRoutes } from "./routes/health";
 import { registerModelRoutes } from "./routes/models";
 import { registerPresetRoutes } from "./routes/presets";
@@ -42,6 +43,7 @@ export function createApp(options: AppOptions) {
   registerBackupRoutes(app, runtime);
   registerSettingsRoutes(app, runtime);
   registerEnvRoutes(app, runtime);
+  registerGatewayRoutes(app, runtime, options.gatewayRouteOptions);
 
   return app;
 }

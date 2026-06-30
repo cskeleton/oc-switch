@@ -1,6 +1,6 @@
 import { Plus } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { ApiClient, ApiType, ConfigDiffSummary, CustomProviderInput, CustomProviderModelInput, EnvPreview, EnvWriteVerification } from "../api";
+import type { ApiClient, ApiType, ConfigDiffSummary, CustomProviderInput, CustomProviderModelInput, EnvPreview, EnvWriteVerification, GatewayEnvSyncResult } from "../api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EnvMigrationConfirmDialog } from "./EnvMigrationConfirmDialog";
 import { DiffSummary } from "./DiffSummary";
@@ -12,7 +12,7 @@ interface CustomProviderDialogProps {
   open: boolean;
   client: ApiClient;
   onCancel: () => void;
-  onSaved: (result: { providerId: string; envWrite?: EnvWriteVerification | undefined }) => void;
+  onSaved: (result: { providerId: string; envWrite?: EnvWriteVerification | undefined; gatewayEnvSync?: GatewayEnvSyncResult }) => void;
 }
 
 interface ModelRow {
@@ -146,7 +146,8 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
       resetForm();
       onSaved({
         providerId: savedProviderId,
-        ...(result.envWrite ? { envWrite: result.envWrite } : {})
+        ...(result.envWrite ? { envWrite: result.envWrite } : {}),
+        ...(result.gatewayEnvSync ? { gatewayEnvSync: result.gatewayEnvSync } : {})
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "添加失败");

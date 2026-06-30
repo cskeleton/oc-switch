@@ -1,5 +1,6 @@
 import { Cpu, Edit3, Plus, Power, PowerOff, RefreshCw, RotateCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { GatewayApplyBanner } from "../components/GatewayApplyBanner";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { CustomProviderDialog } from "../components/CustomProviderDialog";
 import { DataTable } from "../components/DataTable";
@@ -7,7 +8,7 @@ import { EnvMigrationConfirmDialog } from "../components/EnvMigrationConfirmDial
 import { MergeCaseDuplicateDialog } from "../components/MergeCaseDuplicateDialog";
 import { ProviderModelsDialog } from "../components/ProviderModelsDialog";
 import { formatEnvWriteSuccess } from "../env-feedback";
-import type { ApiClient, CaseDuplicateGroup, ModelSummary, ProviderSummary } from "../api";
+import type { ApiClient, CaseDuplicateGroup, EnvWriteVerification, GatewayEnvSyncResult, ModelSummary, ProviderSummary } from "../api";
 
 interface ProvidersViewProps {
   client: ApiClient;
@@ -30,6 +31,10 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
   const [syncing, setSyncing] = useState<string | null>(null);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [gatewayApply, setGatewayApply] = useState<{
+    envWrite: EnvWriteVerification;
+    gatewayEnvSync?: GatewayEnvSyncResult;
+  } | null>(null);
   const [modelTarget, setModelTarget] = useState<ProviderSummary | null>(null);
   const [stateTarget, setStateTarget] = useState<ProviderSummary | null>(null);
   const [pendingEnvConfirm, setPendingEnvConfirm] = useState<{
@@ -110,6 +115,17 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
     setEditApiKey("");
   }
 
+  function showGatewayApply(result: { envWrite?: EnvWriteVerification | undefined; gatewayEnvSync?: GatewayEnvSyncResult }) {
+    if (!result.envWrite?.verified) {
+      setGatewayApply(null);
+      return;
+    }
+    setGatewayApply({
+      envWrite: result.envWrite,
+      ...(result.gatewayEnvSync ? { gatewayEnvSync: result.gatewayEnvSync } : {})
+    });
+  }
+
   async function submitProviderUpdate(providerId: string, changes: { baseUrl?: string; apiKey?: string; confirmMigration?: boolean; confirmComplex?: boolean }) {
     const result = await client.updateProvider(providerId, changes);
     setEditTarget(null);
@@ -125,7 +141,9 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
             ? `Provider ${providerId} 的 API Key 已改写为标准格式并更新`
             : `Provider ${providerId} 的 API Key 已更新`
       }));
+      showGatewayApply(result);
     } else {
+      setGatewayApply(null);
       setSuccessMessage(`Provider ${providerId} 已更新`);
     }
     await load();
@@ -244,6 +262,14 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
       </div>
 
       {error ? <p className="mb-3 text-destructive">{error}</p> : null}
+      {gatewayApply ? (
+        <GatewayApplyBanner
+          client={client}
+          envWrite={gatewayApply.envWrite}
+          {...(gatewayApply.gatewayEnvSync ? { gatewayEnvSync: gatewayApply.gatewayEnvSync } : {})}
+          onDismiss={() => setGatewayApply(null)}
+        />
+      ) : null}
       {successMessage ? <p className="mb-3 text-sm text-emerald-600 dark:text-emerald-400">{successMessage}</p> : null}
       {syncMessage ? <p className="mb-3 text-sm text-emerald-500 dark:text-emerald-400">{syncMessage}</p> : null}
 
@@ -379,6 +405,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
             envWrite: result.envWrite,
             fallback: `Provider ${result.providerId} 已添加`
           }));
+          showGatewayApply(result);
           void load();
           onRefresh?.();
         }}

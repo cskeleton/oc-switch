@@ -30,6 +30,19 @@ export interface EnvWriteVerification {
   entries: EnvWriteVerificationEntry[];
 }
 
+export interface GatewayEnvSyncResult {
+  ok: boolean;
+  syncedKeys: string[];
+  removedKeys: string[];
+  warnings: string[];
+}
+
+export interface GatewayRestartResult {
+  ok: boolean;
+  exitCode: number | null;
+  message: string;
+}
+
 export type ApiKeyEnvStatus = "managed" | "unmanaged" | "missing" | "complex" | "duplicate";
 
 export interface ProviderSummary {
@@ -305,7 +318,7 @@ export function createApiClient(options: ApiClientOptions) {
       models?: string[],
       flags?: { confirmMigration?: boolean; confirmComplex?: boolean }
     ) =>
-      request<{ ok: boolean; backupId?: string; envWrite?: EnvWriteVerification }>("/api/providers", {
+      request<{ ok: boolean; backupId?: string; envWrite?: EnvWriteVerification; gatewayEnvSync?: GatewayEnvSyncResult }>("/api/providers", {
         method: "POST",
         body: JSON.stringify({ presetId, apiKey, models, ...flags })
       }),
@@ -319,7 +332,7 @@ export function createApiClient(options: ApiClientOptions) {
       apiKey: string,
       flags?: { confirmMigration?: boolean; confirmComplex?: boolean }
     ) =>
-      request<{ ok: boolean; backupId?: string; envWrite?: EnvWriteVerification }>("/api/providers/custom", {
+      request<{ ok: boolean; backupId?: string; envWrite?: EnvWriteVerification; gatewayEnvSync?: GatewayEnvSyncResult }>("/api/providers/custom", {
         method: "POST",
         body: JSON.stringify({ ...input, apiKey, ...flags })
       }),
@@ -329,7 +342,7 @@ export function createApiClient(options: ApiClientOptions) {
         body: JSON.stringify(changes)
       }),
     updateProvider: (id: string, changes: { baseUrl?: string; apiKey?: string; confirmMigration?: boolean; confirmComplex?: boolean }) =>
-      request<{ ok: boolean; backupId?: string; envWrite?: EnvWriteVerification }>(`/api/providers/${id}`, {
+      request<{ ok: boolean; backupId?: string; envWrite?: EnvWriteVerification; gatewayEnvSync?: GatewayEnvSyncResult }>(`/api/providers/${id}`, {
         method: "PUT",
         body: JSON.stringify(changes)
       }),
@@ -379,7 +392,7 @@ export function createApiClient(options: ApiClientOptions) {
       }),
     getEnvIndex: () => request<EnvIndexResponse>("/api/env"),
     updateEnvVar: (body: { type: "upsert"; envVar: string; value: string; note?: string; confirmMigration?: boolean; confirmComplex?: boolean }) =>
-      request<{ ok: true; affectedKeys: string[]; backupId?: string; envWrite?: EnvWriteVerification }>("/api/env", {
+      request<{ ok: true; affectedKeys: string[]; backupId?: string; envWrite?: EnvWriteVerification; gatewayEnvSync?: GatewayEnvSyncResult }>("/api/env", {
         method: "POST",
         body: JSON.stringify(body)
       }),
@@ -403,6 +416,14 @@ export function createApiClient(options: ApiClientOptions) {
       }),
     cleanupOrphanEnvKeys: () =>
       request<{ ok: boolean; removedKeys: string[]; backupId?: string }>("/api/settings/orphans/cleanup", {
+        method: "POST"
+      }),
+    syncGatewayEnv: () =>
+      request<{ ok: boolean; sync: GatewayEnvSyncResult }>("/api/gateway/sync-env", { method: "POST" }),
+    restartGateway: () =>
+      request<{ ok: boolean; restart: GatewayRestartResult }>("/api/gateway/restart", { method: "POST" }),
+    applyGateway: () =>
+      request<{ ok: boolean; sync: GatewayEnvSyncResult; restart: GatewayRestartResult }>("/api/gateway/apply", {
         method: "POST"
       })
   };

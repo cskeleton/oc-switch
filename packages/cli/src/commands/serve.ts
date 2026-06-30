@@ -24,6 +24,8 @@ export function registerServeCommand(program: Command, context: CommandContext):
       Bun.serve({
         port,
         hostname: options.host,
+        // gateway restart 可能超过默认 10s
+        idleTimeout: 120,
         fetch: app.fetch
       });
       console.log(`oc-switch server listening on http://${options.host}:${port}`);

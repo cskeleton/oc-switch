@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import type { ApiClient, EnvIndexResponse, EnvVariableSummary, PathSettingsResponse, SettingsResponse } from "../api";
+import type { ApiClient, EnvIndexResponse, EnvVariableSummary, EnvWriteVerification, GatewayEnvSyncResult, PathSettingsResponse, SettingsResponse } from "../api";
 import { formatEnvWriteSuccess } from "../env-feedback";
 import { EnvMigrationConfirmDialog } from "../components/EnvMigrationConfirmDialog";
+import { GatewayApplyBanner } from "../components/GatewayApplyBanner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../components/ui/card";
 
@@ -50,6 +51,12 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
   const [newExtraNote, setNewExtraNote] = useState("");
   const [pendingAction, setPendingAction] = useState<PendingEnvAction | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [gatewayApply, setGatewayApply] = useState<{
+    envWrite: EnvWriteVerification;
+    gatewayEnvSync?: GatewayEnvSyncResult;
+  } | null>(null);
+  const [gatewayManualMessage, setGatewayManualMessage] = useState<string | null>(null);
+  const [gatewayManualLoading, setGatewayManualLoading] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
@@ -84,6 +91,32 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
     setRenameInputs((prev) => ({ ...prev, [envVar]: value }));
   }
 
+  function showGatewayApply(result: { envWrite?: EnvWriteVerification | undefined; gatewayEnvSync?: GatewayEnvSyncResult }) {
+    if (!result.envWrite?.verified) {
+      setGatewayApply(null);
+      return;
+    }
+    setGatewayApply({
+      envWrite: result.envWrite,
+      ...(result.gatewayEnvSync ? { gatewayEnvSync: result.gatewayEnvSync } : {})
+    });
+  }
+
+  async function handleManualGatewayApply() {
+    setGatewayManualLoading(true);
+    setGatewayManualMessage(null);
+    setError(null);
+    try {
+      const result = await client.applyGateway();
+      if (!result.ok) throw new Error(result.restart.message);
+      setGatewayManualMessage("已同步托管块到 gateway.systemd.env 并重启 Gateway。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Gateway 操作失败");
+    } finally {
+      setGatewayManualLoading(false);
+    }
+  }
+
   async function submitEnvUpsert(envVar: string, value: string, note?: string) {
     if (!value.trim()) {
       setError("请输入新值");
@@ -115,6 +148,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
         envWrite: result.envWrite,
         fallback: `${envVar} 已写入新值`
       }));
+      showGatewayApply(result);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "更新失败");
@@ -202,6 +236,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
               ? `${envVar} 已改写为标准格式并写入新值`
               : `${envVar} 已写入新值`
         }));
+        showGatewayApply(result);
       } else if (pendingAction.type === "delete" && pendingAction.envVar) {
         await client.deleteEnvVar({
           type: "delete",
@@ -291,6 +326,14 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
       </div>
 
       {error ? <p className="text-sm font-medium text-destructive">{error}</p> : null}
+      {gatewayApply ? (
+        <GatewayApplyBanner
+          client={client}
+          envWrite={gatewayApply.envWrite}
+          {...(gatewayApply.gatewayEnvSync ? { gatewayEnvSync: gatewayApply.gatewayEnvSync } : {})}
+          onDismiss={() => setGatewayApply(null)}
+        />
+      ) : null}
       {successMessage ? <p className="text-sm font-medium text-emerald-600 dark:text-emerald-400">{successMessage}</p> : null}
 
       <Tabs defaultValue="general" className="w-full">
@@ -315,6 +358,31 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
                   </div>
                 ))}
               </dl>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Gateway 环境</CardTitle>
+              <CardDescription>
+                将 oc-switch 托管块同步到 gateway.systemd.env 并重启 Gateway，使运行中进程加载新密钥。
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                命令等价于 <code className="rounded bg-muted px-1">{effective.gatewayRestartCommand}</code>，会先执行 sync-env。
+              </p>
+              {gatewayManualMessage ? (
+                <p className="text-sm text-emerald-600 dark:text-emerald-400">{gatewayManualMessage}</p>
+              ) : null}
+              <button
+                type="button"
+                disabled={gatewayManualLoading}
+                onClick={() => void handleManualGatewayApply()}
+                className="inline-flex h-9 items-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              >
+                {gatewayManualLoading ? "处理中…" : "同步并重启 Gateway"}
+              </button>
             </CardContent>
           </Card>
 

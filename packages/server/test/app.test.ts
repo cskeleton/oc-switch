@@ -40,13 +40,21 @@ function workspace(): Workspace {
   };
 }
 
-function createTestApp(ws: Workspace, fetchImpl?: FetchImpl, extra?: { runningInstances?: Array<{ pid: number; openclawPath?: string; envPath?: string }> }) {
+function createTestApp(
+  ws: Workspace,
+  fetchImpl?: FetchImpl,
+  extra?: {
+    runningInstances?: Array<{ pid: number; openclawPath?: string; envPath?: string }>;
+    gatewayRouteOptions?: import("../src/routes/gateway").GatewayRouteOptions;
+  }
+) {
   return createApp({
     token: TOKEN,
     paths: ws.paths,
     presetDirs: ws.presetDirs,
     ...(fetchImpl ? { fetchImpl } : {}),
-    ...(extra?.runningInstances ? { runningInstances: extra.runningInstances } : {})
+    ...(extra?.runningInstances ? { runningInstances: extra.runningInstances } : {}),
+    ...(extra?.gatewayRouteOptions ? { gatewayRouteOptions: extra.gatewayRouteOptions } : {})
   });
 }
 
@@ -1167,5 +1175,48 @@ describe("server env APIs", () => {
     expect(response.status).toBe(200);
     const states = JSON.parse(readFileSync(join(ws.paths.stateDir, "provider-states.json"), "utf8"));
     expect(states.disabledProviders.DeepSeek).toBeUndefined();
+  });
+
+  test("POST /api/gateway/sync-env merges managed block into gateway.systemd.env", async () => {
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, [
+      "# oc-switch:start",
+      "NVIDIA_API_KEY=synced-secret",
+      "# oc-switch:end"
+    ].join("\n") + "\n");
+    const gatewayPath = join(ws.dir, "gateway.systemd.env");
+    writeFileSync(gatewayPath, "HTTP_PROXY=http://proxy\nNVIDIA_API_KEY=old-secret\n");
+    const app = createTestApp(ws);
+
+    const { response, json } = await jsonRequest(app, "/api/gateway/sync-env", { method: "POST" });
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    const sync = json.sync as { syncedKeys: string[] };
+    expect(sync.syncedKeys).toContain("NVIDIA_API_KEY");
+    const content = readFileSync(gatewayPath, "utf8");
+    expect(content).toContain("HTTP_PROXY=http://proxy");
+    expect(content).toContain("NVIDIA_API_KEY=synced-secret");
+  });
+
+  test("POST /api/gateway/apply syncs and restarts with injected executor", async () => {
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, "# oc-switch:start\nTEST_KEY=value\n# oc-switch:end\n");
+    let restarted = false;
+    const app = createTestApp(ws, undefined, {
+      gatewayRouteOptions: {
+        restartGateway: async () => {
+          restarted = true;
+          return { ok: true, exitCode: 0, message: "Gateway restarted" };
+        }
+      }
+    });
+
+    const { response, json } = await jsonRequest(app, "/api/gateway/apply", { method: "POST" });
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(restarted).toBe(true);
+    expect(readFileSync(join(ws.dir, "gateway.systemd.env"), "utf8")).toContain("TEST_KEY=value");
   });
 });

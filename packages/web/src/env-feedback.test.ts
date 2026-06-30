@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatEnvWriteSuccess } from "./env-feedback";
+import { formatEnvWriteSuccess, GATEWAY_NEXT_STEP_HINT } from "./env-feedback";
 
 describe("formatEnvWriteSuccess", () => {
   test("includes masked value only when server verification succeeded", () => {
@@ -16,7 +16,7 @@ describe("formatEnvWriteSuccess", () => {
           }
         ]
       }
-    })).toBe("Provider elysiver 的 API Key 已写入托管块：ELYSIVER_API_KEY = sk-abc********123456");
+    })).toBe(`Provider elysiver 的 API Key 已写入托管块：ELYSIVER_API_KEY = sk-abc********123456 ${GATEWAY_NEXT_STEP_HINT}`);
   });
 
   test("does not claim verification when server did not verify the value", () => {
@@ -49,6 +49,6 @@ describe("formatEnvWriteSuccess", () => {
           }
         ]
       }
-    })).toBe("TEST_KEY 已写入托管块。");
+    })).toBe(`TEST_KEY 已写入托管块。 ${GATEWAY_NEXT_STEP_HINT}`);
   });
 });

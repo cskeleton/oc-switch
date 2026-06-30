@@ -592,4 +592,21 @@ describe("cli provider disable/enable", () => {
     expect(enableModel.code).not.toBe(0);
     expect(enableModel.stderr).toContain("Provider nvidia is disabled");
   });
+
+  test("gateway sync-env merges managed block into gateway.systemd.env", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-gateway-"));
+    tempDirs.push(dir);
+    const envPath = join(dir, ".env");
+    writeFileSync(envPath, "# oc-switch:start\nCLI_SYNC_KEY=cli-secret\n# oc-switch:end\n");
+    mkdirSync(join(dir, ".oc-switch"), { recursive: true });
+    writeFileSync(join(dir, ".oc-switch", "settings.json"), JSON.stringify({ openclawPath: join(dir, "openclaw.json"), envPath }));
+    writeFileSync(join(dir, "openclaw.json"), `${JSON.stringify(sample, null, 2)}\n`);
+
+    const result = await runCli(["gateway", "sync-env"], {
+      OPENCLAW_CONFIG_PATH: join(dir, "openclaw.json"),
+      HOME: dir
+    });
+    expect(result.code).toBe(0);
+    expect(readFileSync(join(dir, "gateway.systemd.env"), "utf8")).toContain("CLI_SYNC_KEY=cli-secret");
+  });
 });

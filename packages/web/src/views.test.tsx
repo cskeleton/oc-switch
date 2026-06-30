@@ -14,6 +14,7 @@ import { PresetsView } from "./views/PresetsView";
 import { BackupsView } from "./views/BackupsView";
 import { SettingsView } from "./views/SettingsView";
 import { modelSummary, providerSummary } from "./test-fixtures";
+import { GATEWAY_NEXT_STEP_HINT } from "./env-feedback";
 
 afterEach(() => {
   cleanup();
@@ -584,7 +585,7 @@ describe("ProvidersView", () => {
       ],
       enableAllModels: true
     }, "sk-abcdefghijklmnopqrstuvwxyz123456", undefined);
-    expect(await findByText("Provider custom-openai 的 API Key 已写入托管块：CUSTOM_OPENAI_API_KEY = sk-abc********123456")).toBeTruthy();
+    expect(await findByText(`Provider custom-openai 的 API Key 已写入托管块：CUSTOM_OPENAI_API_KEY = sk-abc********123456 ${GATEWAY_NEXT_STEP_HINT}`)).toBeTruthy();
     expect(queryByText("sk-abcdefghijklmnopqrstuvwxyz123456")).toBeNull();
   });
 
@@ -671,8 +672,63 @@ describe("ProvidersView", () => {
       baseUrl: "https://new-nvidia.example/v1",
       apiKey: "sk-abcdefghijklmnopqrstuvwxyz123456"
     });
-    expect(await findByText("Provider nvidia 的 API Key 已写入托管块：NVIDIA_API_KEY = sk-abc********123456")).toBeTruthy();
+    expect(await findByText(`Provider nvidia 的 API Key 已写入托管块：NVIDIA_API_KEY = sk-abc********123456 ${GATEWAY_NEXT_STEP_HINT}`)).toBeTruthy();
     expect(queryByText("sk-abcdefghijklmnopqrstuvwxyz123456")).toBeNull();
+  });
+
+  test("shows gateway apply banner after provider key save", async () => {
+    const updateProvider = mock(async () => ({
+      ok: true,
+      envWrite: {
+        verified: true,
+        entries: [{ envVar: "NVIDIA_API_KEY", verified: true, managed: true, maskedValue: "sk-abc********123456" }]
+      },
+      gatewayEnvSync: { ok: true, syncedKeys: ["NVIDIA_API_KEY"], removedKeys: [], warnings: [] }
+    }));
+    const previewUpdateProvider = mock(async () => ({
+      providersAdded: [],
+      providersRemoved: [],
+      providersChanged: [],
+      modelsEnabled: [],
+      modelsDisabled: [],
+      primaryChanged: null,
+      envPreview: {
+        affectedKeys: ["NVIDIA_API_KEY"],
+        requiresConfirmation: false,
+        requiresMigration: false,
+        requiresComplex: false,
+        warnings: [],
+        backupWillIncludeSecrets: true
+      }
+    }));
+    const restartGateway = mock(async () => ({
+      ok: true,
+      restart: { ok: true, exitCode: 0, message: "Gateway restarted" }
+    }));
+    const getProviders = mock(async () => ({
+      providers: [
+        providerSummary({
+          id: "nvidia",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          modelCount: 2,
+          apiKeyEnv: "NVIDIA_API_KEY",
+          apiKeyEnvManaged: true,
+          apiKeyEnvStatus: "managed"
+        })
+      ]
+    }));
+
+    const { findByLabelText, findByTestId, findByText, getByText } = render(
+      <ProvidersView client={mockClient({ getProviders, previewUpdateProvider, updateProvider, restartGateway })} />
+    );
+
+    await userEvent.click(await findByLabelText("编辑 nvidia"));
+    await userEvent.type(await findByLabelText("Provider API Key 新值"), "sk-abcdefghijklmnopqrstuvwxyz123456");
+    await userEvent.click(getByText("保存 Provider"));
+
+    expect(await findByTestId("gateway-apply-banner")).toBeTruthy();
+    await userEvent.click(getByText("重启 Gateway"));
+    await waitFor(() => expect(restartGateway).toHaveBeenCalled());
   });
 
   test("provider edit previews unmanaged API key migration before saving", async () => {
@@ -867,7 +923,7 @@ describe("PresetsView", () => {
 
     expect(previewAddProvider).toHaveBeenCalledWith("nvidia");
     expect(addProvider).toHaveBeenCalledWith("nvidia", "sk-abcdefghijklmnopqrstuvwxyz123456", undefined, undefined);
-    expect(await findByText("Provider nvidia 的 API Key 已写入托管块：NVIDIA_API_KEY = sk-abc********123456")).toBeTruthy();
+    expect(await findByText(`Provider nvidia 的 API Key 已写入托管块：NVIDIA_API_KEY = sk-abc********123456 ${GATEWAY_NEXT_STEP_HINT}`)).toBeTruthy();
     expect(getDiff).not.toHaveBeenCalled();
     expect(queryByText("sk-abcdefghijklmnopqrstuvwxyz123456")).toBeNull();
   });
@@ -981,7 +1037,7 @@ describe("SettingsView", () => {
     expect(await findByText("127.0.0.1")).toBeTruthy();
     expect(await findByText("7420")).toBeTruthy();
     expect(await findByText("20（默认）")).toBeTruthy();
-    expect(await findByText("openclaw gateway restart")).toBeTruthy();
+    expect((await findAllByText("openclaw gateway restart")).length).toBeGreaterThan(0);
   });
 
   test("can clean orphan env keys from settings", async () => {
@@ -1233,7 +1289,7 @@ describe("SettingsView", () => {
       envVar: "NVIDIA_API_KEY",
       value: "sk-abcdefghijklmnopqrstuvwxyz123456"
     });
-    expect(await findByText("NVIDIA_API_KEY 已写入托管块：NVIDIA_API_KEY = sk-abc********123456")).toBeTruthy();
+    expect(await findByText(`NVIDIA_API_KEY 已写入托管块：NVIDIA_API_KEY = sk-abc********123456 ${GATEWAY_NEXT_STEP_HINT}`)).toBeTruthy();
     expect(queryByText("sk-abcdefghijklmnopqrstuvwxyz123456")).toBeNull();
     await waitFor(() => expect((input as HTMLInputElement).value).toBe(""));
   });
