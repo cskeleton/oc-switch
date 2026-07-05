@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -135,7 +135,6 @@ describe("syncManagedBlockToGatewaySystemdEnv", () => {
     expect(existsSync(ws.gatewayPath)).toBe(false);
     syncManagedBlockToGatewaySystemdEnv({ envPath: ws.envPath, gatewaySystemdEnvPath: ws.gatewayPath });
     expect(readFileSync(ws.gatewayPath, "utf8")).toContain("ONLY_KEY=value");
-    chmodSync(ws.gatewayPath, 0o600);
     expect(statSync(ws.gatewayPath).mode & 0o777).toBe(0o600);
   });
 });

@@ -1,5 +1,22 @@
 import { describe, expect, test } from "bun:test";
-import { formatEnvWriteSuccess, GATEWAY_NEXT_STEP_HINT } from "./env-feedback";
+import { formatEnvWriteSuccess, formatGatewayServiceEnvLabel, GATEWAY_NEXT_STEP_HINT } from "./env-feedback";
+
+describe("formatGatewayServiceEnvLabel", () => {
+  test("uses basename of targetPath when available", () => {
+    expect(formatGatewayServiceEnvLabel({
+      ok: true,
+      targetKind: "launchd",
+      targetPath: "/Users/me/.openclaw/service-env/ai.openclaw.gateway.env",
+      syncedKeys: [],
+      removedKeys: [],
+      warnings: []
+    })).toBe("ai.openclaw.gateway.env");
+  });
+
+  test("falls back to generic label", () => {
+    expect(formatGatewayServiceEnvLabel(undefined)).toBe("Gateway 服务环境文件");
+  });
+});
 
 describe("formatEnvWriteSuccess", () => {
   test("includes masked value only when server verification succeeded", () => {

@@ -4,5 +4,5 @@
     "composite": true,
     "noEmit": true
   },
-  "include": ["src", "test"]
+  "include": ["src", "test", "../core/test/gateway-sync-fixture.ts"]
 }

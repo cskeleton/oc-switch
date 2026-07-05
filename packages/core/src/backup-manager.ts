@@ -2,9 +2,11 @@ import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import {
-  syncManagedBlockToGatewaySystemdEnv,
-  type GatewaySystemdEnvSyncResult
-} from "./gateway-systemd-env-sync";
+  gatewayServiceEnvTargetErrorToSyncResult,
+  isGatewayServiceEnvTargetError,
+  syncManagedBlockToGatewayServiceEnv,
+  type GatewayServiceEnvSyncResult
+} from "./gateway-service-env-sync";
 
 export const DEFAULT_BACKUP_RETENTION = 20;
 
@@ -148,7 +150,7 @@ export interface SafeRestoreBackupInput extends RestoreBackupInput {
 
 export interface SafeRestoreBackupResult {
   safetyBackupDir: string;
-  gatewayEnvSync?: GatewaySystemdEnvSyncResult;
+  gatewayEnvSync?: GatewayServiceEnvSyncResult;
 }
 
 export interface BackupPathMismatch {
@@ -205,6 +207,13 @@ export function restoreBackupSafely(input: SafeRestoreBackupInput): SafeRestoreB
     protectedBackupDirs: [input.backupDir]
   });
   restoreBackup(input);
-  const gatewayEnvSync = syncManagedBlockToGatewaySystemdEnv({ envPath: input.envPath });
+  let gatewayEnvSync: GatewayServiceEnvSyncResult;
+  try {
+    gatewayEnvSync = syncManagedBlockToGatewayServiceEnv({ envPath: input.envPath });
+  } catch (error) {
+    if (!isGatewayServiceEnvTargetError(error)) throw error;
+    // 恢复文件已经成功；仅服务 env 目标不可发现时降级为可提示的结果。
+    gatewayEnvSync = gatewayServiceEnvTargetErrorToSyncResult(error);
+  }
   return { safetyBackupDir, gatewayEnvSync };
 }

@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBackup, listBackups, readBackupMetadata, restoreBackup, restoreBackupSafely } from "../src/backup-manager";
+import { prepareGatewayEnvTarget, withTestHome } from "./gateway-sync-fixture";
 
 const tempDirs: string[] = [];
 
@@ -20,6 +21,8 @@ function workspace() {
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
+
+const darwinTest = process.platform === "darwin" ? test : test.skip;
 
 describe("backup manager", () => {
   test("lists backup packages newest first", () => {
@@ -78,32 +81,61 @@ describe("backup manager", () => {
 
   test("syncs restored managed env block to gateway.systemd.env after restore", () => {
     const ws = workspace();
+    const homeDir = join(ws.dir, "home");
+    mkdirSync(homeDir, { recursive: true });
+    const gatewayPath = prepareGatewayEnvTarget(ws.dir, homeDir);
     writeFileSync(ws.envPath, "# oc-switch:start\nRESTORED_KEY=restored-secret\n# oc-switch:end\n");
     const restoreTarget = createBackup({ ...ws, reason: "restore-target", beforeHash: "hash" });
     writeFileSync(ws.envPath, "# oc-switch:start\nCURRENT_KEY=current-secret\n# oc-switch:end\n");
-    writeFileSync(join(ws.dir, "gateway.systemd.env"), [
+    writeFileSync(gatewayPath, [
       "HTTP_PROXY=http://proxy",
       "# oc-switch:start",
       "CURRENT_KEY=current-secret",
       "# oc-switch:end"
     ].join("\n") + "\n");
 
-    const result = restoreBackupSafely({
+    const result = withTestHome(homeDir, () => restoreBackupSafely({
       stateDir: ws.stateDir,
       backupDir: restoreTarget,
       openclawPath: ws.openclawPath,
       envPath: ws.envPath
-    });
+    }));
 
     expect(result.gatewayEnvSync?.syncedKeys).toEqual(["RESTORED_KEY"]);
     expect(result.gatewayEnvSync?.removedKeys).toEqual(["CURRENT_KEY"]);
-    expect(readFileSync(join(ws.dir, "gateway.systemd.env"), "utf8")).toBe([
-      "HTTP_PROXY=http://proxy",
-      "# oc-switch:start",
-      "RESTORED_KEY=restored-secret",
-      "# oc-switch:end",
-      ""
-    ].join("\n"));
+    const syncedContent = readFileSync(gatewayPath, "utf8");
+    expect(syncedContent).toContain("HTTP_PROXY=http://proxy");
+    expect(syncedContent).toContain("RESTORED_KEY");
+    expect(syncedContent).toContain("restored-secret");
+    expect(syncedContent).not.toContain("CURRENT_KEY=current-secret");
+  });
+
+  darwinTest("keeps restored files when gateway service env target is missing", () => {
+    const ws = workspace();
+    const homeDir = join(ws.dir, "home");
+    mkdirSync(homeDir, { recursive: true });
+    writeFileSync(ws.envPath, "# oc-switch:start\nRESTORED_KEY=restored-secret\n# oc-switch:end\n");
+    const restoreTarget = createBackup({ ...ws, reason: "restore-target", beforeHash: "hash" });
+    writeFileSync(ws.openclawPath, "{\"current\":true}\n");
+    writeFileSync(ws.envPath, "# oc-switch:start\nCURRENT_KEY=current-secret\n# oc-switch:end\n");
+
+    const result = withTestHome(homeDir, () => restoreBackupSafely({
+      stateDir: ws.stateDir,
+      backupDir: restoreTarget,
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath
+    }));
+
+    expect(readFileSync(ws.openclawPath, "utf8")).toBe("{\"before\":true}\n");
+    expect(readFileSync(ws.envPath, "utf8")).toContain("RESTORED_KEY=restored-secret");
+    expect(result.gatewayEnvSync).toMatchObject({
+      ok: false,
+      targetKind: "launchd",
+      targetPath: "",
+      syncedKeys: [],
+      removedKeys: []
+    });
+    expect(result.gatewayEnvSync?.warnings.join("\n")).toContain("openclaw gateway install --force");
   });
 
   test("rejects restore when backup paths do not match active paths", () => {

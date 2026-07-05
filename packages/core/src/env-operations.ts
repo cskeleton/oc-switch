@@ -9,7 +9,7 @@ import type { OcSwitchPaths } from "./paths";
 import type { OpenClawConfig } from "./types";
 import JSON5 from "json5";
 import type { EnvWriteVerification } from "./env-verification";
-import type { GatewaySystemdEnvSyncResult } from "./gateway-systemd-env-sync";
+import type { GatewayServiceEnvSyncResult } from "./gateway-service-env-sync";
 
 const ENV_VAR_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -32,7 +32,7 @@ export interface EnvOperationResult {
   affectedKeys: string[];
   backupId?: string;
   envWrite?: EnvWriteVerification;
-  gatewayEnvSync?: GatewaySystemdEnvSyncResult;
+  gatewayEnvSync?: GatewayServiceEnvSyncResult;
 }
 
 function assertEnvVar(envVar: string): void {

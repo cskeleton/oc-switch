@@ -1,6 +1,7 @@
 import { RefreshCw } from "lucide-react";
 import { useState } from "react";
 import type { ApiClient, EnvWriteVerification, GatewayEnvSyncResult } from "../api";
+import { formatGatewayServiceEnvLabel } from "../env-feedback";
 
 interface GatewayApplyBannerProps {
   client: ApiClient;
@@ -17,6 +18,7 @@ export function GatewayApplyBanner({ client, envWrite, gatewayEnvSync, onDismiss
 
   if (!envWrite?.verified) return null;
 
+  const serviceEnvLabel = formatGatewayServiceEnvLabel(gatewayEnvSync);
   const alreadySynced = Boolean(gatewayEnvSync?.ok);
   const buttonLabel = alreadySynced ? "重启 Gateway" : "同步并重启 Gateway";
 
@@ -32,7 +34,7 @@ export function GatewayApplyBanner({ client, envWrite, gatewayEnvSync, onDismiss
       } else {
         const result = await client.applyGateway();
         if (!result.ok) throw new Error(result.restart.message);
-        setMessage("已同步到 gateway.systemd.env 并重启 Gateway。");
+        setMessage(`已同步到 ${serviceEnvLabel} 并重启 Gateway。`);
       }
       onDismiss?.();
     } catch (err) {
@@ -49,8 +51,8 @@ export function GatewayApplyBanner({ client, envWrite, gatewayEnvSync, onDismiss
     >
       <p className="font-medium text-amber-700 dark:text-amber-300">
         {alreadySynced
-          ? "托管块已同步到 gateway.systemd.env；Gateway 需重启后才会加载新密钥。"
-          : "密钥已写入托管块。Gateway 使用 gateway.systemd.env，请同步并重启后生效。"}
+          ? `托管块已同步到 ${serviceEnvLabel}；Gateway 需重启后才会加载新密钥。`
+          : "密钥已写入托管块。Gateway 使用服务环境快照，请同步并重启后生效。"}
       </p>
       {gatewayEnvSync?.warnings.length ? (
         <ul className="mt-2 list-inside list-disc text-xs text-muted-foreground">

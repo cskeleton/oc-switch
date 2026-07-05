@@ -1,6 +1,6 @@
 import {
   restartGateway,
-  syncManagedBlockToGatewaySystemdEnv,
+  syncManagedBlockToGatewayServiceEnv,
   type GatewayRestartExecutor
 } from "@oc-switch/core";
 import type { Command } from "commander";
@@ -8,7 +8,7 @@ import type { CommandContext } from "../command-context";
 
 export interface GatewayCommandOptions {
   restartGateway?: typeof restartGateway;
-  syncManagedBlockToGatewaySystemdEnv?: typeof syncManagedBlockToGatewaySystemdEnv;
+  syncManagedBlockToGatewayServiceEnv?: typeof syncManagedBlockToGatewayServiceEnv;
 }
 
 export function registerGatewayCommands(
@@ -16,12 +16,12 @@ export function registerGatewayCommands(
   context: CommandContext,
   options: GatewayCommandOptions = {}
 ): void {
-  const syncFn = options.syncManagedBlockToGatewaySystemdEnv ?? syncManagedBlockToGatewaySystemdEnv;
+  const syncFn = options.syncManagedBlockToGatewayServiceEnv ?? syncManagedBlockToGatewayServiceEnv;
   const restartFn = options.restartGateway ?? restartGateway;
-  const gateway = program.command("gateway").description("Sync managed env block to gateway.systemd.env and restart Gateway");
+  const gateway = program.command("gateway").description("Sync managed env block to Gateway service env and restart");
 
   gateway.command("sync-env")
-    .description("Merge oc-switch managed block into gateway.systemd.env")
+    .description("Merge oc-switch managed block into Gateway service environment file")
     .action(() => {
       try {
         const paths = context.activePaths();

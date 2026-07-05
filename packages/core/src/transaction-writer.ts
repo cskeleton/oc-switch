@@ -11,9 +11,11 @@ import { withFileLock } from "./lock";
 import { markProviderEnvOrphan, upsertProviderEnvManifest, type ManifestProviderMetadata } from "./manifest-manager";
 import { verifyEnvWrite, type EnvWriteVerification } from "./env-verification";
 import {
-  syncManagedBlockToGatewaySystemdEnv,
-  type GatewaySystemdEnvSyncResult
-} from "./gateway-systemd-env-sync";
+  gatewayServiceEnvTargetErrorToSyncResult,
+  isGatewayServiceEnvTargetError,
+  syncManagedBlockToGatewayServiceEnv,
+  type GatewayServiceEnvSyncResult
+} from "./gateway-service-env-sync";
 import type { OpenClawConfig } from "./types";
 
 export type ManifestUpdate =
@@ -38,7 +40,7 @@ export interface TransactionInput {
 export interface TransactionResult {
   backupDir: string;
   envWrite?: EnvWriteVerification;
-  gatewayEnvSync?: GatewaySystemdEnvSyncResult;
+  gatewayEnvSync?: GatewayServiceEnvSyncResult;
 }
 
 function sha256(value: string): string {
@@ -69,13 +71,21 @@ function runGatewayEnvSyncIfNeeded(input: {
   envPath: string;
   envWrite?: EnvWriteVerification;
   envRemovedKeys?: string[];
-}): GatewaySystemdEnvSyncResult | undefined {
+}): GatewayServiceEnvSyncResult | undefined {
   const shouldSync = Boolean(input.envWrite?.verified) || Boolean(input.envRemovedKeys?.length);
   if (!shouldSync) return undefined;
-  return syncManagedBlockToGatewaySystemdEnv({
-    envPath: input.envPath,
-    ...(input.envRemovedKeys?.length ? { removedKeys: input.envRemovedKeys } : {})
-  });
+  try {
+    return syncManagedBlockToGatewayServiceEnv({
+      envPath: input.envPath,
+      ...(input.envRemovedKeys?.length ? { removedKeys: input.envRemovedKeys } : {})
+    });
+  } catch (error) {
+    if (isGatewayServiceEnvTargetError(error)) {
+      // 自动同步只降级目标发现类错误；已解析目标后的写入失败仍进入事务回滚。
+      return gatewayServiceEnvTargetErrorToSyncResult(error);
+    }
+    throw error;
+  }
 }
 
 export async function writeOpenClawTransaction(input: TransactionInput): Promise<TransactionResult> {
@@ -108,7 +118,7 @@ export async function writeOpenClawTransaction(input: TransactionInput): Promise
     });
 
     let envWrite: EnvWriteVerification | undefined;
-    let gatewayEnvSync: GatewaySystemdEnvSyncResult | undefined;
+    let gatewayEnvSync: GatewayServiceEnvSyncResult | undefined;
 
     mkdirSync(dirname(input.openclawPath), { recursive: true });
     mkdirSync(dirname(input.envPath), { recursive: true });
@@ -177,7 +187,7 @@ export async function writeEnvTransaction(input: EnvTransactionInput): Promise<T
     });
 
     let envWrite: EnvWriteVerification | undefined;
-    let gatewayEnvSync: GatewaySystemdEnvSyncResult | undefined;
+    let gatewayEnvSync: GatewayServiceEnvSyncResult | undefined;
 
     mkdirSync(dirname(input.envPath), { recursive: true });
     const envTmp = `${input.envPath}.tmp`;

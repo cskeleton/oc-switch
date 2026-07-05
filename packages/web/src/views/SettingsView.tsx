@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ApiClient, EnvIndexResponse, EnvVariableSummary, EnvWriteVerification, GatewayEnvSyncResult, PathSettingsResponse, SettingsResponse } from "../api";
-import { formatEnvWriteSuccess, GATEWAY_NEXT_STEP_HINT } from "../env-feedback";
+import { formatEnvWriteSuccess, formatGatewayServiceEnvLabel, GATEWAY_NEXT_STEP_HINT } from "../env-feedback";
 import { EnvMigrationConfirmDialog } from "../components/EnvMigrationConfirmDialog";
 import { GatewayApplyBanner } from "../components/GatewayApplyBanner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
@@ -113,7 +113,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
     try {
       const result = await client.applyGateway();
       if (!result.ok) throw new Error(result.restart.message);
-      setGatewayManualMessage("已同步托管块到 gateway.systemd.env 并重启 Gateway。");
+      setGatewayManualMessage(`已同步托管块到 ${formatGatewayServiceEnvLabel(result.sync)} 并重启 Gateway。`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Gateway 操作失败");
     } finally {
@@ -369,7 +369,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
             <CardHeader>
               <CardTitle>Gateway 环境</CardTitle>
               <CardDescription>
-                将 oc-switch 托管块同步到 gateway.systemd.env 并重启 Gateway，使运行中进程加载新密钥。
+                将 oc-switch 托管块同步到 Gateway 服务环境文件并重启 Gateway，使运行中进程加载新密钥。
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">

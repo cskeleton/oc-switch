@@ -6,6 +6,7 @@ import sample from "../../core/test/fixtures/openclaw.sample.json";
 import { createApp } from "../src/app";
 import type { FetchImpl, OcSwitchPaths, PresetDirs } from "@oc-switch/core";
 import { createBackup, upsertDisabledProviderState } from "@oc-switch/core";
+import { prepareGatewayEnvTarget, expectedGatewayEnvPath } from "../../core/test/gateway-sync-fixture";
 
 const tempDirs: string[] = [];
 const TOKEN = "test-secret";
@@ -17,6 +18,7 @@ function authHeaders(token = TOKEN) {
 
 interface Workspace {
   dir: string;
+  homeDir: string;
   paths: OcSwitchPaths;
   presetDirs: PresetDirs;
 }
@@ -24,14 +26,19 @@ interface Workspace {
 function workspace(): Workspace {
   const dir = mkdtempSync(join(tmpdir(), "oc-switch-server-"));
   tempDirs.push(dir);
+  const homeDir = join(dir, "home");
+  mkdirSync(homeDir, { recursive: true });
+  prepareGatewayEnvTarget(dir, homeDir);
   const openclawPath = join(dir, "openclaw.json");
   const envPath = join(dir, ".env");
   const stateDir = join(dir, ".oc-switch");
   writeFileSync(openclawPath, `${JSON.stringify(sample, null, 2)}\n`);
   const customDir = join(stateDir, "presets", "custom");
   mkdirSync(customDir, { recursive: true });
+  process.env.HOME = homeDir;
   return {
     dir,
+    homeDir,
     paths: { openclawPath, envPath, stateDir },
     presetDirs: {
       builtinDir: fixtureBuiltinDir,
@@ -609,7 +616,8 @@ describe("server write endpoints", () => {
     });
     const backupId = backupDir.split("/").pop();
     writeFileSync(ws.paths.envPath, "# oc-switch:start\nCURRENT_KEY=current-secret\n# oc-switch:end\n");
-    writeFileSync(join(ws.dir, "gateway.systemd.env"), [
+    const gatewayPath = expectedGatewayEnvPath(ws.dir);
+    writeFileSync(gatewayPath, [
       "HTTP_PROXY=http://proxy",
       "# oc-switch:start",
       "CURRENT_KEY=current-secret",
@@ -625,8 +633,9 @@ describe("server write endpoints", () => {
       syncedKeys: ["RESTORED_KEY"],
       removedKeys: ["CURRENT_KEY"]
     });
-    expect(readFileSync(join(ws.dir, "gateway.systemd.env"), "utf8")).toContain("RESTORED_KEY=restored-secret");
-    expect(readFileSync(join(ws.dir, "gateway.systemd.env"), "utf8")).not.toContain("CURRENT_KEY=current-secret");
+    expect(readFileSync(gatewayPath, "utf8")).toContain("RESTORED_KEY");
+    expect(readFileSync(gatewayPath, "utf8")).toContain("restored-secret");
+    expect(readFileSync(gatewayPath, "utf8")).not.toContain("CURRENT_KEY=current-secret");
     expect(JSON.stringify(json)).not.toContain("restored-secret");
   });
 
@@ -1216,7 +1225,7 @@ describe("server env APIs", () => {
       "NVIDIA_API_KEY=synced-secret",
       "# oc-switch:end"
     ].join("\n") + "\n");
-    const gatewayPath = join(ws.dir, "gateway.systemd.env");
+    const gatewayPath = expectedGatewayEnvPath(ws.dir);
     writeFileSync(gatewayPath, "HTTP_PROXY=http://proxy\nNVIDIA_API_KEY=old-secret\n");
     const app = createTestApp(ws);
 
@@ -1228,7 +1237,8 @@ describe("server env APIs", () => {
     expect(sync.syncedKeys).toContain("NVIDIA_API_KEY");
     const content = readFileSync(gatewayPath, "utf8");
     expect(content).toContain("HTTP_PROXY=http://proxy");
-    expect(content).toContain("NVIDIA_API_KEY=synced-secret");
+    expect(content).toContain("NVIDIA_API_KEY");
+    expect(content).toContain("synced-secret");
   });
 
   test("POST /api/gateway/apply syncs and restarts with injected executor", async () => {
@@ -1249,6 +1259,7 @@ describe("server env APIs", () => {
     expect(response.status).toBe(200);
     expect(json.ok).toBe(true);
     expect(restarted).toBe(true);
-    expect(readFileSync(join(ws.dir, "gateway.systemd.env"), "utf8")).toContain("TEST_KEY=value");
+    expect(readFileSync(expectedGatewayEnvPath(ws.dir), "utf8")).toContain("TEST_KEY");
+    expect(readFileSync(expectedGatewayEnvPath(ws.dir), "utf8")).toContain("value");
   });
 });

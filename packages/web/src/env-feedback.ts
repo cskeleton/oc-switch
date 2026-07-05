@@ -1,6 +1,13 @@
-import type { EnvWriteVerification } from "./api";
+import type { EnvWriteVerification, GatewayEnvSyncResult } from "./api";
 
 export const GATEWAY_NEXT_STEP_HINT = "下一步：同步并重启 Gateway，使运行中的 Gateway 加载新密钥。";
+
+/** 根据 sync 结果生成服务环境文件展示名（不含完整路径） */
+export function formatGatewayServiceEnvLabel(sync?: GatewayEnvSyncResult): string {
+  if (!sync?.targetPath) return "Gateway 服务环境文件";
+  const parts = sync.targetPath.split(/[/\\]/);
+  return parts[parts.length - 1] || "Gateway 服务环境文件";
+}
 
 export function formatEnvWriteSuccess(input: {
   label: string;

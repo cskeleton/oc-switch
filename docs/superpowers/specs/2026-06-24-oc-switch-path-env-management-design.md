@@ -570,25 +570,33 @@ Core 是唯一文件读写层。Server/Web 不直接读写本地文件。
 - API 响应、manifest、日志、Web DOM 不暴露 `.env` 明文。
 - 相关 `bun test`、`bun run typecheck`、Web 测试通过。
 
-## 15. Gateway systemd 环境同步
+## 15. Gateway 服务环境同步
 
-OpenClaw Gateway（systemd user service）在启动时从 `gateway.systemd.env` 注入环境变量，**不会**直接读取 `.env` 全文。oc-switch 写入的 Provider / 托管变量位于 `.env` 的 `# oc-switch:start` … `# oc-switch:end` 块内；Gateway 要生效须将这个托管块同步到同目录下 `gateway.systemd.env` 的 oc-switch 托管块，再重启 Gateway。
+OpenClaw Gateway 作为系统服务运行时，**不会**直接读取 `.env` 全文，而是读取 OpenClaw 为当前平台生成的服务环境快照。oc-switch 写入的 Provider / 托管变量位于 `.env` 的 `# oc-switch:start` … `# oc-switch:end` 块内；Gateway 要生效须将这个托管块同步到当前平台对应的服务环境文件，再重启 Gateway。
+
+oc-switch 必须自动识别运行平台并选择同步目标：
+
+- Linux / systemd user service：同步到 `dirname(envPath)/gateway.systemd.env`。
+- macOS / LaunchAgent：解析 `~/Library/LaunchAgents/ai.openclaw.gateway.plist` 的 `ProgramArguments`，同步到 OpenClaw wrapper 实际加载的 `service-env/*.env` 文件。
+- 其他平台或无法发现服务环境文件：不创建猜测路径；手动 sync / apply 返回明确失败；自动 sync / restore 不阻断主写入，返回 `gatewayEnvSync.ok=false` 与 warning，引导用户检查 `openclaw gateway status` / `openclaw gateway install --force`。
 
 ### 15.1 同步源与目标
 
 | 项目 | 规则 |
 | --- | --- |
 | 同步源 | **仅** `.env` 中 oc-switch 托管块内的 `KEY=VALUE` |
-| 同步目标 | `dirname(envPath)/gateway.systemd.env` |
-| 合并策略 | 只替换 `gateway.systemd.env` 中的 oc-switch 托管块；目标文件块外内容（如 `HTTP_PROXY`）**原样保留** |
+| Linux 同步目标 | `dirname(envPath)/gateway.systemd.env` |
+| macOS 同步目标 | LaunchAgent `ProgramArguments[1]` 指向的 `service-env/*.env` |
+| 合并策略 | 只替换目标服务 env 文件中的 oc-switch 托管块；目标文件块外内容（如 `HTTP_PROXY`、OpenClaw 生成的服务元变量）**原样保留** |
 | 块外同名 Key | 不自动删除或改写；返回 warning，提示用户手动清理或迁移 |
 | 删除/重命名 | 通过整体替换目标托管块移除旧 Key；块外同名 Key 仍保留并告警 |
 | 块外 `.env` | **不读取、不同步** |
-| systemd unit | **不修改** `EnvironmentFile=` 或 `OPENCLAW_SERVICE_MANAGED_ENV_KEYS` |
+| 服务定义文件 | **不修改** systemd unit、LaunchAgent plist、`EnvironmentFile=` 或 `ProgramArguments` |
 
 ### 15.2 写入与安全
 
 - 原子写：`gateway.systemd.env.tmp` → `rename`，mode `0600`。
+- macOS 原子写：`service-env/<label>.env.tmp` → `rename`，mode `0600`；托管块使用 `export KEY='value'` 形式，value 按 POSIX 单引号规则转义，保证 wrapper 可 `source`。
 - 每个 value 不得含 `\r`/`\n`；空值拒绝同步并报错。
 - 若托管块 Key 不在 unit 内 `OPENCLAW_SERVICE_MANAGED_ENV_KEYS` 列表中，返回 **warning**（不阻断）；提示用户日后可 `openclaw gateway install` 更新列表。
 - 若目标文件块外存在同名 Key，返回 **warning**（不阻断）；oc-switch 不越权改写块外内容。
@@ -596,34 +604,35 @@ OpenClaw Gateway（systemd user service）在启动时从 `gateway.systemd.env` 
 
 ### 15.3 触发时机
 
-1. **自动 sync（无重启）**：`transaction-writer` 在 `envWrite.verified === true` 且其他写入钩子成功之后调用 `syncManagedBlockToGatewaySystemdEnv`（含 Provider Key 保存、Settings env upsert/delete/rename）。
-2. **手动补救**：CLI `oc-switch gateway sync-env`、Web 设置页「同步并重启 Gateway」、REST `POST /api/gateway/*`。
-3. **备份恢复**：恢复 `openclaw.json` / `.env` 后立即将恢复后的 `.env` 托管块同步到 `gateway.systemd.env`，响应标记 `gatewayRestartRequired: true`。
+1. **自动 sync（无重启）**：`transaction-writer` 在 `envWrite.verified === true` 且其他写入钩子成功之后调用平台中性的 `syncManagedBlockToGatewayServiceEnv`（含 Provider Key 保存、Settings env upsert/delete/rename）；若服务 env 目标不可发现或平台不支持，主事务仍成功，响应附带 `gatewayEnvSync.ok=false` 与 warning。
+2. **手动补救**：CLI `oc-switch gateway sync-env`、Web 设置页「同步并重启 Gateway」、REST `POST /api/gateway/*`；用户显式请求同步时，目标不可发现或平台不支持必须返回失败。
+3. **备份恢复**：恢复 `openclaw.json` / `.env` 后立即将恢复后的 `.env` 托管块同步到当前平台服务 env，响应标记 `gatewayRestartRequired: true`；若仅服务 env 目标不可发现或平台不支持，恢复结果仍成功并附带 `gatewayEnvSync.ok=false` 与 warning。
 4. **重启**：`openclaw gateway restart`；**不默认静默自动重启**（会打断会话），由用户点「同步并重启」或单独「重启」。
 
 ### 15.4 API / CLI
 
 | 方法 | 路径 / 命令 | 行为 |
 | --- | --- | --- |
-| `POST` | `/api/gateway/sync-env` | 手动 merge 托管块 → `gateway.systemd.env` |
+| `POST` | `/api/gateway/sync-env` | 手动 merge 托管块 → 当前平台服务 env |
 | `POST` | `/api/gateway/restart` | 执行 `openclaw gateway restart` |
 | `POST` | `/api/gateway/apply` | sync-env + restart 串联 |
 | CLI | `oc-switch gateway sync-env` | 同 sync-env |
 | CLI | `oc-switch gateway restart` | 同 restart |
 | CLI | `oc-switch gateway apply` | 同 apply |
 
-写入类 API 在 `envWrite` 之后可附带 `gatewayEnvSync`（自动 sync 结果，不含 value）。备份恢复 API 成功时可附带 `gatewayEnvSync` 与 `gatewayRestartRequired: true`。
+写入类 API 在 `envWrite` 之后可附带 `gatewayEnvSync`（自动 sync 结果，不含 value）。结果可包含 `targetKind`（`systemd` / `launchd`）与 `targetPath` 便于 UI 展示同步目标，但不得包含密钥值。备份恢复 API 成功时可附带 `gatewayEnvSync` 与 `gatewayRestartRequired: true`。
 
 ### 15.5 Web UI
 
-- `envWrite.verified` 成功后展示 `GatewayApplyBanner`：说明 Gateway 使用 `gateway.systemd.env`；若已自动 sync 则提示「已同步，待重启」，主按钮为「重启 Gateway」或「同步并重启 Gateway」。
+- `envWrite.verified` 成功后展示 `GatewayApplyBanner`：说明 Gateway 使用平台服务环境文件；若已自动 sync 则提示「已同步，待重启」，主按钮为「重启 Gateway」或「同步并重启 Gateway」。
 - `formatEnvWriteSuccess` 成功后缀：「下一步：同步并重启 Gateway」。
 - 设置 / 通用 Tab 提供手动 `apply` 入口。
 
 ### 15.6 明确不做（本阶段）
 
 - 不将 `EnvironmentFile=` 改指向 `.env`。
-- 不同步 `.env` 块外内容；不整文件覆盖 `gateway.systemd.env`。
+- 不修改 LaunchAgent plist 的 `ProgramArguments`。
+- 不同步 `.env` 块外内容；不整文件覆盖 systemd / launchd 服务 env。
 - 不调用 `openclaw secrets configure --apply`。
 - 不在用户未确认时静默重启 Gateway。
 

@@ -32,6 +32,8 @@ export interface EnvWriteVerification {
 
 export interface GatewayEnvSyncResult {
   ok: boolean;
+  targetKind?: "systemd" | "launchd";
+  targetPath?: string;
   syncedKeys: string[];
   removedKeys: string[];
   warnings: string[];

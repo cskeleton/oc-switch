@@ -1,9 +1,8 @@
 import {
   restartGateway,
-  syncManagedBlockToGatewaySystemdEnv,
+  syncManagedBlockToGatewayServiceEnv,
   type GatewayRestartExecutor,
-  type GatewayRestartResult,
-  type GatewaySystemdEnvSyncResult
+  type GatewayServiceEnvSyncResult
 } from "@oc-switch/core";
 import type { Hono } from "hono";
 import { readConfig, type AppRuntime } from "../context";
@@ -11,11 +10,11 @@ import { jsonError } from "../errors";
 
 export interface GatewayRouteOptions {
   restartGateway?: typeof restartGateway;
-  syncManagedBlockToGatewaySystemdEnv?: typeof syncManagedBlockToGatewaySystemdEnv;
+  syncManagedBlockToGatewayServiceEnv?: typeof syncManagedBlockToGatewayServiceEnv;
 }
 
 export function registerGatewayRoutes(app: Hono, runtime: AppRuntime, options: GatewayRouteOptions = {}): void {
-  const syncFn = options.syncManagedBlockToGatewaySystemdEnv ?? syncManagedBlockToGatewaySystemdEnv;
+  const syncFn = options.syncManagedBlockToGatewayServiceEnv ?? syncManagedBlockToGatewayServiceEnv;
   const restartFn = options.restartGateway ?? restartGateway;
 
   app.post("/api/gateway/sync-env", (c) => {
@@ -31,7 +30,7 @@ export function registerGatewayRoutes(app: Hono, runtime: AppRuntime, options: G
   app.post("/api/gateway/restart", async (c) => {
     try {
       readConfig(runtime.currentPaths());
-      const restart: GatewayRestartResult = await restartFn();
+      const restart = await restartFn();
       if (!restart.ok) {
         return c.json({ ok: false, restart }, 400);
       }
@@ -44,8 +43,8 @@ export function registerGatewayRoutes(app: Hono, runtime: AppRuntime, options: G
   app.post("/api/gateway/apply", async (c) => {
     try {
       readConfig(runtime.currentPaths());
-      const sync: GatewaySystemdEnvSyncResult = syncFn({ envPath: runtime.currentPaths().envPath });
-      const restart: GatewayRestartResult = await restartFn();
+      const sync: GatewayServiceEnvSyncResult = syncFn({ envPath: runtime.currentPaths().envPath });
+      const restart = await restartFn();
       if (!restart.ok) {
         return c.json({ ok: false, sync, restart }, 400);
       }

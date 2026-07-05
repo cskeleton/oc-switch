@@ -3,24 +3,30 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sample from "./fixtures/openclaw.sample.json";
-import { writeOpenClawTransaction } from "../src/transaction-writer";
+import { writeEnvTransaction, writeOpenClawTransaction } from "../src/transaction-writer";
+import { expectedGatewayEnvPath, prepareGatewayEnvTarget, withTestHome, withTestHomeAsync } from "./gateway-sync-fixture";
 
 const tempDirs: string[] = [];
 
-function makeWorkspace() {
+function makeWorkspace(options: { prepareGateway?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "oc-switch-test-"));
   tempDirs.push(dir);
+  const homeDir = join(dir, "home");
   const openclawPath = join(dir, "openclaw.json");
   const envPath = join(dir, ".env");
   const stateDir = join(dir, ".oc-switch");
+  const prepareGateway = options.prepareGateway ?? true;
   writeFileSync(openclawPath, `${JSON.stringify(sample, null, 2)}\n`);
   writeFileSync(envPath, "USER_DEFINED_API_KEY=keep\n");
-  return { dir, openclawPath, envPath, stateDir };
+  if (prepareGateway) prepareGatewayEnvTarget(dir, homeDir);
+  return { dir, homeDir, openclawPath, envPath, stateDir };
 }
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
+
+const darwinTest = process.platform === "darwin" ? test : test.skip;
 
 describe("writeOpenClawTransaction", () => {
   test("writes config and env with backup package", async () => {
@@ -87,10 +93,11 @@ describe("writeOpenClawTransaction", () => {
 
   test("does not sync gateway systemd env before afterWrite succeeds", async () => {
     const ws = makeWorkspace();
+    const gatewayPath = expectedGatewayEnvPath(ws.dir);
     writeFileSync(ws.envPath, "# oc-switch:start\nNVIDIA_API_KEY=old-secret\n# oc-switch:end\n");
-    writeFileSync(join(ws.dir, "gateway.systemd.env"), "# oc-switch:start\nNVIDIA_API_KEY=old-secret\n# oc-switch:end\n");
+    writeFileSync(gatewayPath, "# oc-switch:start\nNVIDIA_API_KEY=old-secret\n# oc-switch:end\n");
 
-    await expect(writeOpenClawTransaction({
+    await withTestHome(ws.homeDir, () => expect(writeOpenClawTransaction({
       openclawPath: ws.openclawPath,
       envPath: ws.envPath,
       stateDir: ws.stateDir,
@@ -102,9 +109,9 @@ describe("writeOpenClawTransaction", () => {
       afterWrite() {
         throw new Error("state write failed");
       }
-    })).rejects.toThrow("state write failed");
+    })).rejects.toThrow("state write failed"));
 
-    expect(readFileSync(join(ws.dir, "gateway.systemd.env"), "utf8")).toBe("# oc-switch:start\nNVIDIA_API_KEY=old-secret\n# oc-switch:end\n");
+    expect(readFileSync(gatewayPath, "utf8")).toBe("# oc-switch:start\nNVIDIA_API_KEY=old-secret\n# oc-switch:end\n");
   });
 
   test("writeOpenClawTransaction returns verified env write summary", async () => {
@@ -134,6 +141,35 @@ describe("writeOpenClawTransaction", () => {
       ]
     });
     expect(JSON.stringify(result)).not.toContain("sk-abcdefghijklmnopqrstuvwxyz123456");
+  });
+
+  darwinTest("keeps config and env writes when automatic gateway sync target is missing", async () => {
+    const ws = makeWorkspace({ prepareGateway: false });
+    writeFileSync(ws.envPath, "# oc-switch:start\nNVIDIA_API_KEY=old-secret\n# oc-switch:end\n");
+
+    const result = await withTestHomeAsync(ws.homeDir, () => writeOpenClawTransaction({
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath,
+      stateDir: ws.stateDir,
+      reason: "missing launchd target",
+      envUpdates: { NVIDIA_API_KEY: "new-secret" },
+      mutate(config) {
+        config.agents!.defaults!.model = "nvidia/deepseek-ai/deepseek-v4-flash";
+        return config;
+      }
+    }));
+
+    expect(JSON.parse(readFileSync(ws.openclawPath, "utf8")).agents.defaults.model)
+      .toBe("nvidia/deepseek-ai/deepseek-v4-flash");
+    expect(readFileSync(ws.envPath, "utf8")).toContain("NVIDIA_API_KEY=new-secret");
+    expect(result.gatewayEnvSync).toMatchObject({
+      ok: false,
+      targetKind: "launchd",
+      targetPath: "",
+      syncedKeys: [],
+      removedKeys: []
+    });
+    expect(result.gatewayEnvSync?.warnings.join("\n")).toContain("openclaw gateway install --force");
   });
 
   test("rolls back config and env when env write verification fails", async () => {
@@ -173,5 +209,32 @@ describe("writeOpenClawTransaction", () => {
     });
 
     expect(existsSync(ws.envPath)).toBe(false);
+  });
+});
+
+describe("writeEnvTransaction", () => {
+  darwinTest("keeps env writes when automatic gateway sync target is missing", async () => {
+    const ws = makeWorkspace({ prepareGateway: false });
+
+    const result = await withTestHomeAsync(ws.homeDir, () => writeEnvTransaction({
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath,
+      stateDir: ws.stateDir,
+      reason: "settings env update missing launchd target",
+      verifyEnvUpdates: { SETTINGS_KEY: "settings-secret" },
+      mutateEnv() {
+        return "# oc-switch:start\nSETTINGS_KEY=settings-secret\n# oc-switch:end\n";
+      }
+    }));
+
+    expect(readFileSync(ws.envPath, "utf8")).toContain("SETTINGS_KEY=settings-secret");
+    expect(result.gatewayEnvSync).toMatchObject({
+      ok: false,
+      targetKind: "launchd",
+      targetPath: "",
+      syncedKeys: [],
+      removedKeys: []
+    });
+    expect(result.gatewayEnvSync?.warnings.join("\n")).toContain("openclaw gateway install --force");
   });
 });

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sample from "../../core/test/fixtures/openclaw.sample.json";
 import type { OpenClawConfig } from "@oc-switch/core";
+import { prepareGatewayEnvTarget, expectedGatewayEnvPath } from "../../core/test/gateway-sync-fixture";
 
 const tempDirs: string[] = [];
 
@@ -12,6 +13,12 @@ afterEach(() => {
 });
 
 async function runCli(args: string[], env: Record<string, string>) {
+  if (env.HOME && process.platform === "darwin") {
+    const baseDir = env.OPENCLAW_CONFIG_PATH
+      ? join(env.OPENCLAW_CONFIG_PATH, "..")
+      : env.HOME;
+    prepareGatewayEnvTarget(baseDir, env.HOME);
+  }
   const proc = Bun.spawn(["bun", "run", "packages/cli/src/index.ts", ...args], {
     cwd: join(import.meta.dir, "../../.."),
     env: { ...process.env, ...env },
@@ -607,6 +614,8 @@ describe("cli provider disable/enable", () => {
       HOME: dir
     });
     expect(result.code).toBe(0);
-    expect(readFileSync(join(dir, "gateway.systemd.env"), "utf8")).toContain("CLI_SYNC_KEY=cli-secret");
+    const gatewayContent = readFileSync(expectedGatewayEnvPath(dir), "utf8");
+    expect(gatewayContent).toContain("CLI_SYNC_KEY");
+    expect(gatewayContent).toContain("cli-secret");
   });
 });
