@@ -110,6 +110,8 @@ bun run test:e2e                      # Playwright（需先 build）
 bun run packages/cli/src/index.ts     # 直接调用 CLI
 ```
 
+本机快速启动：先 `bun run build`，再 `./scripts/install-local-launcher.sh` 安装 `~/bin/oc-switch` 薄包装；任意目录 `oc-switch start` / `stop`（日志 `~/.oc-switch/serve.log`）。
+
 本地开发 Web：`bun run cli -- serve`（API，默认 `127.0.0.1:7420`）+ `bun run --cwd packages/web dev`（默认 `127.0.0.1:5173`）。API token 可持久化于 `~/.oc-switch/token.json`（`oc-switch token rotate`）。
 
 ## 设计与实现
@@ -131,3 +133,4 @@ bun run packages/cli/src/index.ts     # 直接调用 CLI
 | Web UI UX Revamp | `docs/superpowers/specs/2026-06-25-web-ui-ux-revamp-design.md` |
 | 架构优化（草案） | `docs/superpowers/specs/2026-06-26-oc-switch-architecture-optimization-draft.md` |
 | Config Status | `docs/superpowers/specs/2026-06-26-oc-switch-config-status-design.md` |
+| Local Launcher | `docs/superpowers/specs/2026-07-09-oc-switch-local-launcher-design.md` |

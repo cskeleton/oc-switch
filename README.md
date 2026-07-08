@@ -59,6 +59,49 @@ State and backups live under `~/.oc-switch/` (backups in `~/.oc-switch/backups/`
 
 ---
 
+## Local Quick Start / 本机快速启动
+
+One command from any directory to run the Web GUI on a single port (API + static SPA). Requires Bun and a clone of this repo.
+
+任意工作目录一条命令启动 Web 管理界面（单端口同时提供 API 与静态前端）。需已安装 Bun 并克隆本仓库。
+
+```bash
+# From repo root — 在仓库根目录执行
+bun run build
+./scripts/install-local-launcher.sh
+```
+
+Ensure `~/bin` is on your `PATH`. If not, add to your shell profile (e.g. `~/.zshrc`):
+
+确保 `~/bin` 在 `PATH` 中；若否，写入 shell 配置（如 `~/.zshrc`）：
+
+```bash
+export PATH="$HOME/bin:$PATH"
+```
+
+Then:
+
+然后：
+
+```bash
+oc-switch start    # background serve + Web GUI / 后台启动
+oc-switch stop     # stop background process / 停止后台进程
+```
+
+Open http://127.0.0.1:7420. Logs: `~/.oc-switch/serve.log`. Authenticate via the Web login box, or rotate a persisted token with `oc-switch token rotate`.
+
+打开 http://127.0.0.1:7420。日志：`~/.oc-switch/serve.log`。在 Web 登录框输入 token，或执行 `oc-switch token rotate` 生成持久 token。
+
+Re-run `bun run build` after Web UI changes before `oc-switch start`.
+
+修改 Web 前端后须重新 `bun run build`，再执行 `oc-switch start`。
+
+**Development / 开发调试** still uses two terminals (`serve` + `web dev`) — see [Local Web GUI](#local-web-gui--本地-web-界面) below.
+
+日常开发仍用双进程（`serve` + `web dev`）——见下方 [本地 Web 界面](#local-web-gui--本地-web-界面)。
+
+---
+
 ## Local Web GUI / 本地 Web 界面
 
 Web GUI is a Vite SPA that proxies `/api` to the oc-switch REST server.
@@ -125,6 +168,8 @@ oc-switch token rotate
 
 ```bash
 # Server / 服务
+oc-switch start                    # background local launcher / 本机后台启动
+oc-switch stop                     # stop background launcher / 停止后台服务
 oc-switch serve [--port 7420] [--host 127.0.0.1] [--token <secret>]
 oc-switch token rotate
 

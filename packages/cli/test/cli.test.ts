@@ -490,6 +490,31 @@ describe("cli provider sync", () => {
   });
 });
 
+describe("cli start/stop", () => {
+  test("start fails without web dist", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-start-"));
+    tempDirs.push(dir);
+    const emptyDist = mkdtempSync(join(tmpdir(), "oc-switch-empty-dist-"));
+    tempDirs.push(emptyDist);
+    writeFileSync(join(dir, "openclaw.json"), "{}\n");
+    const result = await runCli(["start"], {
+      HOME: dir,
+      OPENCLAW_CONFIG_PATH: join(dir, "openclaw.json"),
+      OC_SWITCH_WEB_DIST: emptyDist
+    });
+    expect(result.code).not.toBe(0);
+    expect(result.stderr + result.stdout).toMatch(/build/i);
+  });
+
+  test("stop with no pid exits 0", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-stop-"));
+    tempDirs.push(dir);
+    const result = await runCli(["stop"], { HOME: dir });
+    expect(result.code).toBe(0);
+    expect(result.stdout + result.stderr).toMatch(/not running|未在运行|No server/i);
+  });
+});
+
 describe("cli serve and token", () => {
   test("serve rejects 0.0.0.0 without token", async () => {
     const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));

@@ -1,11 +1,12 @@
 import { resolveServeToken } from "@oc-switch/core";
-import { createApp } from "@oc-switch/server";
+import { createApp, createStaticAwareFetch } from "@oc-switch/server";
 import type { Command } from "commander";
 import type { CommandContext } from "../command-context";
+import { resolveWebDistDir, webDistReady } from "../web-dist";
 
 export function registerServeCommand(program: Command, context: CommandContext): void {
   program.command("serve")
-    .description("Start REST API server for WebGUI")
+    .description("Start REST API server with optional Web GUI")
     .option("--port <port>", "Listen port", "7420")
     .option("--host <host>", "Bind address", "127.0.0.1")
     .option("--token <secret>", "Bearer token for API auth")
@@ -21,12 +22,16 @@ export function registerServeCommand(program: Command, context: CommandContext):
       }
       const port = Number(options.port);
       const app = createApp({ token, paths, bindAddress: options.host, port });
+      const webDist = webDistReady() ? resolveWebDistDir() : undefined;
+      if (!webDist) {
+        console.warn("Web GUI unavailable: run bun run build (missing packages/web/dist)");
+      }
       Bun.serve({
         port,
         hostname: options.host,
         // gateway restart 可能超过默认 10s
         idleTimeout: 120,
-        fetch: app.fetch
+        fetch: createStaticAwareFetch(app.fetch, webDist)
       });
       console.log(`oc-switch server listening on http://${options.host}:${port}`);
     });
