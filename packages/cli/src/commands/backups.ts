@@ -1,7 +1,7 @@
 import { listBackups, restoreBackupSafely, summarizeConfigDiff } from "@oc-switch/core";
 import type { Command } from "commander";
 import JSON5 from "json5";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { OpenClawConfig } from "@oc-switch/core";
 import type { CommandContext } from "../command-context";
@@ -42,6 +42,9 @@ export function registerBackupCommands(program: Command, context: CommandContext
     if (!latest) throw new Error("No backups found");
     const before = JSON5.parse(readFileSync(join(latest.path, "openclaw.json"), "utf8")) as OpenClawConfig;
     const after = context.readConfig();
-    console.log(JSON.stringify(summarizeConfigDiff(before, after), null, 2));
+    const backupEnvPath = join(latest.path, ".env");
+    const beforeEnv = existsSync(backupEnvPath) ? readFileSync(backupEnvPath, "utf8") : "";
+    const afterEnv = existsSync(paths.envPath) ? readFileSync(paths.envPath, "utf8") : "";
+    console.log(JSON.stringify(summarizeConfigDiff(before, after, { beforeEnv, afterEnv }), null, 2));
   });
 }

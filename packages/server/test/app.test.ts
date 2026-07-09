@@ -1021,7 +1021,26 @@ describe("server write endpoints", () => {
       before: "minimax-portal/MiniMax-M3",
       after: "nvidia/deepseek-ai/deepseek-v4-flash"
     });
+    expect(json.credentialsChanged).toEqual([]);
     expect(JSON.stringify(json)).not.toContain("sk-");
+  });
+
+  test("GET /api/diff includes credential changes from managed env block", async () => {
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, "# oc-switch:start\nNVIDIA_API_KEY=old-secret\n# oc-switch:end\n");
+    const app = createTestApp(ws);
+    await jsonRequest(app, "/api/models/primary", {
+      method: "PUT",
+      body: JSON.stringify({ ref: "nvidia/deepseek-ai/deepseek-v4-flash" })
+    });
+    writeFileSync(ws.paths.envPath, "# oc-switch:start\nNVIDIA_API_KEY=new-secret\n# oc-switch:end\n");
+
+    const { response, json } = await jsonRequest(app, "/api/diff");
+    expect(response.status).toBe(200);
+    expect(json.credentialsChanged).toEqual([
+      { envVar: "NVIDIA_API_KEY", change: "changed", providerId: "nvidia" }
+    ]);
+    expect(JSON.stringify(json)).not.toContain("secret");
   });
 
   test("GET /api/health 返回大小写重复组", async () => {

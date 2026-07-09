@@ -135,6 +135,7 @@ bun run packages/cli/src/index.ts     # 直接调用 CLI
 | Config Status | `docs/superpowers/specs/2026-06-26-oc-switch-config-status-design.md` |
 | Local Launcher | `docs/superpowers/specs/2026-07-09-oc-switch-local-launcher-design.md` |
 | Provider Model Discover | `docs/superpowers/specs/2026-07-09-oc-switch-provider-model-discover-design.md` |
+| Backup Diff Changelog | `docs/superpowers/specs/2026-07-09-oc-switch-backup-diff-changelog-design.md` |
 
 ## Learned User Preferences
 

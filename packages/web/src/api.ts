@@ -92,6 +92,12 @@ export interface BackupEntry {
   pathMatchesActive: boolean;
 }
 
+export interface CredentialDiffItem {
+  envVar: string;
+  providerId?: string;
+  change: "added" | "removed" | "changed";
+}
+
 export interface ConfigDiffSummary {
   providersAdded: string[];
   providersRemoved: string[];
@@ -99,6 +105,7 @@ export interface ConfigDiffSummary {
   modelsEnabled: string[];
   modelsDisabled: string[];
   primaryChanged: { before: string | undefined; after: string | undefined } | null;
+  credentialsChanged: CredentialDiffItem[];
 }
 
 export type CaseDuplicateKind = "provider-duplicate" | "allowlist-drift" | "same-origin-hint" | "primary-split";

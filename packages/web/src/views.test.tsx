@@ -70,7 +70,8 @@ describe("Dashboard", () => {
             providersChanged: [],
             modelsEnabled: ["nvidia/deepseek-ai/deepseek-v4-flash"],
             modelsDisabled: [],
-            primaryChanged: null
+            primaryChanged: null,
+            credentialsChanged: []
           })
         })}
       />
@@ -78,6 +79,7 @@ describe("Dashboard", () => {
 
     expect(await findByText("配置健康")).toBeTruthy();
     expect(await findByText("与最近备份有 1 项差异")).toBeTruthy();
+    expect(await findByText(/启用了模型/)).toBeTruthy();
     expect(await findByText("nvidia/deepseek-ai/deepseek-v4-flash")).toBeTruthy();
   });
 
@@ -681,7 +683,8 @@ describe("ProvidersView", () => {
       providersChanged: [],
       modelsEnabled: ["custom-openai/model-a", "custom-openai/vendor/model-b"],
       modelsDisabled: [],
-      primaryChanged: null
+      primaryChanged: null,
+      credentialsChanged: []
     }));
     const addCustomProvider = mock(async () => ({
       ok: true,
@@ -934,6 +937,7 @@ describe("ProvidersView", () => {
       modelsEnabled: [],
       modelsDisabled: [],
       primaryChanged: null,
+      credentialsChanged: [],
       envPreview: {
         affectedKeys: ["NVIDIA_API_KEY"],
         requiresConfirmation: false,
@@ -991,6 +995,7 @@ describe("ProvidersView", () => {
       modelsEnabled: [],
       modelsDisabled: [],
       primaryChanged: null,
+      credentialsChanged: [],
       envPreview: {
         affectedKeys: ["NVIDIA_API_KEY"],
         requiresConfirmation: false,
@@ -1038,6 +1043,7 @@ describe("ProvidersView", () => {
       modelsEnabled: [],
       modelsDisabled: [],
       primaryChanged: null,
+      credentialsChanged: [],
       envPreview: {
         affectedKeys: ["NVIDIA_API_KEY"],
         requiresConfirmation: true,
@@ -1230,7 +1236,8 @@ describe("PresetsView", () => {
       providersChanged: [],
       modelsEnabled: ["nvidia/deepseek-ai/deepseek-v4-flash"],
       modelsDisabled: [],
-      primaryChanged: null
+      primaryChanged: null,
+      credentialsChanged: []
     }));
     const getPresets = mock(async () => ({
       presets: [{ id: "nvidia", name: "NVIDIA", source: "builtin" as const, tags: [], modelCount: 1 }]
@@ -1340,6 +1347,42 @@ describe("BackupsView", () => {
   });
 });
 
+describe("DiffChangelog", () => {
+  test("renders semantic entries with expand control", async () => {
+    const { findAllByText, findByTestId, findByText } = render(
+      <Dashboard
+        client={mockClient({
+          getStatus: async () => ({
+            ok: true,
+            primaryModel: "a/b",
+            providerCount: 1,
+            providerModelCount: 1,
+            allowlistModelCount: 1
+          }),
+          getDiff: async () => ({
+            providersAdded: ["p1", "p2"],
+            providersRemoved: ["old"],
+            providersChanged: ["changed"],
+            modelsEnabled: ["a/b"],
+            modelsDisabled: ["c/d"],
+            primaryChanged: { before: "x/y", after: "a/b" },
+            credentialsChanged: [
+              { envVar: "NEW_KEY", change: "added", providerId: "p2" },
+              { envVar: "OLD_KEY", change: "removed" }
+            ]
+          })
+        })}
+      />
+    );
+
+    expect(await findByTestId("diff-changelog")).toBeTruthy();
+    expect((await findAllByText(/新增了 Provider/)).length).toBe(2);
+    expect(await findByText(/移除了 Provider/)).toBeTruthy();
+    expect(await findByText(/展开其余 3 项差异/)).toBeTruthy();
+    expect(await findByText(/OLD_KEY/)).toBeTruthy();
+  });
+});
+
 describe("DiffSummary", () => {
   test("renders diff sections", async () => {
     const { findByText } = render(
@@ -1350,7 +1393,8 @@ describe("DiffSummary", () => {
           providersChanged: [],
           modelsEnabled: ["a/b"],
           modelsDisabled: ["c/d"],
-          primaryChanged: { before: "x/y", after: "a/b" }
+          primaryChanged: { before: "x/y", after: "a/b" },
+          credentialsChanged: []
         }}
       />
     );

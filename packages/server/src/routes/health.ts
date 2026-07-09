@@ -9,7 +9,7 @@ import {
 } from "@oc-switch/core";
 import type { Hono } from "hono";
 import JSON5 from "json5";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { OpenClawConfig } from "@oc-switch/core";
 import { readConfig, readEnvContent, type AppRuntime } from "../context";
@@ -52,11 +52,15 @@ export function registerHealthRoutes(app: Hono, runtime: AppRuntime): void {
 
   app.get("/api/diff", (c) => {
     try {
-      const [latest] = listBackups(runtime.currentPaths().stateDir);
+      const paths = runtime.currentPaths();
+      const [latest] = listBackups(paths.stateDir);
       if (!latest) throw new Error("No backups found");
       const before = JSON5.parse(readFileSync(join(latest.path, "openclaw.json"), "utf8")) as OpenClawConfig;
-      const after = readConfig(runtime.currentPaths());
-      return c.json(summarizeConfigDiff(before, after));
+      const after = readConfig(paths);
+      const backupEnvPath = join(latest.path, ".env");
+      const beforeEnv = existsSync(backupEnvPath) ? readFileSync(backupEnvPath, "utf8") : "";
+      const afterEnv = readEnvContent(paths) ?? "";
+      return c.json(summarizeConfigDiff(before, after, { beforeEnv, afterEnv }));
     } catch (error) {
       return jsonError(c, error);
     }

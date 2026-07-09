@@ -28,6 +28,7 @@ export function DiffSummary({ diff }: DiffSummaryProps) {
     diff.providersChanged.length === 0 &&
     diff.modelsEnabled.length === 0 &&
     diff.modelsDisabled.length === 0 &&
+    diff.credentialsChanged.length === 0 &&
     !diff.primaryChanged;
 
   if (empty) {

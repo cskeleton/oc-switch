@@ -1,6 +1,7 @@
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { ApiClient, CaseDuplicateGroup, ConfigDiffSummary, ConfigHealthReport, StatusResponse } from "../api";
+import { countDiffChangelogEntries, DiffChangelog } from "../components/DiffChangelog";
 import { MergeCaseDuplicateDialog } from "../components/MergeCaseDuplicateDialog";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 
@@ -115,31 +116,12 @@ function isConfigDiffSummary(value: unknown): value is ConfigDiffSummary {
     Array.isArray(diff.providersChanged) &&
     Array.isArray(diff.modelsEnabled) &&
     Array.isArray(diff.modelsDisabled) &&
+    Array.isArray(diff.credentialsChanged) &&
     (diff.primaryChanged === null || diff.primaryChanged === undefined || typeof diff.primaryChanged === "object");
 }
 
-function diffCount(diff: ConfigDiffSummary): number {
-  return diff.providersAdded.length +
-    diff.providersRemoved.length +
-    diff.providersChanged.length +
-    diff.modelsEnabled.length +
-    diff.modelsDisabled.length +
-    (diff.primaryChanged ? 1 : 0);
-}
-
-function diffHighlights(diff: ConfigDiffSummary): string[] {
-  return [
-    ...diff.providersAdded,
-    ...diff.providersRemoved,
-    ...diff.providersChanged,
-    ...diff.modelsEnabled,
-    ...diff.modelsDisabled,
-    ...(diff.primaryChanged ? [`${diff.primaryChanged.before ?? "(无)"} -> ${diff.primaryChanged.after ?? "(无)"}`] : [])
-  ].slice(0, 3);
-}
-
 function HealthCard({ diff, unavailable, className }: { diff: ConfigDiffSummary | null; unavailable: boolean; className?: string }) {
-  const count = diff ? diffCount(diff) : 0;
+  const count = diff ? countDiffChangelogEntries(diff) : 0;
   const summary = unavailable
     ? "没有可比较备份"
     : count === 0
@@ -152,16 +134,10 @@ function HealthCard({ diff, unavailable, className }: { diff: ConfigDiffSummary 
         <CardTitle className="text-sm font-medium text-muted-foreground">配置健康</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className={`text-xl font-bold ${count > 0 ? "text-amber-500" : "text-foreground"}`}>
+        <div className={`text-xl font-bold ${count > 0 ? "text-destructive" : "text-foreground"}`}>
           {summary}
         </div>
-        {diff && count > 0 ? (
-          <ul className="mt-3 list-inside list-disc space-y-1 text-sm text-muted-foreground">
-            {diffHighlights(diff).map((item) => (
-              <li key={item} className="break-all">{item}</li>
-            ))}
-          </ul>
-        ) : null}
+        {diff && count > 0 ? <DiffChangelog diff={diff} /> : null}
       </CardContent>
     </Card>
   );
