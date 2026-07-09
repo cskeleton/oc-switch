@@ -707,11 +707,11 @@ describe("ProvidersView", () => {
       ]
     }));
 
-    const { findByLabelText, findByText, getByText, queryByText } = render(
+    const { findByLabelText, findByRole, findByText, getByText, queryByText } = render(
       <ProvidersView client={mockClient({ getProviders, previewCustomProvider, addCustomProvider })} />
     );
 
-    await userEvent.click(await findByText("添加 Provider"));
+    await userEvent.click(await findByRole("button", { name: "添加 Provider" }));
     expect(await findByLabelText("模型 ID 1")).toBeTruthy();
     expect(await findByLabelText("模型 ID 2")).toBeTruthy();
     expect(await findByLabelText("模型 ID 3")).toBeTruthy();
@@ -780,17 +780,136 @@ describe("ProvidersView", () => {
       ]
     }));
 
-    const { findByLabelText, findByText, getByText } = render(
+    const { findByLabelText, findByRole, findByText, getByText } = render(
       <ProvidersView client={mockClient({ getProviders })} />
     );
 
-    await userEvent.click(await findByText("添加 Provider"));
+    await userEvent.click(await findByRole("button", { name: "添加 Provider" }));
     const keyInput = await findByLabelText("API Key", { exact: true }) as HTMLInputElement;
     await userEvent.type(keyInput, "sk-test-custom-secret");
     await userEvent.click(getByText("取消"));
+    expect(await findByText("放弃已填写内容？")).toBeTruthy();
+    await userEvent.click(getByText("确认"));
 
-    await userEvent.click(getByText("添加 Provider"));
+    await userEvent.click(await findByRole("button", { name: "添加 Provider" }));
     expect((await findByLabelText("API Key", { exact: true }) as HTMLInputElement).value).toBe("");
+  });
+
+  test("custom provider dialog blocks escape close and only closes by cancel flow", async () => {
+    const getProviders = mock(async () => ({
+      providers: [
+        providerSummary({
+          id: "nvidia",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          modelCount: 2
+        })
+      ]
+    }));
+
+    const { findByLabelText, findByRole, findByText, queryByText, getByText } = render(
+      <ProvidersView client={mockClient({ getProviders })} />
+    );
+
+    await userEvent.click(await findByRole("button", { name: "添加 Provider" }));
+    await userEvent.type(await findByLabelText("供应商名称"), "Escape Test");
+    await userEvent.keyboard("{Escape}");
+    expect(queryByText("放弃已填写内容？")).toBeNull();
+    expect(await findByText("填写自定义 Provider 信息，确认前会预览配置差异。")).toBeTruthy();
+    await userEvent.click(getByText("取消"));
+    expect(await findByText("放弃已填写内容？")).toBeTruthy();
+  });
+
+  test("custom provider dialog closes directly when empty form is cancelled", async () => {
+    const getProviders = mock(async () => ({
+      providers: [
+        providerSummary({
+          id: "nvidia",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          modelCount: 2
+        })
+      ]
+    }));
+
+    const { findByRole, findByText, queryByText, getByText } = render(
+      <ProvidersView client={mockClient({ getProviders })} />
+    );
+
+    await userEvent.click(await findByRole("button", { name: "添加 Provider" }));
+    expect(await findByText("填写自定义 Provider 信息，确认前会预览配置差异。")).toBeTruthy();
+    await userEvent.click(getByText("取消"));
+    await waitFor(() => expect(queryByText("填写自定义 Provider 信息，确认前会预览配置差异。")).toBeNull());
+    expect(queryByText("放弃已填写内容？")).toBeNull();
+  });
+
+  test("custom provider model rows support deleting empty rows", async () => {
+    const getProviders = mock(async () => ({
+      providers: [
+        providerSummary({
+          id: "nvidia",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          modelCount: 2
+        })
+      ]
+    }));
+
+    const { findByLabelText, findByRole, queryByLabelText } = render(
+      <ProvidersView client={mockClient({ getProviders })} />
+    );
+
+    await userEvent.click(await findByRole("button", { name: "添加 Provider" }));
+    expect(await findByLabelText("模型 ID 1")).toBeTruthy();
+    expect(await findByLabelText("模型 ID 3")).toBeTruthy();
+    await userEvent.click(await findByLabelText("删除模型行 1"));
+    expect(queryByLabelText("模型 ID 3")).toBeNull();
+    expect(await findByLabelText("模型 ID 2")).toBeTruthy();
+    await userEvent.click(await findByLabelText("添加模型行"));
+    expect(await findByLabelText("模型 ID 3")).toBeTruthy();
+  });
+
+  test("custom provider discover preview merges deduplicated models and fills empty rows first", async () => {
+    const discoverProviderPreview = mock(async () => ({
+      ok: true,
+      providerId: "preview",
+      remoteModels: [
+        { id: "model-a", name: "Model A" },
+        { id: "model-b", name: "Model B" }
+      ],
+      alreadyAddedIds: ["model-a"],
+      truncated: false
+    }));
+    const getProviders = mock(async () => ({
+      providers: [
+        providerSummary({
+          id: "nvidia",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          modelCount: 2
+        })
+      ]
+    }));
+    const { findByLabelText, findByRole, getByText } = render(
+      <ProvidersView client={mockClient({ getProviders, discoverProviderPreview })} />
+    );
+
+    await userEvent.click(await findByRole("button", { name: "添加 Provider" }));
+    await userEvent.type(await findByLabelText("请求地址"), "https://api.custom.example");
+    await userEvent.type(await findByLabelText("API Key", { exact: true }), "sk-custom-preview");
+    await userEvent.type(await findByLabelText("模型 ID 1"), "model-a");
+    await userEvent.click(await findByLabelText("删除模型行 2"));
+    await userEvent.click(await findByLabelText("发现模型"));
+    await userEvent.click(getByText("开始发现"));
+    expect(discoverProviderPreview).toHaveBeenCalledWith({
+      api: "openai-completions",
+      baseUrl: "https://api.custom.example",
+      apiKey: "sk-custom-preview",
+      isFullUrl: false,
+      alreadyAddedIds: ["model-a"]
+    });
+    await userEvent.click(await findByLabelText("选择发现模型 model-b"));
+    await userEvent.click(getByText("回填到模型列表"));
+
+    expect((await findByLabelText("模型 ID 2") as HTMLInputElement).value).toBe("model-b");
+    expect((await findByLabelText("模型名称 2") as HTMLInputElement).value).toBe("Model B");
+    expect((await findByLabelText("模型 ID 1") as HTMLInputElement).value).toBe("model-a");
   });
 
   test("edits provider base URL and API key without rendering the key", async () => {

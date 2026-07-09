@@ -128,6 +128,13 @@ test("discover 与 batch-add/remove 使用正确路径与 JSON body", async () =
   });
 
   await client.discoverProvider("nvidia");
+  await client.discoverProviderPreview({
+    api: "openai-completions",
+    baseUrl: "https://preview.example.com",
+    apiKey: "preview-secret",
+    isFullUrl: false,
+    alreadyAddedIds: ["openai/gpt-4o"]
+  });
   await client.syncProvider("nvidia");
   await client.batchAddProviderModels("nvidia", {
     models: [{ id: "openai/gpt-4o", name: "GPT-4o" }],
@@ -138,15 +145,24 @@ test("discover 与 batch-add/remove 使用正确路径与 JSON body", async () =
 
   expect(calls[0]!.url).toBe("http://localhost:7420/api/providers/nvidia/discover");
   expect(calls[0]!.init.method).toBe("POST");
-  expect(calls[1]!.url).toBe("http://localhost:7420/api/providers/nvidia/discover");
-  expect(calls[2]!.url).toBe("http://localhost:7420/api/providers/nvidia/models/batch-add");
-  expect(JSON.parse(String(calls[2]!.init.body))).toEqual({
+  expect(calls[1]!.url).toBe("http://localhost:7420/api/providers/discover-preview");
+  expect(calls[1]!.init.method).toBe("POST");
+  expect(JSON.parse(String(calls[1]!.init.body))).toEqual({
+    api: "openai-completions",
+    baseUrl: "https://preview.example.com",
+    apiKey: "preview-secret",
+    isFullUrl: false,
+    alreadyAddedIds: ["openai/gpt-4o"]
+  });
+  expect(calls[2]!.url).toBe("http://localhost:7420/api/providers/nvidia/discover");
+  expect(calls[3]!.url).toBe("http://localhost:7420/api/providers/nvidia/models/batch-add");
+  expect(JSON.parse(String(calls[3]!.init.body))).toEqual({
     models: [{ id: "openai/gpt-4o", name: "GPT-4o" }],
     enable: true
   });
-  expect(calls[3]!.url).toBe("http://localhost:7420/api/providers/nvidia/models/batch-remove");
-  expect(JSON.parse(String(calls[3]!.init.body))).toEqual({ modelIds: ["openai/gpt-4o"] });
-  expect(JSON.parse(String(calls[4]!.init.body))).toEqual({ keepEnabledOnly: true });
+  expect(calls[4]!.url).toBe("http://localhost:7420/api/providers/nvidia/models/batch-remove");
+  expect(JSON.parse(String(calls[4]!.init.body))).toEqual({ modelIds: ["openai/gpt-4o"] });
+  expect(JSON.parse(String(calls[5]!.init.body))).toEqual({ keepEnabledOnly: true });
 });
 
 test("getConfigStatus 请求 /api/config-status 并携带 Bearer auth", async () => {

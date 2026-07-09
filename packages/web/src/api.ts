@@ -234,6 +234,15 @@ export interface ProviderDiscoverResponse {
   unsupportedReason?: string | null;
 }
 
+/** POST /api/providers/discover-preview 请求体（添加前临时发现） */
+export interface ProviderDiscoverPreviewInput {
+  api: ApiType;
+  baseUrl: string;
+  apiKey: string;
+  isFullUrl?: boolean;
+  alreadyAddedIds?: string[];
+}
+
 /** POST /api/providers/:id/models/batch-add 请求体 */
 export interface BatchAddProviderModelsInput {
   models: Array<{ id: string; name?: string }>;
@@ -411,6 +420,12 @@ export function createApiClient(options: ApiClientOptions) {
     /** 发现远端模型目录（只读，不写盘） */
     discoverProvider: (id: string) =>
       request<ProviderDiscoverResponse>(`/api/providers/${id}/discover`, { method: "POST" }),
+    /** 添加 Provider 前按表单凭证临时发现模型（只读，不写盘） */
+    discoverProviderPreview: (body: ProviderDiscoverPreviewInput) =>
+      request<ProviderDiscoverResponse>("/api/providers/discover-preview", {
+        method: "POST",
+        body: JSON.stringify(body)
+      }),
     /** @deprecated 与 discoverProvider 相同；旧 sync 全量写入语义已移除 */
     syncProvider: (id: string) =>
       request<ProviderDiscoverResponse>(`/api/providers/${id}/discover`, { method: "POST" }),

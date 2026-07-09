@@ -132,6 +132,39 @@
 - `google-generative-ai`：`ok: false`，带 `unsupportedReason`，`remoteModels: []`（与现有 sync unsupported 响应风格一致）
 - 旧 `POST /api/providers/:id/sync`：**移除全量写入语义**。实现时改为 `discover` 的别名（相同响应），并在帮助/文档标明 breaking change；不得再无参全量 `applySyncedModels`。
 
+### 6.1A 添加前临时发现（ephemeral discover）
+
+`POST /api/providers/discover-preview`
+
+请求体（用于「添加 Provider」弹窗）：
+
+```json
+{
+  "api": "openai-completions",
+  "baseUrl": "https://api.example.com",
+  "apiKey": "sk-...",
+  "isFullUrl": false,
+  "alreadyAddedIds": ["model-a"]
+}
+```
+
+规则：
+
+- 仅用于尚未入库 Provider 的临时发现；凭表单 `api` / `baseUrl` / `apiKey` 发起只读拉取
+- `isFullUrl=true` 时按输入 `baseUrl` 原样拼接 discover endpoint；`isFullUrl=false` 时沿用对应 API 的 baseUrl 归一化（如 OpenAI 兼容补 `/v1`）
+- 响应形状与 §6.1 对齐（`remoteModels`、`alreadyAddedIds`、`truncated`、`unsupportedReason`）
+- `google-generative-ai` 保持 unsupported（与 §8.3 一致）
+- **不读取、不写入** `openclaw.json` / `.env`，**不创建备份**
+- 结果仅用于会话内勾选，不持久化缓存；关闭弹窗即丢弃
+- 本接口自身不做 batch-add；真正写盘仍走 custom 提交或 §6.2 batch-add
+
+后端实现契约（用于本规格对应实现）：
+
+- core 提供只读能力：`discoverProviderModelsFromCredentials({ api, baseUrl, apiKey, isFullUrl?, alreadyAddedIds? }, options?)`
+- server `POST /api/providers/discover-preview` 必须校验 `api` / `baseUrl` / 非空 `apiKey`，允许可选 `alreadyAddedIds`
+- 响应语义与 §6.1 保持一致：`remoteModels`、`alreadyAddedIds`、`truncated`、`unsupportedReason`、`truncationReason`
+- 该路径复用现有 OpenAI / Anthropic discover adapter 与 `unsupported/truncated` 语义，不新增独立远端解析分支；但 endpoint 构造需显式尊重 `isFullUrl`
+
 ### 6.2 按需添加
 
 `POST /api/providers/:id/models/batch-add`
@@ -233,6 +266,8 @@
 - 提交时 body 使用 §6.2 的 `models: [{ id, name? }]`，把会话内勾选行的 `name` 一并带上
 - 若 `已添加数 + 新选中 > 20`：禁用提交并提示剩余可添加名额
 - 远端列表仅会话内持有，关闭弹窗丢弃；因此**不能**依赖服务端在 batch-add 时重新 discover
+- 添加 Provider 弹窗内的 ephemeral discover 复用同一展示语义，但确认后仅回填本地表单行，不直接写盘
+- 添加 Provider 弹窗内的 ephemeral discover 在回填时按 `id` 去重，优先填现有空行，再追加新行
 
 ### 9.3 模型弹窗（本地）
 
@@ -252,6 +287,7 @@
 | 场景 | 行为 |
 |------|------|
 | discover HTTP/鉴权失败 | 明确错误；不写配置 |
+| discover-preview（ephemeral）缺少必填字段或 key 为空 | 400；不写配置、不建备份 |
 | Google / 未知 unsupported API | `unsupportedReason`；引导手动添加 |
 | Anthropic 响应无法解析 | 报错；不回退 OpenAI 解析 |
 | batch-add 超限 | 400；整单拒绝 |
@@ -281,6 +317,7 @@
 ## 14. 验收标准
 
 - [ ] 发现 OpenRouter 类巨型列表时，未勾选模型不会出现在 `openclaw.json`
+- [ ] 添加 Provider 弹窗可基于表单凭证执行 ephemeral discover；该流程不写盘、不备份
 - [ ] 勾选添加后仅选中项进入 `provider.models`；discover 带来的 `name` 经 batch-add 保留；默认不进 allowlist；勾选「同时启用」则进入
 - [ ] 每 Provider 目录总数不可超过 20；`batch-add`、单条 `model add`、`add-custom`、import 等写入入口均不可绕过；存量超过 20 可删不可增
 - [ ] 「只保留已启用」与多选删除可用；主模型永远保留；主模型已不在目录时拒绝并提示修复

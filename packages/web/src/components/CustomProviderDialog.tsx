@@ -1,6 +1,6 @@
-import { Plus } from "lucide-react";
+import { Plus, Search, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { ApiClient, ApiType, ConfigDiffSummary, CustomProviderInput, CustomProviderModelInput, EnvPreview, EnvWriteVerification, GatewayEnvSyncResult } from "../api";
+import type { ApiClient, ApiType, ConfigDiffSummary, CustomProviderInput, CustomProviderModelInput, EnvPreview, EnvWriteVerification, GatewayEnvSyncResult, RemoteModelInfo } from "../api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EnvMigrationConfirmDialog } from "./EnvMigrationConfirmDialog";
 import { DiffSummary } from "./DiffSummary";
@@ -26,13 +26,16 @@ const emptyModelRows = (): ModelRow[] => [
   { id: "", name: "", alias: "" },
   { id: "", name: "", alias: "" }
 ];
+const MAX_PROVIDER_MODELS = 20;
 
 function providerIdFromName(name: string): string {
   return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
 function envNameFromProviderId(providerId: string): string {
-  return `${providerId.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").toUpperCase()}_API_KEY`;
+  const normalized = providerId.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").toUpperCase();
+  if (normalized.length === 0) return "";
+  return `${normalized}_API_KEY`;
 }
 
 function modelsFromRows(rows: ModelRow[]): CustomProviderModelInput[] {
@@ -56,6 +59,68 @@ function updateModelRow(rows: ModelRow[], index: number, key: keyof ModelRow, va
   );
 }
 
+function isRowEmpty(row: ModelRow): boolean {
+  return row.id.trim().length === 0 && row.name.trim().length === 0 && row.alias.trim().length === 0;
+}
+
+function isFormDirty(state: {
+  displayName: string;
+  providerId: string;
+  apiKeyEnv: string;
+  notes: string;
+  websiteUrl: string;
+  api: ApiType;
+  baseUrl: string;
+  apiKey: string;
+  isFullUrl: boolean;
+  enableAllModels: boolean;
+  modelRows: ModelRow[];
+}): boolean {
+  if (state.displayName.trim()) return true;
+  if (state.providerId.trim()) return true;
+  if (state.apiKeyEnv.trim()) return true;
+  if (state.notes.trim()) return true;
+  if (state.websiteUrl.trim()) return true;
+  if (state.baseUrl.trim()) return true;
+  if (state.apiKey.trim()) return true;
+  if (state.api !== "openai-completions") return true;
+  if (state.isFullUrl) return true;
+  if (!state.enableAllModels) return true;
+  return state.modelRows.some((row) => !isRowEmpty(row));
+}
+
+function mergeDiscoveredModelsIntoRows(rows: ModelRow[], selected: RemoteModelInfo[]): ModelRow[] {
+  const existingIds = new Set(
+    rows
+      .map((row) => row.id.trim())
+      .filter((id) => id.length > 0)
+  );
+  const toMerge = selected.filter((model) => {
+    const trimmedId = model.id.trim();
+    if (!trimmedId || existingIds.has(trimmedId)) return false;
+    existingIds.add(trimmedId);
+    return true;
+  });
+  if (toMerge.length === 0) return rows;
+  const nextRows = rows.map((row) => ({ ...row }));
+  const emptyIndices: number[] = [];
+  for (let i = 0; i < nextRows.length; i += 1) {
+    const currentRow = nextRows[i];
+    if (currentRow && isRowEmpty(currentRow)) emptyIndices.push(i);
+  }
+  for (const model of toMerge) {
+    const nextModelRow: ModelRow = {
+      id: model.id,
+      name: model.name ?? "",
+      alias: ""
+    };
+    const targetIndex = emptyIndices.shift();
+    if (targetIndex !== undefined) nextRows[targetIndex] = nextModelRow;
+    else nextRows.push(nextModelRow);
+  }
+  return nextRows;
+}
+
 /** 手工添加自定义 Provider 的模态表单 */
 export function CustomProviderDialog({ open, client, onCancel, onSaved }: CustomProviderDialogProps) {
   const [displayName, setDisplayName] = useState("");
@@ -74,7 +139,9 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
   const [diff, setDiff] = useState<ConfigDiffSummary | null>(null);
   const [envPreview, setEnvPreview] = useState<EnvPreview | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [confirmingClose, setConfirmingClose] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [discoverOpen, setDiscoverOpen] = useState(false);
 
   useEffect(() => {
     if (!providerIdTouched) setProviderId(providerIdFromName(displayName));
@@ -101,12 +168,34 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
     setDiff(null);
     setEnvPreview(null);
     setConfirming(false);
+    setConfirmingClose(false);
+    setDiscoverOpen(false);
     setError(null);
   }
 
   function cancel() {
     resetForm();
     onCancel();
+  }
+
+  function requestClose() {
+    if (isFormDirty({
+      displayName,
+      providerId,
+      apiKeyEnv,
+      notes,
+      websiteUrl,
+      api,
+      baseUrl,
+      apiKey,
+      isFullUrl,
+      enableAllModels,
+      modelRows
+    })) {
+      setConfirmingClose(true);
+      return;
+    }
+    cancel();
   }
 
   const input = (): CustomProviderInput => {
@@ -166,8 +255,13 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
 
   return (
     <>
-      <Dialog open={open} onOpenChange={(val) => { if (!val) cancel(); }}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+      <Dialog open={open} onOpenChange={() => undefined}>
+        <DialogContent
+          className="max-w-4xl max-h-[90vh] overflow-y-auto"
+          onEscapeKeyDown={(event) => event.preventDefault()}
+          onPointerDownOutside={(event) => event.preventDefault()}
+          onInteractOutside={(event) => event.preventDefault()}
+        >
           <DialogHeader className="flex-row items-center gap-3">
             <div className="flex h-14 w-14 items-center justify-center rounded-lg border border-border bg-muted text-xl font-semibold text-muted-foreground shrink-0">
               {(providerId || "P").slice(0, 1).toUpperCase()}
@@ -229,24 +323,35 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
             <div className="grid gap-2 md:col-span-2 mt-2">
               <div className="flex items-center justify-between gap-3">
                 <Label>模型列表</Label>
-                <button
-                  type="button"
-                  onClick={() => setModelRows((rows) => [...rows, { id: "", name: "", alias: "" }])}
-                  aria-label="添加模型行"
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-input bg-background hover:bg-accent hover:text-accent-foreground"
-                >
-                  <Plus className="h-4 w-4" />
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setDiscoverOpen(true)}
+                    aria-label="发现模型"
+                    className="inline-flex items-center justify-center rounded-md border border-input bg-background px-3 py-1 text-xs hover:bg-accent hover:text-accent-foreground"
+                  >
+                    发现模型
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setModelRows((rows) => [...rows, { id: "", name: "", alias: "" }])}
+                    aria-label="添加模型行"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-input bg-background hover:bg-accent hover:text-accent-foreground"
+                  >
+                    <Plus className="h-4 w-4" />
+                  </button>
+                </div>
               </div>
               <div className="overflow-x-auto rounded-md border border-border">
-                <div className="grid min-w-[720px] grid-cols-[minmax(220px,1.4fr)_minmax(180px,1fr)_minmax(160px,0.8fr)] border-b border-border bg-muted/50 px-3 py-2 text-xs font-medium text-muted-foreground">
+                <div className="grid min-w-[760px] grid-cols-[minmax(220px,1.4fr)_minmax(180px,1fr)_minmax(160px,0.8fr)_72px] border-b border-border bg-muted/50 px-3 py-2 text-xs font-medium text-muted-foreground">
                   <div>模型 ID</div>
                   <div>模型名称</div>
                   <div>Alias</div>
+                  <div className="text-center">操作</div>
                 </div>
                 <div className="divide-y divide-border">
                   {modelRows.map((row, index) => (
-                    <div key={index} className="grid min-w-[720px] grid-cols-[minmax(220px,1.4fr)_minmax(180px,1fr)_minmax(160px,0.8fr)] gap-3 px-3 py-2">
+                    <div key={index} className="grid min-w-[760px] grid-cols-[minmax(220px,1.4fr)_minmax(180px,1fr)_minmax(160px,0.8fr)_72px] gap-3 px-3 py-2">
                       <Input
                         aria-label={`模型 ID ${index + 1}`}
                         value={row.id}
@@ -265,6 +370,16 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
                         onChange={(event) => setModelRows((rows) => updateModelRow(rows, index, "alias", event.target.value))}
                         placeholder="a"
                       />
+                      <div className="flex items-center justify-center">
+                        <button
+                          type="button"
+                          aria-label={`删除模型行 ${index + 1}`}
+                          onClick={() => setModelRows((rows) => rows.filter((_, rowIndex) => rowIndex !== index))}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-input bg-background hover:bg-accent hover:text-accent-foreground"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -311,7 +426,7 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
           </div>
 
           <DialogFooter>
-            <button type="button" onClick={cancel} className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground">
+            <button type="button" onClick={requestClose} className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground">
               取消
             </button>
             <button type="button" onClick={() => void preview()} className="inline-flex items-center gap-1 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
@@ -341,6 +456,226 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
           onConfirm={() => void confirm()}
         />
       )}
+      <ConfirmDialog
+        open={confirmingClose}
+        title="放弃已填写内容？"
+        message="取消后表单数据将被清除。"
+        onCancel={() => setConfirmingClose(false)}
+        onConfirm={() => {
+          setConfirmingClose(false);
+          cancel();
+        }}
+      />
+      <CustomProviderDiscoverDialog
+        open={discoverOpen}
+        api={api}
+        baseUrl={baseUrl}
+        apiKey={apiKey}
+        isFullUrl={isFullUrl}
+        alreadyAddedIds={modelsFromRows(modelRows).map((row) => row.id)}
+        currentModelCount={modelsFromRows(modelRows).length}
+        client={client}
+        onCancel={() => setDiscoverOpen(false)}
+        onConfirm={(selectedModels) => {
+          setModelRows((rows) => mergeDiscoveredModelsIntoRows(rows, selectedModels));
+          setDiscoverOpen(false);
+        }}
+      />
     </>
+  );
+}
+
+interface CustomProviderDiscoverDialogProps {
+  open: boolean;
+  api: ApiType;
+  baseUrl: string;
+  apiKey: string;
+  isFullUrl: boolean;
+  alreadyAddedIds: string[];
+  currentModelCount: number;
+  client: ApiClient;
+  onCancel: () => void;
+  onConfirm: (selectedModels: RemoteModelInfo[]) => void;
+}
+
+function CustomProviderDiscoverDialog({
+  open,
+  api,
+  baseUrl,
+  apiKey,
+  isFullUrl,
+  alreadyAddedIds,
+  currentModelCount,
+  client,
+  onCancel,
+  onConfirm
+}: CustomProviderDiscoverDialogProps) {
+  const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [remoteModels, setRemoteModels] = useState<RemoteModelInfo[]>([]);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState("");
+  const [unsupportedReason, setUnsupportedReason] = useState<string | null>(null);
+
+  function reset() {
+    setLoading(false);
+    setSubmitting(false);
+    setError(null);
+    setRemoteModels([]);
+    setSelectedIds(new Set());
+    setSearch("");
+    setUnsupportedReason(null);
+  }
+
+  useEffect(() => {
+    if (!open) {
+      reset();
+      return;
+    }
+    setError(null);
+  }, [open]);
+
+  async function loadDiscover() {
+    if (!open) return;
+    if (!baseUrl.trim() || !apiKey.trim()) {
+      setError("请先填写请求地址与 API Key，再执行发现模型。");
+      return;
+    }
+    if (api === "google-generative-ai") {
+      setUnsupportedReason("google-generative-ai 暂不支持自动发现，请手动填写模型。");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    setUnsupportedReason(null);
+    try {
+      const result = await client.discoverProviderPreview({
+        api,
+        baseUrl,
+        apiKey,
+        isFullUrl,
+        alreadyAddedIds
+      });
+      setRemoteModels(result.remoteModels);
+      if (result.unsupportedReason) setUnsupportedReason(result.unsupportedReason);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "发现模型失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const filteredModels = remoteModels.filter((model) => {
+    const query = search.trim().toLowerCase();
+    if (!query) return true;
+    return model.id.toLowerCase().includes(query) || (model.name?.toLowerCase().includes(query) ?? false);
+  });
+  const selectedCount = selectedIds.size;
+  const remainingSlots = Math.max(0, MAX_PROVIDER_MODELS - currentModelCount);
+  const overCapacity = currentModelCount + selectedCount > MAX_PROVIDER_MODELS;
+
+  function toggleSelect(id: string) {
+    if (alreadyAddedIds.includes(id)) return;
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(nextOpen) => { if (!nextOpen) onCancel(); }}>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+        <DialogHeader>
+          <DialogTitle>发现模型</DialogTitle>
+          <DialogDescription>基于当前表单凭证临时拉取模型，勾选后仅回填表单，不会写入配置。</DialogDescription>
+        </DialogHeader>
+        {error ? <p className="text-sm font-medium text-destructive">{error}</p> : null}
+        {unsupportedReason ? <p className="text-sm text-amber-600 dark:text-amber-400">{unsupportedReason}</p> : null}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void loadDiscover()}
+            disabled={loading}
+            className="inline-flex items-center justify-center rounded-md border border-input bg-background px-3 py-1 text-sm hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
+          >
+            {loading ? "发现中…" : "开始发现"}
+          </button>
+          <div className="relative flex-1">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              aria-label="搜索发现模型"
+              placeholder="搜索 id 或名称…"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              className="pl-8"
+            />
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-border">
+          {filteredModels.length === 0 ? (
+            <p className="p-4 text-sm text-muted-foreground">{loading ? "正在发现远端模型…" : "暂无可选模型"}</p>
+          ) : (
+            <ul className="divide-y divide-border">
+              {filteredModels.map((model) => {
+                const added = alreadyAddedIds.includes(model.id);
+                const checked = added || selectedIds.has(model.id);
+                return (
+                  <li key={model.id}>
+                    <label className={`flex items-start gap-3 px-3 py-2 text-sm ${added ? "cursor-not-allowed opacity-60" : "hover:bg-accent/50"}`}>
+                      <input
+                        type="checkbox"
+                        aria-label={`选择发现模型 ${model.id}`}
+                        checked={checked}
+                        disabled={added}
+                        onChange={() => toggleSelect(model.id)}
+                        className="mt-0.5"
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="break-all font-medium">{model.id}</span>
+                        {model.name ? <span className="ml-2 text-muted-foreground">{model.name}</span> : null}
+                        {added ? <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">已在表单</span> : null}
+                      </span>
+                    </label>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+        <DialogFooter className="flex-col items-stretch gap-2 sm:flex-col">
+          <p className="text-xs text-muted-foreground">
+            已选 {selectedCount} 个，当前已填 {currentModelCount} 个，最多 {MAX_PROVIDER_MODELS} 个
+            {overCapacity ? "（已超出上限）" : ""}
+          </p>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              disabled={selectedCount === 0 || overCapacity || submitting}
+              onClick={() => {
+                setSubmitting(true);
+                const selectedModels = remoteModels.filter((model) => selectedIds.has(model.id));
+                onConfirm(selectedModels);
+                setSubmitting(false);
+              }}
+              className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
+            >
+              回填到模型列表
+            </button>
+          </div>
+          <p className="text-xs text-muted-foreground">本流程仅回填表单，不写盘；最终写入仍以“预览并添加”提交为准。</p>
+          <p className="text-xs text-muted-foreground">本次最多还可新增 {remainingSlots} 个模型。</p>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

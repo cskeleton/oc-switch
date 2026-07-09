@@ -87,6 +87,11 @@ Providers 页面顶部新增“添加 Provider”按钮。
 
 模型列表使用表格式输入。每行包含 `id`、可选 `name`、可选 `alias`。默认展示 3 行空输入，点击加号追加更多行。
 
+交互约束：
+
+- 每行均提供删除操作，可删除空行或任意已填写行
+- 允许删到 0 行；提交时仍按“至少 1 个有效 `id`”校验
+
 解析规则：
 
 - 仅提交 `id` 非空的行
@@ -351,14 +356,38 @@ CLI 采用同一 core 操作与事务写入路径。
 ### 9.2 交互流程
 
 1. 用户填写基础信息
-2. 点击“预览并添加”
-3. 前端调用 `/api/providers/custom/preview`
-4. 页面显示 `DiffSummary`
-5. 用户确认
-6. 前端调用 `/api/providers/custom`
-7. 成功后清空 API Key、关闭表单、刷新 Providers 和 Dashboard；成功提示基于响应 `envWrite.verified` 与可选 `maskedValue`（见 Path & Env 规格 §7.1），不得仅凭前端输入展示「已写入」
+2. 在模型列表区可点击“发现模型”（ephemeral discover，见 §9.4），按勾选结果回填到表单行
+3. 点击“预览并添加”
+4. 前端调用 `/api/providers/custom/preview`
+5. 页面显示 `DiffSummary`
+6. 用户确认
+7. 前端调用 `/api/providers/custom`
+8. 成功后清空 API Key、关闭表单、刷新 Providers 和 Dashboard；成功提示基于响应 `envWrite.verified` 与可选 `maskedValue`（见 Path & Env 规格 §7.1），不得仅凭前端输入展示「已写入」
 
-### 9.3 表单默认值
+### 9.3 弹窗关闭守卫
+
+- 添加 Provider 弹窗禁止遮罩点击关闭与 `Esc` 关闭
+- 仅允许通过底部「取消」按钮触发关闭流程
+- 取消时若表单无脏数据：直接关闭并重置表单
+- 取消时若存在脏数据：必须弹二次确认；用户确认后才关闭并清空
+- 脏数据判定应覆盖基础字段、API Key、高级选项与模型行变更；仅初始空白行不算脏
+- 脏数据判定基准为“初始快照”而非“字段是否非空”：空表单初始态点击取消必须直接关闭，不得因自动派生值（如 `apiKeyEnv` 默认值）被误判为脏
+
+### 9.4 添加前发现模型（ephemeral discover）
+
+用途：在 Provider 尚未写入配置前，基于当前表单 `api` / `baseUrl` / `apiKey` 临时拉取远端模型，勾选后仅回填表单模型行。
+
+约束：
+
+- discover 请求为只读行为，不写 `openclaw.json`、不写 `.env`、不创建备份
+- discover 结果仅存在会话内；关闭弹窗即丢弃
+- 勾选回填时按模型 `id` 去重；已存在 `id` 跳过
+- 勾选回填时优先填充现有空白模型行，再追加新行，避免无意义扩容表单行数
+- 勾选回填需遵守 `MAX_PROVIDER_MODELS = 20`（最终提交前后均由 core 再次校验）
+- 该流程遵守「discover 默认不写盘」规则；真正写盘仅发生在用户确认提交 custom provider 后
+- `isFullUrl=true` 时 discover 请求地址按用户输入原样使用；`isFullUrl=false` 时才按 API 类型应用补 `/v1` 等归一化规则（与最终 custom 提交语义一致）
+
+### 9.5 表单默认值
 
 - `API 类型` 默认 `openai-completions`
 - `完整 URL` 默认关闭
@@ -408,6 +437,11 @@ CLI 采用同一 core 操作与事务写入路径。
 - 填写表单后调用 preview endpoint
 - 确认后调用 commit endpoint，API Key 不渲染
 - Provider ID 与 env 名自动生成逻辑可被用户覆盖
+- 遮罩点击与 `Esc` 不会关闭弹窗；仅“取消”可触发关闭
+- 空表单点击“取消”直接关闭，不出现二次确认
+- 脏表单点击“取消”会出现二次确认
+- 模型行支持删除空行与任意行
+- 添加前 discover 仅回填表单，不触发任何配置写入或备份
 
 ### 11.5 E2E
 

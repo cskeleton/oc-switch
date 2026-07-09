@@ -592,6 +592,87 @@ describe("server write endpoints", () => {
     expect((backupsJson.backups as unknown[]).length).toBe(0);
   });
 
+  test("POST /api/providers/discover-preview discovers with form credentials without writes", async () => {
+    const ws = workspace();
+    const calls: Array<{ url: string; headers: Headers }> = [];
+    const app = createTestApp(ws, async (input, init) => {
+      calls.push({ url: String(input), headers: new Headers(init?.headers) });
+      return new Response(
+        JSON.stringify({
+          data: [{ id: "remote-preview-a", name: "Remote Preview A" }, { id: "remote-preview-b" }]
+        }),
+        { headers: { "content-type": "application/json" } }
+      );
+    });
+    const beforeConfig = readFileSync(ws.paths.openclawPath, "utf8");
+    const beforeEnv = existsSync(ws.paths.envPath) ? readFileSync(ws.paths.envPath, "utf8") : "";
+    const { response, json } = await jsonRequest(app, "/api/providers/discover-preview", {
+      method: "POST",
+      body: JSON.stringify({
+        api: "openai-completions",
+        baseUrl: "https://preview.example.com",
+        apiKey: "preview-secret",
+        alreadyAddedIds: ["remote-preview-b", "remote-preview-c"]
+      })
+    });
+    expect(response.status).toBe(200);
+    expect(calls[0]?.url).toBe("https://preview.example.com/v1/models");
+    expect(calls[0]?.headers.get("authorization")).toBe("Bearer preview-secret");
+    expect(json).toMatchObject({
+      ok: true,
+      remoteModels: [{ id: "remote-preview-a", name: "Remote Preview A" }, { id: "remote-preview-b" }],
+      alreadyAddedIds: ["remote-preview-b"],
+      truncated: false
+    });
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(beforeConfig);
+    const afterEnv = existsSync(ws.paths.envPath) ? readFileSync(ws.paths.envPath, "utf8") : "";
+    expect(afterEnv).toBe(beforeEnv);
+    const { json: backupsJson } = await jsonRequest(app, "/api/backups");
+    expect((backupsJson.backups as unknown[]).length).toBe(0);
+  });
+
+  test("POST /api/providers/discover-preview respects isFullUrl baseUrl semantics", async () => {
+    const ws = workspace();
+    const calls: string[] = [];
+    const app = createTestApp(ws, async (input) => {
+      calls.push(String(input));
+      return new Response(
+        JSON.stringify({
+          data: [{ id: "remote-preview-a" }]
+        }),
+        { headers: { "content-type": "application/json" } }
+      );
+    });
+
+    const { response } = await jsonRequest(app, "/api/providers/discover-preview", {
+      method: "POST",
+      body: JSON.stringify({
+        api: "openai-completions",
+        baseUrl: "https://preview.example.com/custom-prefix",
+        apiKey: "preview-secret",
+        isFullUrl: true
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect(calls[0]).toBe("https://preview.example.com/custom-prefix/models");
+  });
+
+  test("POST /api/providers/discover-preview rejects missing apiKey", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+    const { response, json } = await jsonRequest(app, "/api/providers/discover-preview", {
+      method: "POST",
+      body: JSON.stringify({
+        api: "openai-completions",
+        baseUrl: "https://preview.example.com",
+        apiKey: ""
+      })
+    });
+    expect(response.status).toBe(400);
+    expect(String(json.error)).toContain("apiKey must be a non-empty string");
+  });
+
   test("POST /api/providers/:id/models/batch-add adds models with name and optional allowlist", async () => {
     const ws = workspace();
     const app = createTestApp(ws);

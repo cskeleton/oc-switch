@@ -232,3 +232,18 @@ export function requireMergeCaseDuplicateInput(body: Record<string, unknown>): M
   if (keepModelIds !== undefined) input.keepModelIds = keepModelIds;
   return input;
 }
+
+/** discover-preview 请求体校验（仅临时 discover，不写盘） */
+export function requireProviderDiscoverPreviewInput(body: Record<string, unknown>) {
+  const alreadyAddedIdsValue = body.alreadyAddedIds;
+  const alreadyAddedIds = Array.isArray(alreadyAddedIdsValue)
+    ? alreadyAddedIdsValue.map((id, index) => requireString(id, `alreadyAddedIds.${index}`))
+    : undefined;
+  return {
+    api: requireApiType(body.api, "api"),
+    baseUrl: requireString(body.baseUrl, "baseUrl"),
+    apiKey: requireString(body.apiKey, "apiKey"),
+    isFullUrl: requireBooleanDefault(body.isFullUrl, "isFullUrl", false),
+    ...(alreadyAddedIds !== undefined ? { alreadyAddedIds } : {})
+  };
+}

@@ -4,6 +4,7 @@ import {
   DISCOVER_MAX_MODELS,
   DISCOVER_MAX_PAGES,
   discoverProviderModels,
+  discoverProviderModelsFromCredentials,
   syncProviderModels,
   type FetchImpl
 } from "../src/provider-sync";
@@ -280,5 +281,107 @@ describe("discoverProviderModels", () => {
 describe("syncProviderModels alias", () => {
   test("is discoverProviderModels", () => {
     expect(syncProviderModels).toBe(discoverProviderModels);
+  });
+});
+
+describe("discoverProviderModelsFromCredentials", () => {
+  test("uses provided openai credentials and preserves alreadyAddedIds intersection", async () => {
+    const seen: { authorization?: string | null; url?: string } = {};
+    const fetchImpl: FetchImpl = async (input, init) => {
+      seen.url = String(input);
+      seen.authorization = new Headers(init?.headers).get("authorization");
+      return new Response(
+        JSON.stringify({
+          data: [{ id: "model-a", name: "Model A" }, { id: "model-b" }]
+        }),
+        { headers: { "content-type": "application/json" } }
+      );
+    };
+
+    const result = await discoverProviderModelsFromCredentials(
+      {
+        providerId: "preview-provider",
+        api: "openai-completions",
+        baseUrl: "https://preview.example.com",
+        apiKey: "preview-secret",
+        alreadyAddedIds: ["model-b", "model-c"]
+      },
+      { fetchImpl }
+    );
+
+    expect(seen.url).toBe("https://preview.example.com/v1/models");
+    expect(seen.authorization).toBe("Bearer preview-secret");
+    expect(result.providerId).toBe("preview-provider");
+    expect(result.remoteModels).toEqual([{ id: "model-a", name: "Model A" }, { id: "model-b" }]);
+    expect(result.alreadyAddedIds).toEqual(["model-b"]);
+    expect(result.truncated).toBe(false);
+  });
+
+  test("uses raw baseUrl when isFullUrl is true", async () => {
+    const seen: { url?: string } = {};
+    const result = await discoverProviderModelsFromCredentials(
+      {
+        providerId: "preview-provider",
+        api: "openai-completions",
+        baseUrl: "https://preview.example.com/custom-prefix",
+        apiKey: "preview-secret",
+        isFullUrl: true
+      },
+      {
+        fetchImpl: async (input) => {
+          seen.url = String(input);
+          return new Response(
+            JSON.stringify({
+              data: [{ id: "model-a" }]
+            }),
+            { headers: { "content-type": "application/json" } }
+          );
+        }
+      }
+    );
+
+    expect(seen.url).toBe("https://preview.example.com/custom-prefix/models");
+    expect(result.remoteModels).toEqual([{ id: "model-a" }]);
+  });
+
+  test("supports anthropic credentials discover with x-api-key header", async () => {
+    const seen: { apiKey?: string | null; version?: string | null; auth?: string | null } = {};
+    const result = await discoverProviderModelsFromCredentials(
+      {
+        api: "anthropic-messages",
+        baseUrl: "https://anthropic.preview.example",
+        apiKey: "anthropic-secret"
+      },
+      {
+        fetchImpl: async (_input, init) => {
+          const headers = new Headers(init?.headers);
+          seen.apiKey = headers.get("x-api-key");
+          seen.version = headers.get("anthropic-version");
+          seen.auth = headers.get("authorization");
+          return new Response(
+            JSON.stringify({
+              data: [{ id: "claude-sonnet", display_name: "Claude Sonnet" }],
+              has_more: false
+            }),
+            { headers: { "content-type": "application/json" } }
+          );
+        }
+      }
+    );
+    expect(seen.apiKey).toBe("anthropic-secret");
+    expect(seen.version).toBe("2023-06-01");
+    expect(seen.auth).toBeNull();
+    expect(result.remoteModels).toEqual([{ id: "claude-sonnet", name: "Claude Sonnet" }]);
+  });
+
+  test("returns unsupported for google-generative-ai", async () => {
+    const result = await discoverProviderModelsFromCredentials({
+      api: "google-generative-ai",
+      baseUrl: "https://generativelanguage.googleapis.com",
+      apiKey: "google-secret"
+    });
+    expect(result.unsupportedReason).toContain("google-generative-ai");
+    expect(result.remoteModels).toEqual([]);
+    expect(result.alreadyAddedIds).toEqual([]);
   });
 });

@@ -28,16 +28,20 @@ export const DISCOVER_MAX_PAGES = 50;
 const ANTHROPIC_API_VERSION = "2023-06-01";
 
 /** 归一化 baseUrl，避免重复 /v1 后拼接 OpenAI 兼容的 /models 端点 */
-function openaiModelsEndpoint(baseUrl: string): string {
+function openaiModelsEndpoint(baseUrl: string, normalizeBaseUrl = true): string {
   const trimmed = baseUrl.replace(/\/+$/, "");
-  const normalized = trimmed.endsWith("/v1") ? trimmed : `${trimmed}/v1`;
+  const normalized = normalizeBaseUrl
+    ? (trimmed.endsWith("/v1") ? trimmed : `${trimmed}/v1`)
+    : trimmed;
   return `${normalized}/models`;
 }
 
 /** Anthropic List Models 端点；可选 after_id 分页游标 */
-function anthropicModelsEndpoint(baseUrl: string, afterId?: string): string {
+function anthropicModelsEndpoint(baseUrl: string, afterId?: string, normalizeBaseUrl = true): string {
   const trimmed = baseUrl.replace(/\/+$/, "");
-  const normalized = trimmed.endsWith("/v1") ? trimmed : `${trimmed}/v1`;
+  const normalized = normalizeBaseUrl
+    ? (trimmed.endsWith("/v1") ? trimmed : `${trimmed}/v1`)
+    : trimmed;
   const endpoint = `${normalized}/models`;
   if (!afterId) return endpoint;
   return `${endpoint}?after_id=${encodeURIComponent(afterId)}`;
@@ -48,6 +52,16 @@ export type FetchImpl = (input: RequestInfo | URL, init?: RequestInit) => Promis
 export interface ProviderDiscoverOptions {
   fetchImpl?: FetchImpl;
   envContent?: string;
+}
+
+/** 基于表单凭证的临时 discover 输入（只读，不写盘） */
+export interface ProviderDiscoverCredentialsInput {
+  providerId?: string;
+  api: OpenClawProvider["api"];
+  baseUrl: string;
+  apiKey: string;
+  isFullUrl?: boolean;
+  alreadyAddedIds?: string[];
 }
 
 function resolveDiscoverOptions(
@@ -155,11 +169,12 @@ async function discoverOpenAiModels(
   providerId: string,
   provider: OpenClawProvider,
   fetchImpl: FetchImpl,
-  envContent: string | undefined
+  envContent: string | undefined,
+  normalizeBaseUrl = true
 ): Promise<ProviderDiscoverResult> {
   if (!provider.baseUrl) throw new Error(`Provider ${providerId} has no baseUrl`);
 
-  const response = await fetchImpl(openaiModelsEndpoint(provider.baseUrl), {
+  const response = await fetchImpl(openaiModelsEndpoint(provider.baseUrl, normalizeBaseUrl), {
     headers: { accept: "application/json", ...openaiAuthHeaders(providerId, provider, envContent) }
   });
   if (!response.ok) {
@@ -184,7 +199,8 @@ async function discoverAnthropicModels(
   providerId: string,
   provider: OpenClawProvider,
   fetchImpl: FetchImpl,
-  envContent: string | undefined
+  envContent: string | undefined,
+  normalizeBaseUrl = true
 ): Promise<ProviderDiscoverResult> {
   if (!provider.baseUrl) throw new Error(`Provider ${providerId} has no baseUrl`);
 
@@ -196,7 +212,7 @@ async function discoverAnthropicModels(
 
   while (true) {
     pageCount += 1;
-    const response = await fetchImpl(anthropicModelsEndpoint(provider.baseUrl, afterId), {
+    const response = await fetchImpl(anthropicModelsEndpoint(provider.baseUrl, afterId, normalizeBaseUrl), {
       headers: {
         accept: "application/json",
         ...anthropicAuthHeaders(providerId, provider, envContent)
@@ -262,6 +278,56 @@ export async function discoverProviderModels(
   }
 
   return discoverOpenAiModels(providerId, provider, fetchImpl, envContent);
+}
+
+/**
+ * 基于表单凭证临时发现远端模型（只读，不依赖本地配置文件）。
+ * 该能力用于「添加 Provider」弹窗，凭 api/baseUrl/apiKey 发起一次性 discover。
+ */
+export async function discoverProviderModelsFromCredentials(
+  input: ProviderDiscoverCredentialsInput,
+  options?: FetchImpl | ProviderDiscoverOptions
+): Promise<ProviderDiscoverResult> {
+  const { fetchImpl } = resolveDiscoverOptions(options);
+  const providerId = input.providerId ?? "__preview__";
+  const api = input.api ?? "openai-completions";
+  if (!input.baseUrl || input.baseUrl.trim().length === 0) {
+    throw new Error("baseUrl must be a non-empty string");
+  }
+  if (!input.apiKey || input.apiKey.trim().length === 0) {
+    throw new Error("apiKey must be a non-empty string");
+  }
+  if (api === "google-generative-ai") {
+    return {
+      providerId,
+      remoteModels: [],
+      alreadyAddedIds: [],
+      truncated: false,
+      unsupportedReason: `Provider API ${api} does not support model discover`
+    };
+  }
+
+  const provider: OpenClawProvider = {
+    api,
+    baseUrl: input.baseUrl,
+    // 仅用于复用鉴权头分支；不参与任何配置写入。
+    apiKey: "${EPHEMERAL_PROVIDER_API_KEY}",
+    models: []
+  };
+  const envContent = `EPHEMERAL_PROVIDER_API_KEY=${input.apiKey}\n`;
+  const discovered =
+    api === "anthropic-messages"
+      ? await discoverAnthropicModels(providerId, provider, fetchImpl, envContent, !input.isFullUrl)
+      : await discoverOpenAiModels(providerId, provider, fetchImpl, envContent, !input.isFullUrl);
+  const alreadyAddedIds = Array.isArray(input.alreadyAddedIds)
+    ? discovered.remoteModels
+        .map((model) => model.id)
+        .filter((id) => input.alreadyAddedIds?.includes(id))
+    : [];
+  return {
+    ...discovered,
+    alreadyAddedIds
+  };
 }
 
 /** @deprecated 使用 discoverProviderModels；发现语义，不再全量写入配置 */

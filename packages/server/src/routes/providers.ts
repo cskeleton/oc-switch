@@ -6,6 +6,7 @@ import {
   createConfigAdapter,
   disableProvider,
   discoverProviderModels,
+  discoverProviderModelsFromCredentials,
   editProvider,
   inspectEnvFile,
   listProviderEnvRefs,
@@ -40,6 +41,7 @@ import {
   requireBatchRemoveProviderModelsInput,
   requireBoolean,
   requireCustomProviderInput,
+  requireProviderDiscoverPreviewInput,
   requireMergeCaseDuplicateInput,
   requireString
 } from "../schemas";
@@ -217,6 +219,38 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
         backupId: result.backupDir.split("/").pop(),
         ...(result.envWrite ? { envWrite: result.envWrite } : {}),
         ...(result.gatewayEnvSync ? { gatewayEnvSync: result.gatewayEnvSync } : {})
+      });
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/providers/discover-preview", async (c) => {
+    try {
+      const body = await c.req.json() as Record<string, unknown>;
+      const input = requireProviderDiscoverPreviewInput(body);
+      const discoverResult = await discoverProviderModelsFromCredentials(input, {
+        fetchImpl: runtime.fetchImpl
+      });
+      if (discoverResult.unsupportedReason) {
+        return c.json({
+          ok: false,
+          providerId: discoverResult.providerId,
+          remoteModels: [],
+          alreadyAddedIds: [],
+          truncated: false,
+          unsupportedReason: discoverResult.unsupportedReason
+        });
+      }
+      return c.json({
+        ok: true,
+        providerId: discoverResult.providerId,
+        remoteModels: discoverResult.remoteModels,
+        alreadyAddedIds: discoverResult.alreadyAddedIds,
+        truncated: discoverResult.truncated,
+        ...(discoverResult.truncationReason !== undefined
+          ? { truncationReason: discoverResult.truncationReason }
+          : {})
       });
     } catch (error) {
       return jsonError(c, error);
