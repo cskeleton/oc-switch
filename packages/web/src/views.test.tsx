@@ -494,6 +494,186 @@ describe("ProvidersView", () => {
     });
   });
 
+  test("provider model manager sorts primary then enabled then disabled", async () => {
+    const getProviders = mock(async () => ({
+      providers: [
+        providerSummary({
+          id: "nvidia",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          modelCount: 3,
+          containsPrimary: true
+        })
+      ]
+    }));
+    const getModels = mock(async () => ({
+      models: [
+        modelSummary({
+          ref: "nvidia/z-disabled",
+          enabled: false
+        }),
+        modelSummary({
+          ref: "nvidia/a-enabled",
+          enabled: true
+        }),
+        modelSummary({
+          ref: "nvidia/m-primary",
+          enabled: true,
+          isPrimary: true
+        }),
+        modelSummary({
+          ref: "other/should-not-appear",
+          enabled: true
+        })
+      ]
+    }));
+
+    const { findByLabelText, findAllByLabelText } = render(
+      <ProvidersView client={mockClient({ getProviders, getModels })} />
+    );
+
+    await userEvent.click(await findByLabelText("管理模型 nvidia"));
+    const checkboxes = await findAllByLabelText(/^选择本地模型 /);
+    expect(checkboxes.map((el) => el.getAttribute("aria-label"))).toEqual([
+      "选择本地模型 m-primary",
+      "选择本地模型 a-enabled",
+      "选择本地模型 z-disabled"
+    ]);
+  });
+
+  test("provider model manager batch-removes selected raw modelIds", async () => {
+    const batchRemoveProviderModels = mock(async () => ({
+      ok: true,
+      removedModelIds: ["vendor/model-b"]
+    }));
+    const getProviders = mock(async () => ({
+      providers: [
+        providerSummary({
+          id: "nvidia",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          modelCount: 2
+        })
+      ]
+    }));
+    const getModels = mock(async () => ({
+      models: [
+        modelSummary({
+          ref: "nvidia/vendor/model-a",
+          enabled: true,
+          isPrimary: true
+        }),
+        modelSummary({
+          ref: "nvidia/vendor/model-b",
+          enabled: false
+        })
+      ]
+    }));
+
+    const { findByLabelText, getByText } = render(
+      <ProvidersView client={mockClient({ getProviders, getModels, batchRemoveProviderModels })} />
+    );
+
+    await userEvent.click(await findByLabelText("管理模型 nvidia"));
+    await userEvent.click(await findByLabelText("选择本地模型 vendor/model-b"));
+    await userEvent.click(await findByLabelText("删除所选模型"));
+    await userEvent.click(getByText("确认"));
+
+    await waitFor(() =>
+      expect(batchRemoveProviderModels).toHaveBeenCalledWith("nvidia", {
+        modelIds: ["vendor/model-b"]
+      })
+    );
+  });
+
+  test("provider model manager keep-enabled-only confirms and calls API", async () => {
+    const batchRemoveProviderModels = mock(async () => ({
+      ok: true,
+      removedModelIds: ["idle-model"]
+    }));
+    const getProviders = mock(async () => ({
+      providers: [
+        providerSummary({
+          id: "nvidia",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          modelCount: 2
+        })
+      ]
+    }));
+    const getModels = mock(async () => ({
+      models: [
+        modelSummary({
+          ref: "nvidia/kept",
+          enabled: true
+        }),
+        modelSummary({
+          ref: "nvidia/idle-model",
+          enabled: false
+        })
+      ]
+    }));
+
+    const { findByLabelText, findByText, getByText } = render(
+      <ProvidersView client={mockClient({ getProviders, getModels, batchRemoveProviderModels })} />
+    );
+
+    await userEvent.click(await findByLabelText("管理模型 nvidia"));
+    await userEvent.click(await findByLabelText("只保留已启用模型"));
+    expect(await findByText(/主模型始终保留/)).toBeTruthy();
+    await userEvent.click(getByText("确认"));
+
+    await waitFor(() =>
+      expect(batchRemoveProviderModels).toHaveBeenCalledWith("nvidia", {
+        keepEnabledOnly: true
+      })
+    );
+  });
+
+  test("disabled provider still allows keep-enabled-only cleanup", async () => {
+    const batchRemoveProviderModels = mock(async () => ({
+      ok: true,
+      removedModelIds: ["idle-model"]
+    }));
+    const getProviders = mock(async () => ({
+      providers: [
+        providerSummary({
+          id: "nvidia",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          modelCount: 21,
+          disabled: true
+        })
+      ]
+    }));
+    const getModels = mock(async () => ({
+      models: [
+        modelSummary({
+          ref: "nvidia/kept",
+          enabled: true
+        }),
+        modelSummary({
+          ref: "nvidia/idle-model",
+          enabled: false
+        })
+      ]
+    }));
+
+    const { findByLabelText, getByText } = render(
+      <ProvidersView client={mockClient({ getProviders, getModels, batchRemoveProviderModels })} />
+    );
+
+    await userEvent.click(await findByLabelText("管理模型 nvidia"));
+    const keepEnabled = await findByLabelText("只保留已启用模型");
+    expect((keepEnabled as HTMLButtonElement).disabled).toBe(false);
+    expect((await findByLabelText("添加模型") as HTMLButtonElement).disabled).toBe(true);
+
+    await userEvent.click(keepEnabled);
+    await userEvent.click(getByText("确认"));
+
+    await waitFor(() =>
+      expect(batchRemoveProviderModels).toHaveBeenCalledWith("nvidia", {
+        keepEnabledOnly: true
+      })
+    );
+  });
+
   test("adds custom provider through preview and confirm without rendering api key", async () => {
     const previewCustomProvider = mock(async () => ({
       providersAdded: ["custom-openai"],
@@ -782,8 +962,23 @@ describe("ProvidersView", () => {
     expect(await findByText("Provider nvidia 的 API Key 已迁入托管块并更新")).toBeTruthy();
   });
 
-  test("syncs provider models and shows added model count", async () => {
-    const syncProvider = mock(async () => ({ ok: true, addedModelIds: ["remote-model-a"] }));
+  test("discovers provider models and batch-adds selection", async () => {
+    const discoverProvider = mock(async () => ({
+      ok: true,
+      providerId: "nvidia",
+      remoteModels: [
+        { id: "remote-model-a", name: "Remote A" },
+        { id: "vendor/already", name: "Already" }
+      ],
+      alreadyAddedIds: ["vendor/already"],
+      truncated: false
+    }));
+    const batchAddProviderModels = mock(async () => ({
+      ok: true,
+      addedModelIds: ["remote-model-a"],
+      skippedModelIds: [],
+      enabled: false
+    }));
     const getProviders = mock(async () => ({
       providers: [
         providerSummary({
@@ -794,14 +989,25 @@ describe("ProvidersView", () => {
       ]
     }));
 
-    const { findByLabelText, findByText } = render(
-      <ProvidersView client={mockClient({ getProviders, syncProvider })} />
+    const { findByLabelText, findByText, getByText } = render(
+      <ProvidersView client={mockClient({ getProviders, discoverProvider, batchAddProviderModels })} />
     );
 
-    await userEvent.click(await findByLabelText("同步 nvidia"));
+    await userEvent.click(await findByLabelText("发现模型 nvidia"));
+    expect(discoverProvider).toHaveBeenCalledWith("nvidia");
+    expect(await findByText("remote-model-a")).toBeTruthy();
+    expect(await findByText("已添加")).toBeTruthy();
 
-    expect(syncProvider).toHaveBeenCalledWith("nvidia");
-    expect(await findByText("同步完成：新增 1 个模型")).toBeTruthy();
+    await userEvent.click(await findByLabelText("选择模型 remote-model-a"));
+    await userEvent.click(getByText("添加到配置"));
+
+    await waitFor(() =>
+      expect(batchAddProviderModels).toHaveBeenCalledWith("nvidia", {
+        models: [{ id: "remote-model-a", name: "Remote A" }],
+        enable: false
+      })
+    );
+    expect(await findByText("已添加 1 个模型")).toBeTruthy();
   });
 
   test("重复组 Provider 显示⚠重复徽章与合并入口", async () => {

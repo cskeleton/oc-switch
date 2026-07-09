@@ -5,7 +5,7 @@ import { join } from "node:path";
 import sample from "../../core/test/fixtures/openclaw.sample.json";
 import { createApp } from "../src/app";
 import type { FetchImpl, OcSwitchPaths, PresetDirs } from "@oc-switch/core";
-import { createBackup, upsertDisabledProviderState } from "@oc-switch/core";
+import { createBackup, upsertDisabledProviderState, MAX_PROVIDER_MODELS } from "@oc-switch/core";
 import { prepareGatewayEnvTarget, expectedGatewayEnvPath } from "../../core/test/gateway-sync-fixture";
 
 const tempDirs: string[] = [];
@@ -545,19 +545,196 @@ describe("server write endpoints", () => {
     });
   });
 
-  test("POST /api/providers/:id/sync merges remote models", async () => {
+  test("POST /api/providers/:id/sync discovers remote models without writing config", async () => {
     const ws = workspace();
     const mockFetch: FetchImpl = async () =>
       new Response(JSON.stringify({ data: [{ id: "remote-model-a" }, { id: "remote-model-b" }] }), {
         headers: { "content-type": "application/json" }
       });
     const app = createTestApp(ws, mockFetch);
+    const beforeConfig = readFileSync(ws.paths.openclawPath, "utf8");
     const { response, json } = await jsonRequest(app, "/api/providers/nvidia/sync", { method: "POST" });
 
     expect(response.status).toBe(200);
-    expect(json.addedModelIds).toEqual(["remote-model-a", "remote-model-b"]);
+    expect(json.ok).toBe(true);
+    expect((json.remoteModels as Array<{ id: string }>).map((m) => m.id)).toEqual([
+      "remote-model-a",
+      "remote-model-b"
+    ]);
+    expect(json.alreadyAddedIds).toEqual([]);
+    expect(json.truncated).toBe(false);
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(beforeConfig);
+
+    const { json: backupsJson } = await jsonRequest(app, "/api/backups");
+    expect((backupsJson.backups as unknown[]).length).toBe(0);
+  });
+
+  test("POST /api/providers/:id/discover matches sync alias and does not write config", async () => {
+    const ws = workspace();
+    const mockFetch: FetchImpl = async () =>
+      new Response(JSON.stringify({ data: [{ id: "remote-model-a", name: "Remote A" }] }), {
+        headers: { "content-type": "application/json" }
+      });
+    const app = createTestApp(ws, mockFetch);
+    const beforeConfig = readFileSync(ws.paths.openclawPath, "utf8");
+    const { response, json } = await jsonRequest(app, "/api/providers/nvidia/discover", { method: "POST" });
+
+    expect(response.status).toBe(200);
+    expect(json).toMatchObject({
+      ok: true,
+      providerId: "nvidia",
+      truncated: false
+    });
+    expect(json.remoteModels).toEqual([{ id: "remote-model-a", name: "Remote A" }]);
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(beforeConfig);
+
+    const { json: backupsJson } = await jsonRequest(app, "/api/backups");
+    expect((backupsJson.backups as unknown[]).length).toBe(0);
+  });
+
+  test("POST /api/providers/:id/models/batch-add adds models with name and optional allowlist", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+
+    const withoutEnable = await jsonRequest(app, "/api/providers/nvidia/models/batch-add", {
+      method: "POST",
+      body: JSON.stringify({
+        models: [{ id: "vendor/new-model", name: "New Model" }]
+      })
+    });
+    expect(withoutEnable.response.status).toBe(200);
+    expect(withoutEnable.json).toMatchObject({
+      ok: true,
+      addedModelIds: ["vendor/new-model"],
+      skippedModelIds: [],
+      enabled: false
+    });
+    expect(withoutEnable.json.backupId).toBeTruthy();
+
+    let config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(config.models.providers.nvidia.models.find((model: { id: string }) => model.id === "vendor/new-model")).toMatchObject({
+      id: "vendor/new-model",
+      name: "New Model"
+    });
+    expect(config.agents.defaults.models["nvidia/vendor/new-model"]).toBeUndefined();
+
+    const withEnable = await jsonRequest(app, "/api/providers/nvidia/models/batch-add", {
+      method: "POST",
+      body: JSON.stringify({
+        models: [{ id: "vendor/enabled-model", name: "Enabled Model" }],
+        enable: true
+      })
+    });
+    expect(withEnable.response.status).toBe(200);
+    expect(withEnable.json).toMatchObject({
+      ok: true,
+      addedModelIds: ["vendor/enabled-model"],
+      enabled: true
+    });
+
+    config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(config.agents.defaults.models["nvidia/vendor/enabled-model"]).toEqual({});
+  });
+
+  test("POST /api/providers/:id/models/batch-add rejects disabled provider even when enable is false", async () => {
+    const ws = workspace();
+    upsertDisabledProviderState(ws.paths.stateDir, {
+      providerId: "nvidia",
+      openclawPath: ws.paths.openclawPath,
+      disabledAt: "2026-06-25T12:00:00.000Z",
+      allowlistEntries: {}
+    });
+    const app = createTestApp(ws);
+
+    const { response, json } = await jsonRequest(app, "/api/providers/nvidia/models/batch-add", {
+      method: "POST",
+      body: JSON.stringify({
+        models: [{ id: "vendor/blocked-model" }],
+        enable: false
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect(String(json.error)).toContain("Provider nvidia is disabled");
+  });
+
+  test("POST /api/providers/:id/models/batch-remove by modelIds and keepEnabledOnly", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+
+    const added = await jsonRequest(app, "/api/providers/nvidia/models/batch-add", {
+      method: "POST",
+      body: JSON.stringify({
+        models: [
+          { id: "vendor/removable-a" },
+          { id: "vendor/removable-b", name: "Removable B" }
+        ],
+        enable: true
+      })
+    });
+    expect(added.response.status).toBe(200);
+
+    const removed = await jsonRequest(app, "/api/providers/nvidia/models/batch-remove", {
+      method: "POST",
+      body: JSON.stringify({ modelIds: ["vendor/removable-a"] })
+    });
+    expect(removed.response.status).toBe(200);
+    expect(removed.json).toMatchObject({
+      ok: true,
+      removedModelIds: ["vendor/removable-a"]
+    });
+    expect(removed.json.backupId).toBeTruthy();
+
+    let config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(config.models.providers.nvidia.models.map((model: { id: string }) => model.id)).not.toContain("vendor/removable-a");
+    expect(config.agents.defaults.models["nvidia/vendor/removable-a"]).toBeUndefined();
+    expect(config.models.providers.nvidia.models.map((model: { id: string }) => model.id)).toContain("vendor/removable-b");
+
+    await jsonRequest(app, "/api/providers/nvidia/models/batch-add", {
+      method: "POST",
+      body: JSON.stringify({
+        models: [{ id: "vendor/unlisted-catalog" }]
+      })
+    });
+
+    const keepEnabled = await jsonRequest(app, "/api/providers/nvidia/models/batch-remove", {
+      method: "POST",
+      body: JSON.stringify({ keepEnabledOnly: true })
+    });
+    expect(keepEnabled.response.status).toBe(200);
+    expect(keepEnabled.json.removedModelIds).toEqual(["vendor/unlisted-catalog"]);
+
+    config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(config.models.providers.nvidia.models.map((model: { id: string }) => model.id).sort()).toEqual(
+      ["deepseek-ai/deepseek-v4-flash", "vendor/removable-b", "z-ai/glm5.1"].sort()
+    );
+    expect(config.agents.defaults.models["nvidia/vendor/removable-b"]).toEqual({});
+    expect(config.agents.defaults.models["nvidia/vendor/unlisted-catalog"]).toBeUndefined();
+  });
+
+  test("POST /api/providers/:id/models/batch-add rejects capacity over limit", async () => {
+    const ws = workspace();
     const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
-    expect(config.models.providers.nvidia.models.map((m: { id: string }) => m.id)).toContain("remote-model-a");
+    config.models.providers.nvidia.models = Array.from({ length: MAX_PROVIDER_MODELS }, (_, index) => ({
+      id: `catalog-model-${index}`,
+      name: `Catalog ${index}`
+    }));
+    writeFileSync(ws.paths.openclawPath, `${JSON.stringify(config, null, 2)}\n`);
+    const app = createTestApp(ws);
+
+    const { response, json } = await jsonRequest(app, "/api/providers/nvidia/models/batch-add", {
+      method: "POST",
+      body: JSON.stringify({
+        models: [{ id: "vendor/over-cap" }]
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect(String(json.error)).toMatch(/20|limit|capacity/i);
+
+    const after = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(after.models.providers.nvidia.models).toHaveLength(MAX_PROVIDER_MODELS);
+    expect(after.models.providers.nvidia.models.some((model: { id: string }) => model.id === "vendor/over-cap")).toBe(false);
   });
 
   test("POST /api/presets/import exports all providers", async () => {

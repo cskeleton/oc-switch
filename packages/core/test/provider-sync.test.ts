@@ -1,21 +1,32 @@
 import { describe, expect, test } from "bun:test";
 import sample from "./fixtures/openclaw.sample.json";
-import { applySyncedModels, syncProviderModels, type FetchImpl } from "../src/provider-sync";
+import {
+  DISCOVER_MAX_MODELS,
+  DISCOVER_MAX_PAGES,
+  discoverProviderModels,
+  syncProviderModels,
+  type FetchImpl
+} from "../src/provider-sync";
 import type { OpenClawConfig } from "../src/types";
 
 const sampleConfig = sample as OpenClawConfig;
 
-function mockFetch(models: string[]): FetchImpl {
+type MockModel = string | { id: string; name?: string };
+
+function mockFetch(models: MockModel[]): FetchImpl {
   return async (input: RequestInfo | URL) => {
     const url = String(input);
     expect(url).toMatch(/\/models$/);
-    return new Response(JSON.stringify({ data: models.map((id) => ({ id })) }), {
-      headers: { "content-type": "application/json" }
-    });
+    return new Response(
+      JSON.stringify({
+        data: models.map((entry) => (typeof entry === "string" ? { id: entry } : entry))
+      }),
+      { headers: { "content-type": "application/json" } }
+    );
   };
 }
 
-describe("syncProviderModels", () => {
+describe("discoverProviderModels", () => {
   test("sends bearer token resolved from provider apiKey env", async () => {
     const config = structuredClone(sampleConfig);
     const seen: { authorization?: string | null } = {};
@@ -26,7 +37,7 @@ describe("syncProviderModels", () => {
       });
     };
 
-    await syncProviderModels(config, "nvidia", {
+    await discoverProviderModels(config, "nvidia", {
       fetchImpl,
       envContent: "NVIDIA_API_KEY=sync-secret\n"
     });
@@ -38,10 +49,19 @@ describe("syncProviderModels", () => {
     const config = structuredClone(sampleConfig);
     config.models!.providers!.nvidia!.baseUrl = "https://integrate.api.nvidia.com/v1";
 
-    const result = await syncProviderModels(config, "nvidia", mockFetch(["deepseek-ai/deepseek-v4-flash", "new-model"]));
+    const result = await discoverProviderModels(
+      config,
+      "nvidia",
+      mockFetch(["deepseek-ai/deepseek-v4-flash", "new-model"])
+    );
     expect(result.unsupportedReason).toBeUndefined();
-    expect(result.addedModelIds).toEqual(["new-model"]);
-    expect(result.skippedModelIds).toContain("deepseek-ai/deepseek-v4-flash");
+    expect(result.remoteModels.map((m) => m.id)).toEqual([
+      "deepseek-ai/deepseek-v4-flash",
+      "new-model"
+    ]);
+    expect(result.alreadyAddedIds).toContain("deepseek-ai/deepseek-v4-flash");
+    expect(result.alreadyAddedIds).not.toContain("new-model");
+    expect(result.truncated).toBe(false);
   });
 
   test("openai-completions normalizes baseUrl without trailing /v1", async () => {
@@ -56,36 +76,173 @@ describe("syncProviderModels", () => {
       });
     };
 
-    const result = await syncProviderModels(config, "nvidia", fetchImpl);
+    const result = await discoverProviderModels(config, "nvidia", fetchImpl);
     expect(fetchCalls[0]).toBe("https://integrate.api.nvidia.com/v1/models");
-    expect(result.addedModelIds).toEqual(["another-model"]);
+    expect(result.remoteModels).toEqual([{ id: "another-model" }]);
+    expect(result.alreadyAddedIds).toEqual([]);
   });
 
-  test("only adds missing models and never deletes existing models", async () => {
+  test("parses optional name from remote payload", async () => {
     const config = structuredClone(sampleConfig);
-    const beforeIds = config.models!.providers!.nvidia!.models!.map((m) => m.id);
+    const result = await discoverProviderModels(config, "nvidia", mockFetch([
+      { id: "vendor/model-a", name: "Vendor Model A" },
+      "vendor/model-b"
+    ]));
+    expect(result.remoteModels).toEqual([
+      { id: "vendor/model-a", name: "Vendor Model A" },
+      { id: "vendor/model-b" }
+    ]);
+  });
 
-    const result = await syncProviderModels(config, "nvidia", mockFetch([
+  test("does not mutate config", async () => {
+    const config = structuredClone(sampleConfig);
+    const before = JSON.stringify(config);
+
+    await discoverProviderModels(config, "nvidia", mockFetch([
       "deepseek-ai/deepseek-v4-flash",
       "z-ai/glm5.1",
       "brand-new"
     ]));
 
-    const applied = applySyncedModels(config, "nvidia", result.addedModelIds);
-    const afterIds = applied.models!.providers!.nvidia!.models!.map((m) => m.id);
-    expect(afterIds).toEqual([...beforeIds, "brand-new"]);
-    expect(result.addedModelIds).toEqual(["brand-new"]);
-    // sync 只写入 provider.models，不自动加入 allowlist
-    expect(applied.agents?.defaults?.models?.["nvidia/brand-new"]).toBeUndefined();
+    expect(JSON.stringify(config)).toBe(before);
   });
 
-  test("anthropic-messages returns unsupported without mutating config", async () => {
+  test("returns alreadyAddedIds as intersection with local provider.models", async () => {
+    const config = structuredClone(sampleConfig);
+    const result = await discoverProviderModels(config, "nvidia", mockFetch([
+      "deepseek-ai/deepseek-v4-flash",
+      "z-ai/glm5.1",
+      "brand-new"
+    ]));
+    expect(result.alreadyAddedIds.sort()).toEqual(
+      ["deepseek-ai/deepseek-v4-flash", "z-ai/glm5.1"].sort()
+    );
+    expect(result.remoteModels.map((m) => m.id)).toHaveLength(3);
+  });
+
+  test("truncates when remote list exceeds DISCOVER_MAX_MODELS", async () => {
+    const config = structuredClone(sampleConfig);
+    const ids = Array.from({ length: DISCOVER_MAX_MODELS + 3 }, (_, i) => `model-${i}`);
+    const result = await discoverProviderModels(config, "nvidia", mockFetch(ids));
+
+    expect(result.truncated).toBe(true);
+    expect(result.truncationReason).toContain(String(DISCOVER_MAX_MODELS));
+    expect(result.remoteModels).toHaveLength(DISCOVER_MAX_MODELS);
+    expect(result.remoteModels[0]?.id).toBe("model-0");
+    expect(result.remoteModels.at(-1)?.id).toBe(`model-${DISCOVER_MAX_MODELS - 1}`);
+  });
+
+  test("anthropic-messages paginates with x-api-key and display_name", async () => {
+    const config = structuredClone(sampleConfig);
+    const fetchCalls: Array<{ url: string; headers: Headers }> = [];
+    let page = 0;
+
+    const fetchImpl: FetchImpl = async (input, init) => {
+      const url = String(input);
+      const headers = new Headers(init?.headers);
+      fetchCalls.push({ url, headers });
+      page += 1;
+
+      if (page === 1) {
+        expect(headers.get("x-api-key")).toBe("minimax-secret");
+        expect(headers.get("anthropic-version")).toBe("2023-06-01");
+        expect(headers.get("authorization")).toBeNull();
+        expect(url).toBe("https://api.minimax.io/anthropic/v1/models");
+        return new Response(
+          JSON.stringify({
+            data: [
+              { id: "MiniMax-M3", display_name: "MiniMax M3" },
+              { id: "MiniMax-M2", display_name: "MiniMax M2" }
+            ],
+            has_more: true,
+            last_id: "MiniMax-M2"
+          }),
+          { headers: { "content-type": "application/json" } }
+        );
+      }
+
+      expect(url).toBe("https://api.minimax.io/anthropic/v1/models?after_id=MiniMax-M2");
+      return new Response(
+        JSON.stringify({
+          data: [{ id: "MiniMax-M1", display_name: "MiniMax M1" }],
+          has_more: false,
+          last_id: "MiniMax-M1"
+        }),
+        { headers: { "content-type": "application/json" } }
+      );
+    };
+
+    const result = await discoverProviderModels(config, "minimax-portal", {
+      fetchImpl,
+      envContent: "MINIMAX_API_KEY=minimax-secret\n"
+    });
+
+    expect(page).toBe(2);
+    expect(result.unsupportedReason).toBeUndefined();
+    expect(result.remoteModels).toEqual([
+      { id: "MiniMax-M3", name: "MiniMax M3" },
+      { id: "MiniMax-M2", name: "MiniMax M2" },
+      { id: "MiniMax-M1", name: "MiniMax M1" }
+    ]);
+    expect(result.alreadyAddedIds).toEqual(["MiniMax-M3"]);
+    expect(result.truncated).toBe(false);
+  });
+
+  test("anthropic-messages truncates when page cap exceeded", async () => {
+    const config = structuredClone(sampleConfig);
+    let page = 0;
+
+    const fetchImpl: FetchImpl = async (input) => {
+      page += 1;
+      const url = String(input);
+      if (page > 1) {
+        expect(url).toContain(`after_id=model-${page - 2}`);
+      }
+      return new Response(
+        JSON.stringify({
+          data: [{ id: `model-${page - 1}`, display_name: `Model ${page - 1}` }],
+          has_more: true,
+          last_id: `model-${page - 1}`
+        }),
+        { headers: { "content-type": "application/json" } }
+      );
+    };
+
+    const result = await discoverProviderModels(config, "minimax-portal", {
+      fetchImpl,
+      envContent: "MINIMAX_API_KEY=minimax-secret\n"
+    });
+
+    expect(page).toBe(DISCOVER_MAX_PAGES);
+    expect(result.truncated).toBe(true);
+    expect(result.truncationReason).toContain(String(DISCOVER_MAX_PAGES));
+    expect(result.remoteModels).toHaveLength(DISCOVER_MAX_PAGES);
+    expect(result.remoteModels[0]?.id).toBe("model-0");
+    expect(result.remoteModels.at(-1)?.id).toBe(`model-${DISCOVER_MAX_PAGES - 1}`);
+  });
+
+  test("anthropic-messages discovers models without mutating config", async () => {
     const config = structuredClone(sampleConfig);
     const before = JSON.stringify(config);
 
-    const result = await syncProviderModels(config, "minimax-portal");
-    expect(result.unsupportedReason).toContain("anthropic-messages");
-    expect(result.addedModelIds).toEqual([]);
+    const result = await discoverProviderModels(config, "minimax-portal", {
+      envContent: "MINIMAX_API_KEY=minimax-secret\n",
+      fetchImpl: async (_input, init) => {
+        expect(new Headers(init?.headers).get("x-api-key")).toBe("minimax-secret");
+        return new Response(
+          JSON.stringify({
+            data: [{ id: "MiniMax-M3", display_name: "MiniMax M3" }],
+            has_more: false,
+            last_id: "MiniMax-M3"
+          }),
+          { headers: { "content-type": "application/json" } }
+        );
+      }
+    });
+
+    expect(result.unsupportedReason).toBeUndefined();
+    expect(result.remoteModels).toEqual([{ id: "MiniMax-M3", name: "MiniMax M3" }]);
+    expect(result.alreadyAddedIds).toEqual(["MiniMax-M3"]);
     expect(JSON.stringify(config)).toBe(before);
   });
 
@@ -99,29 +256,29 @@ describe("syncProviderModels", () => {
     };
     const before = JSON.stringify(config);
 
-    const result = await syncProviderModels(config, "gemini");
+    const result = await discoverProviderModels(config, "gemini");
     expect(result.unsupportedReason).toContain("google-generative-ai");
-    expect(result.addedModelIds).toEqual([]);
+    expect(result.remoteModels).toEqual([]);
     expect(JSON.stringify(config)).toBe(before);
   });
 
-  test("sync uses legacy env string for auth headers", async () => {
+  test("discover uses legacy env string for auth headers", async () => {
     const config = structuredClone(sampleConfig);
     config.models!.providers!.nvidia!.apiKey = "${NVIDIA_API_KEY}";
-    const result = await syncProviderModels(config, "nvidia", {
+    const result = await discoverProviderModels(config, "nvidia", {
       envContent: "NVIDIA_API_KEY=secret\n",
       fetchImpl: async (_url, init) => {
         expect((init?.headers as Record<string, string>).Authorization).toBe("Bearer secret");
         return Response.json({ data: [] });
       }
     });
-    expect(result.addedModelIds).toEqual([]);
+    expect(result.remoteModels).toEqual([]);
+    expect(result.alreadyAddedIds).toEqual([]);
   });
+});
 
-  test("applies synced models with default names", () => {
-    const config = structuredClone(sampleConfig);
-    const next = applySyncedModels(config, "nvidia", ["vendor/model-c"]);
-    expect(next.models?.providers?.nvidia?.models?.find((m) => m.id === "vendor/model-c")?.name)
-      .toBe("Vendor Model C");
+describe("syncProviderModels alias", () => {
+  test("is discoverProviderModels", () => {
+    expect(syncProviderModels).toBe(discoverProviderModels);
   });
 });

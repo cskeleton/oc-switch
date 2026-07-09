@@ -1,9 +1,11 @@
 import {
   addCustomProvider,
   addProviderFromPreset,
-  applySyncedModels,
+  batchAddProviderModels,
+  batchRemoveProviderModels,
   createConfigAdapter,
   disableProvider,
+  discoverProviderModels,
   editProvider,
   mergeProviderCaseDuplicates,
   loadPreset,
@@ -12,7 +14,6 @@ import {
   removeProvider,
   restoreDisabledProvider,
   summarizeConfigDiff,
-  syncProviderModels,
   upsertDisabledProviderState,
   writeOpenClawTransaction
 } from "@oc-switch/core";
@@ -275,12 +276,35 @@ export function registerProviderCommands(program: Command, context: CommandConte
 
   provider.command("sync")
     .argument("<name>")
-    .action(async (name: string) => {
-      const paths = context.activePaths();
+    .description("发现远端模型目录（只读）。Breaking：旧版无参 sync 全量入库已移除；写入请用 --add")
+    .option("--add <ids>", "逗号分隔的 raw model id，批量写入目录")
+    .option("--enable", "同时将 --add 的模型写入 allowlist", false)
+    .action(async (name: string, options: { add?: string; enable?: boolean }) => {
+      if (options.add !== undefined) {
+        context.assertProviderCanEnable(name);
+        const ids = context.parseModelIds(options.add);
+        if (ids.length === 0) throw new Error("--add requires at least one model id");
+        let addedModelIds: string[] = [];
+        await writeOpenClawTransaction({
+          ...context.activePaths(),
+          reason: `batch-add models for provider ${name}`,
+          mutate(config) {
+            const batch = batchAddProviderModels(config, name, {
+              models: ids.map((id) => ({ id })),
+              enable: Boolean(options.enable)
+            });
+            addedModelIds = batch.addedModelIds;
+            return batch.config;
+          }
+        });
+        console.log(`已添加 ${addedModelIds.length} 个模型: ${addedModelIds.join(", ")}`);
+        return;
+      }
+
       const config = context.readConfig();
       const fetchImpl = context.mockSyncFetch();
       const envContent = context.readEnvContent();
-      const result = await syncProviderModels(config, name, {
+      const result = await discoverProviderModels(config, name, {
         fetchImpl: fetchImpl ?? fetch,
         ...(envContent !== undefined ? { envContent } : {})
       });
@@ -288,17 +312,50 @@ export function registerProviderCommands(program: Command, context: CommandConte
         console.log(result.unsupportedReason);
         return;
       }
-      if (result.addedModelIds.length === 0) {
-        console.log("No new models to add");
-        return;
+      if (result.truncated && result.truncationReason) {
+        console.log(`警告: ${result.truncationReason}`);
       }
+      const addedSet = new Set(result.alreadyAddedIds);
+      for (const model of result.remoteModels) {
+        const label = model.name ? `${model.id} (${model.name})` : model.id;
+        console.log(addedSet.has(model.id) ? `${label} [已添加]` : label);
+      }
+      console.log(
+        `发现 ${result.remoteModels.length} 个远端模型，其中 ${result.alreadyAddedIds.length} 个已添加`
+      );
+    });
+
+  provider
+    .command("models")
+    .command("remove")
+    .argument("<providerId>")
+    .description("批量删除 provider 本地模型目录项")
+    .option("--ids <ids>", "逗号分隔的 raw model id")
+    .option("--keep-enabled-only", "仅保留 allowlist 中的模型（及主模型目录项）", false)
+    .action(async (providerId: string, options: { ids?: string; keepEnabledOnly?: boolean }) => {
+      const hasIds = options.ids !== undefined && context.parseModelIds(options.ids).length > 0;
+      const hasKeepEnabledOnly = Boolean(options.keepEnabledOnly);
+      if (hasIds && hasKeepEnabledOnly) {
+        throw new Error("--ids and --keep-enabled-only are mutually exclusive");
+      }
+      if (!hasIds && !hasKeepEnabledOnly) {
+        throw new Error("require one of --ids or --keep-enabled-only");
+      }
+
+      let removedModelIds: string[] = [];
+      const input = hasKeepEnabledOnly
+        ? ({ keepEnabledOnly: true as const })
+        : ({ modelIds: context.parseModelIds(options.ids!) });
+
       await writeOpenClawTransaction({
-        ...paths,
-        reason: `sync provider ${name}`,
-        mutate(current) {
-          return applySyncedModels(current, name, result.addedModelIds);
+        ...context.activePaths(),
+        reason: `batch-remove models for provider ${providerId}`,
+        mutate(config) {
+          const batch = batchRemoveProviderModels(config, providerId, input);
+          removedModelIds = batch.removedModelIds;
+          return batch.config;
         }
       });
-      console.log(`Synced ${result.addedModelIds.length} model(s) for ${name}: ${result.addedModelIds.join(", ")}`);
+      console.log(`已删除 ${removedModelIds.length} 个模型: ${removedModelIds.join(", ")}`);
     });
 }

@@ -1,4 +1,4 @@
-import { Cpu, Edit3, Plus, Power, PowerOff, RefreshCw, RotateCw, Trash2 } from "lucide-react";
+import { Cpu, Edit3, Plus, Power, PowerOff, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { GatewayApplyBanner } from "../components/GatewayApplyBanner";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -6,6 +6,7 @@ import { CustomProviderDialog } from "../components/CustomProviderDialog";
 import { DataTable } from "../components/DataTable";
 import { EnvMigrationConfirmDialog } from "../components/EnvMigrationConfirmDialog";
 import { MergeCaseDuplicateDialog } from "../components/MergeCaseDuplicateDialog";
+import { ProviderDiscoverDialog } from "../components/ProviderDiscoverDialog";
 import { ProviderModelsDialog } from "../components/ProviderModelsDialog";
 import { formatEnvWriteSuccess } from "../env-feedback";
 import type { ApiClient, CaseDuplicateGroup, EnvWriteVerification, GatewayEnvSyncResult, ModelSummary, ProviderSummary } from "../api";
@@ -28,14 +29,13 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
   const [editApiKey, setEditApiKey] = useState("");
   const [newPrimaryCandidates, setNewPrimaryCandidates] = useState<ModelSummary[]>([]);
   const [selectedNewPrimary, setSelectedNewPrimary] = useState("");
-  const [syncing, setSyncing] = useState<string | null>(null);
-  const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [gatewayApply, setGatewayApply] = useState<{
     envWrite: EnvWriteVerification;
     gatewayEnvSync?: GatewayEnvSyncResult;
   } | null>(null);
   const [modelTarget, setModelTarget] = useState<ProviderSummary | null>(null);
+  const [discoverTarget, setDiscoverTarget] = useState<ProviderSummary | null>(null);
   const [stateTarget, setStateTarget] = useState<ProviderSummary | null>(null);
   const [pendingEnvConfirm, setPendingEnvConfirm] = useState<{
     providerId: string;
@@ -216,27 +216,6 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
     }
   }
 
-  async function handleSync(row: ProviderSummary) {
-    setSyncing(row.id);
-    setSyncMessage(null);
-    setError(null);
-    setSuccessMessage(null);
-    try {
-      const result = await client.syncProvider(row.id);
-      if (result.unsupportedReason) {
-        setSyncMessage(`同步未执行：${result.unsupportedReason}`);
-      } else {
-        setSyncMessage(`同步完成：新增 ${result.addedModelIds?.length ?? 0} 个模型`);
-      }
-      await load();
-      onRefresh?.();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "同步失败");
-    } finally {
-      setSyncing(null);
-    }
-  }
-
   return (
     <section data-testid="providers-view">
       <div className="mb-4 flex items-center justify-between">
@@ -271,7 +250,6 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
         />
       ) : null}
       {successMessage ? <p className="mb-3 text-sm text-emerald-600 dark:text-emerald-400">{successMessage}</p> : null}
-      {syncMessage ? <p className="mb-3 text-sm text-emerald-500 dark:text-emerald-400">{syncMessage}</p> : null}
 
       <DataTable
         rows={providers}
@@ -359,13 +337,12 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
                 </button>
                 <button
                   type="button"
-                  aria-label={`同步 ${row.id}`}
-                  disabled={syncing === row.id}
-                  onClick={() => void handleSync(row)}
-                  className="inline-flex items-center gap-1 rounded border border-primary/50 px-2 py-1 text-xs text-primary hover:bg-primary/10 disabled:opacity-40"
+                  aria-label={`发现模型 ${row.id}`}
+                  onClick={() => setDiscoverTarget(row)}
+                  className="inline-flex items-center gap-1 rounded border border-primary/50 px-2 py-1 text-xs text-primary hover:bg-primary/10"
                 >
-                  <RotateCw className="h-3 w-3" />
-                  同步
+                  <Search className="h-3 w-3" />
+                  发现模型
                 </button>
                 <button
                   type="button"
@@ -389,6 +366,23 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
         client={client}
         onCancel={() => setModelTarget(null)}
         onChanged={() => {
+          void load();
+          onRefresh?.();
+        }}
+      />
+
+      <ProviderDiscoverDialog
+        open={Boolean(discoverTarget)}
+        provider={discoverTarget}
+        client={client}
+        onCancel={() => setDiscoverTarget(null)}
+        onAdded={({ addedCount, enabled }) => {
+          setDiscoverTarget(null);
+          setSuccessMessage(
+            enabled
+              ? `已添加并启用 ${addedCount} 个模型`
+              : `已添加 ${addedCount} 个模型`
+          );
           void load();
           onRefresh?.();
         }}

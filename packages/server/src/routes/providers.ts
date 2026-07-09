@@ -1,9 +1,11 @@
 import {
   addCustomProvider,
   addProviderFromPreset,
-  applySyncedModels,
+  batchAddProviderModels,
+  batchRemoveProviderModels,
   createConfigAdapter,
   disableProvider,
+  discoverProviderModels,
   editProvider,
   inspectEnvFile,
   listProviderEnvRefs,
@@ -17,16 +19,30 @@ import {
   removeProvider,
   restoreDisabledProvider,
   summarizeConfigDiff,
-  syncProviderModels,
   upsertDisabledProviderState,
   writeOpenClawTransaction,
   type EnvVariableSummary,
   type OcSwitchPaths
 } from "@oc-switch/core";
-import type { Hono } from "hono";
-import { providerEnvVar as contextProviderEnvVar, readConfig, readEnvContent, withDisabledStatus, type AppRuntime } from "../context";
+import type { Context, Hono } from "hono";
+import {
+  assertProviderCanEnable,
+  providerEnvVar as contextProviderEnvVar,
+  readConfig,
+  readEnvContent,
+  withDisabledStatus,
+  type AppRuntime
+} from "../context";
 import { jsonError } from "../errors";
-import { optionalEnvUpdateOptions, requireBoolean, requireCustomProviderInput, requireMergeCaseDuplicateInput, requireString } from "../schemas";
+import {
+  optionalEnvUpdateOptions,
+  requireBatchAddProviderModelsInput,
+  requireBatchRemoveProviderModelsInput,
+  requireBoolean,
+  requireCustomProviderInput,
+  requireMergeCaseDuplicateInput,
+  requireString
+} from "../schemas";
 
 function envStatus(summary: EnvVariableSummary | undefined) {
   if (!summary?.present) return "missing";
@@ -42,6 +58,37 @@ function providerEnvPreview(paths: OcSwitchPaths, envVar: string) {
     providerRefs: listProviderEnvRefs(config),
     manifest: readManifest(paths.stateDir),
     updates: { [envVar]: "" }
+  });
+}
+
+/** 只读发现远端模型目录；不写配置、不建备份 */
+async function handleProviderDiscover(c: Context, runtime: AppRuntime) {
+  const providerId = requireString(c.req.param("id"), "id");
+  const config = readConfig(runtime.currentPaths());
+  const envContent = readEnvContent(runtime.currentPaths());
+  const discoverResult = await discoverProviderModels(config, providerId, {
+    fetchImpl: runtime.fetchImpl,
+    ...(envContent !== undefined ? { envContent } : {})
+  });
+  if (discoverResult.unsupportedReason) {
+    return c.json({
+      ok: false,
+      providerId: discoverResult.providerId,
+      remoteModels: [],
+      alreadyAddedIds: [],
+      truncated: false,
+      unsupportedReason: discoverResult.unsupportedReason
+    });
+  }
+  return c.json({
+    ok: true,
+    providerId: discoverResult.providerId,
+    remoteModels: discoverResult.remoteModels,
+    alreadyAddedIds: discoverResult.alreadyAddedIds,
+    truncated: discoverResult.truncated,
+    ...(discoverResult.truncationReason !== undefined
+      ? { truncationReason: discoverResult.truncationReason }
+      : {})
   });
 }
 
@@ -366,41 +413,72 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
     }
   });
 
+  app.post("/api/providers/:id/discover", async (c) => {
+    try {
+      return await handleProviderDiscover(c, runtime);
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
   app.post("/api/providers/:id/sync", async (c) => {
     try {
+      return await handleProviderDiscover(c, runtime);
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/providers/:id/models/batch-add", async (c) => {
+    try {
       const providerId = c.req.param("id");
-      const config = readConfig(runtime.currentPaths());
-      const envContent = readEnvContent(runtime.currentPaths());
-      const syncResult = await syncProviderModels(config, providerId, {
-        fetchImpl: runtime.fetchImpl,
-        ...(envContent !== undefined ? { envContent } : {})
-      });
-      if (syncResult.unsupportedReason) {
-        return c.json({
-          ok: false,
-          unsupportedReason: syncResult.unsupportedReason,
-          addedModelIds: [],
-          skippedModelIds: syncResult.skippedModelIds
-        });
-      }
-      if (syncResult.addedModelIds.length === 0) {
-        return c.json({
-          ok: true,
-          addedModelIds: [],
-          skippedModelIds: syncResult.skippedModelIds
-        });
-      }
+      const body = await c.req.json() as Record<string, unknown>;
+      const input = requireBatchAddProviderModelsInput(body);
+      const paths = runtime.currentPaths();
+      // disable 状态下整单拒绝，即使 enable 为 false
+      assertProviderCanEnable(paths, providerId);
+      let addedModelIds: string[] = [];
+      let skippedModelIds: string[] = [];
       const result = await writeOpenClawTransaction({
-        ...runtime.currentPaths(),
-        reason: `sync provider ${providerId}`,
-        mutate(current) {
-          return applySyncedModels(current, providerId, syncResult.addedModelIds);
+        ...paths,
+        reason: `batch-add models for provider ${providerId}`,
+        mutate(config) {
+          const batch = batchAddProviderModels(config, providerId, input);
+          addedModelIds = batch.addedModelIds;
+          skippedModelIds = batch.skippedModelIds;
+          return batch.config;
         }
       });
       return c.json({
         ok: true,
-        addedModelIds: syncResult.addedModelIds,
-        skippedModelIds: syncResult.skippedModelIds,
+        addedModelIds,
+        skippedModelIds,
+        enabled: input.enable,
+        backupId: result.backupDir.split("/").pop()
+      });
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/providers/:id/models/batch-remove", async (c) => {
+    try {
+      const providerId = c.req.param("id");
+      const body = await c.req.json() as Record<string, unknown>;
+      const input = requireBatchRemoveProviderModelsInput(body);
+      let removedModelIds: string[] = [];
+      const result = await writeOpenClawTransaction({
+        ...runtime.currentPaths(),
+        reason: `batch-remove models for provider ${providerId}`,
+        mutate(config) {
+          const batch = batchRemoveProviderModels(config, providerId, input);
+          removedModelIds = batch.removedModelIds;
+          return batch.config;
+        }
+      });
+      return c.json({
+        ok: true,
+        removedModelIds,
         backupId: result.backupDir.split("/").pop()
       });
     } catch (error) {

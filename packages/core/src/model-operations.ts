@@ -1,6 +1,7 @@
 import { formatModelRef, parseModelRef } from "./model-ref";
 import { defaultModelName } from "./openclaw-compat";
 import { ensureDefaults, hasProviderModel, type OperationResult } from "./operation-common";
+import { assertProviderModelCapacity } from "./provider-model-limits";
 import type { AllowlistEntry, OpenClawConfig, OpenClawModel, ProviderModelInput } from "./types";
 
 function assertPrimaryRemovalAllowed(
@@ -120,6 +121,8 @@ export function addProviderModel(
   if (models.some((model) => model.id === refInput.modelId)) {
     throw new Error(`Model ${ref} already exists`);
   }
+
+  assertProviderModelCapacity(provider, 1);
 
   provider.models = [...models, applyProviderModelInput(undefined, refInput.input)];
 

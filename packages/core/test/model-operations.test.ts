@@ -8,6 +8,7 @@ import {
   setPrimaryModel,
   updateProviderModel
 } from "../src/model-operations";
+import { MAX_PROVIDER_MODELS } from "../src/provider-model-limits";
 import { addProviderFromPreset } from "../src/provider-operations";
 import type { OpenClawConfig } from "../src/types";
 
@@ -69,6 +70,19 @@ describe("addProviderModel", () => {
     });
     expect(result.config.models?.providers?.nvidia?.models?.map((m) => m.id)).toContain("deepseek-ai/deepseek-v4-pro");
     expect(result.config.agents?.defaults?.models?.["nvidia/deepseek-ai/deepseek-v4-pro"]).toBeUndefined();
+  });
+
+  test("rejects when provider catalog already at capacity", () => {
+    const config = cloneSample();
+    config.models!.providers!.nvidia!.models = Array.from({ length: MAX_PROVIDER_MODELS }, (_, i) => ({
+      id: `model-${i}`,
+      name: `Model ${i}`
+    }));
+
+    expect(() => addProviderModel(config, "nvidia", {
+      id: "one-too-many",
+      enabled: false
+    })).toThrow(/limit|20/i);
   });
 });
 

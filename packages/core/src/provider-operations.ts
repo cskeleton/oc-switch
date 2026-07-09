@@ -2,6 +2,7 @@ import { formatModelRef, parseModelRef } from "./model-ref";
 import { setPrimaryModel } from "./model-operations";
 import { formatEnvRefForOpenClaw, ensureModelName } from "./openclaw-compat";
 import { ensureDefaults, type OperationResult } from "./operation-common";
+import { assertProviderModelCapacity } from "./provider-model-limits";
 import type { CustomProviderInput, OpenClawConfig, OpenClawModel, ProviderPreset } from "./types";
 
 function removeLegacyAuthHeaderRef<T extends { authHeader?: unknown }>(provider: T): T {
@@ -80,6 +81,7 @@ export function addProviderFromPreset(
 ): OperationResult {
   ensureDefaults(config);
   const existingProvider = config.models!.providers![preset.id];
+  const existingIds = new Set((existingProvider?.models ?? []).map((m) => m.id));
   const modelsById = new Map<string, OpenClawModel>();
 
   for (const model of existingProvider?.models ?? []) {
@@ -90,6 +92,9 @@ export function addProviderFromPreset(
     const existingModel = modelsById.get(model.id);
     modelsById.set(model.id, existingModel ? { ...existingModel, ...model } : model);
   }
+
+  const netNew = preset.models.filter((m) => !existingIds.has(m.id)).length;
+  assertProviderModelCapacity(existingProvider, netNew);
 
   config.models!.providers![preset.id] = removeLegacyAuthHeaderRef({
     ...existingProvider,
@@ -162,6 +167,7 @@ function assertCustomProviderInput(config: OpenClawConfig, input: CustomProvider
 export function addCustomProvider(config: OpenClawConfig, input: CustomProviderInput): OperationResult {
   ensureDefaults(config);
   assertCustomProviderInput(config, input);
+  assertProviderModelCapacity(undefined, input.models.length);
 
   const baseUrl = normalizeCustomProviderBaseUrl(input.api, input.baseUrl, input.isFullUrl);
   const models = input.models.map((model): OpenClawModel =>

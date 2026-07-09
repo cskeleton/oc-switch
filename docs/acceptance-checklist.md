@@ -16,7 +16,7 @@
 | 5 | 写入不影响 `acp`、`channels` 等非目标字段 | 单元 | `packages/core/test/diff-guard.test.ts`；`packages/core/test/diff.test.ts` |
 | 6 | WebGUI 在 iPad Safari 尺寸可添加 provider 与切换模型 | Playwright e2e | `bun run test:e2e`（mobile 390×844 viewport） |
 | 7 | CLI `use` 与 WebGUI 切换 primary 行为一致 | 单元 + e2e | `packages/cli/test/cli.test.ts`（uses slash-containing model ref）；`packages/web/test/e2e/webgui.e2e.ts` |
-| 8 | `provider sync` 从 OpenAI 兼容端点拉取模型 | 单元 + CLI | `packages/core/test/provider-sync.test.ts`；`packages/cli/test/cli.test.ts`（provider sync） |
+| 8 | `provider sync` 从远端发现模型（默认不写盘）；`--add` 按需 batch-add | 单元 + CLI | `packages/core/test/provider-sync.test.ts`；`packages/cli/test/cli.test.ts`（provider sync / sync --add）；详见 `2026-07-09-oc-switch-provider-model-discover-design.md` |
 | 9 | VPS `serve --host 0.0.0.0 --token` 可通过浏览器管理 | 单元 + 文档 | `packages/core/test/token-manager.test.ts`；`packages/cli/test/cli.test.ts`（serve rejects 0.0.0.0）；README VPS 章节 |
 | 10 | 无 API Key 泄漏 | 全套件 + smoke | `bun run acceptance`；各测试文件 `not.toContain("sk-")` 断言 |
 

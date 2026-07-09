@@ -7,6 +7,7 @@ import {
   editProvider,
   removeProvider
 } from "../src/provider-operations";
+import { MAX_PROVIDER_MODELS } from "../src/provider-model-limits";
 import type { OpenClawConfig, ProviderPreset } from "../src/types";
 
 const sample = sampleJson as OpenClawConfig;
@@ -88,6 +89,85 @@ describe("addProviderFromPreset", () => {
     expect(result.config.agents?.defaults?.models?.["nvidia/deepseek-ai/deepseek-v4-pro"]).toEqual({
       alias: "nv-ds-pro"
     });
+  });
+
+  test("rejects preset merge when final catalog exceeds capacity", () => {
+    const config = cloneSample();
+    config.models!.providers!.nvidia!.models = Array.from({ length: 19 }, (_, i) => ({
+      id: `existing-${i}`,
+      name: `Existing ${i}`
+    }));
+
+    const preset: ProviderPreset = {
+      id: "nvidia",
+      name: "NVIDIA",
+      provider: {
+        api: "openai-completions",
+        baseUrl: "https://integrate.api.nvidia.com/v1",
+        apiKeyEnv: "NVIDIA_API_KEY"
+      },
+      models: [
+        { id: "new-a", name: "New A" },
+        { id: "new-b", name: "New B" }
+      ]
+    };
+
+    expect(() => addProviderFromPreset(config, preset, [])).toThrow(/limit|20/i);
+  });
+
+  test("allows preset that only updates existing models when already at capacity", () => {
+    const config = cloneSample();
+    config.models!.providers!.nvidia!.models = Array.from({ length: MAX_PROVIDER_MODELS }, (_, i) => ({
+      id: `model-${i}`,
+      name: `Model ${i}`
+    }));
+
+    const preset: ProviderPreset = {
+      id: "nvidia",
+      name: "NVIDIA",
+      provider: {
+        api: "openai-completions",
+        baseUrl: "https://updated.example/v1",
+        apiKeyEnv: "NVIDIA_API_KEY"
+      },
+      models: [
+        { id: "model-0", name: "Updated Model 0" },
+        { id: "model-1", name: "Updated Model 1" }
+      ]
+    };
+
+    const result = addProviderFromPreset(config, preset, []);
+    expect(result.config.models?.providers?.nvidia?.models).toHaveLength(MAX_PROVIDER_MODELS);
+    expect(result.config.models?.providers?.nvidia?.models?.[0]?.name).toBe("Updated Model 0");
+    expect(result.config.models?.providers?.nvidia?.baseUrl).toBe("https://updated.example/v1");
+  });
+
+  test("allows preset that only updates existing models when catalog already over cap", () => {
+    const config = cloneSample();
+    const overCapCount = MAX_PROVIDER_MODELS + 1;
+    config.models!.providers!.nvidia!.models = Array.from({ length: overCapCount }, (_, i) => ({
+      id: `model-${i}`,
+      name: `Model ${i}`
+    }));
+
+    const preset: ProviderPreset = {
+      id: "nvidia",
+      name: "NVIDIA",
+      provider: {
+        api: "openai-completions",
+        baseUrl: "https://updated.example/v1",
+        apiKeyEnv: "NVIDIA_API_KEY"
+      },
+      models: [
+        { id: "model-0", name: "Updated Model 0" },
+        { id: "model-1", name: "Updated Model 1" }
+      ]
+    };
+
+    const result = addProviderFromPreset(config, preset, []);
+    expect(result.config.models?.providers?.nvidia?.models).toHaveLength(overCapCount);
+    expect(result.config.models?.providers?.nvidia?.models?.[0]?.name).toBe("Updated Model 0");
+    expect(result.config.models?.providers?.nvidia?.models?.[1]?.name).toBe("Updated Model 1");
   });
 
   test("removes legacy authHeader env ref when preset rewrites credentials", () => {
@@ -276,6 +356,22 @@ describe("addCustomProvider", () => {
     expect(() => addCustomProvider(cloneSample(), { ...base, baseUrl: "ftp://bad.example" })).toThrow("baseUrl must be an http or https URL");
     expect(() => addCustomProvider(cloneSample(), { ...base, models: [] })).toThrow("models must contain at least one model");
     expect(() => addCustomProvider(cloneSample(), { ...base, models: [{ id: "dup" }, { id: "dup" }] })).toThrow("Duplicate model id dup");
+  });
+
+  test("rejects when models.length exceeds capacity", () => {
+    const config = cloneSample();
+    const models = Array.from({ length: MAX_PROVIDER_MODELS + 1 }, (_, i) => ({ id: `model-${i}` }));
+
+    expect(() => addCustomProvider(config, {
+      providerId: "over-cap",
+      displayName: "Over Cap",
+      api: "openai-completions",
+      baseUrl: "https://api.example.com",
+      isFullUrl: false,
+      apiKeyEnv: "OVER_CAP_API_KEY",
+      models,
+      enableAllModels: false
+    })).toThrow(/limit|20/i);
   });
 
   test("拒绝 case-insensitive 同名 provider", () => {

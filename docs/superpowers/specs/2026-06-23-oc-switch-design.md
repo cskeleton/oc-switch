@@ -232,6 +232,11 @@ interface AllowlistEntry {
 
 - 仅影响 allowlist，不删除 `provider.models` 中的定义（便于重新启用）
 
+**从远端发现模型（与上列 allowlist 联动无关）：**
+
+- 默认仅 discover，不写 `openclaw.json`；显式勾选 / CLI `--add` 才 batch-add 进 `provider.models`
+- 权威细节见 `2026-07-09-oc-switch-provider-model-discover-design.md`（含硬上限 20、Anthropic adapter、旧全量 sync 已移除）
+
 ### 3.5 `.env` 管理规则
 
 oc-switch 不把 API Key 明文写入 `openclaw.json`，只写 env 引用。
@@ -278,7 +283,7 @@ ELYSIVER_API_KEY=...
 
 - 修改 baseUrl、API Key
 - 模型列表 CRUD（id、名称、alias、启用开关）
-- 「从站拉取模型列表」：调用 Core Engine 的 provider sync adapter，合并到列表
+- 「发现模型」：调用 Core Engine discover（只读）；用户勾选后再 batch-add（见 Discover 规格）
 
 ### 4.3 模型切换 `/models`
 
@@ -335,10 +340,11 @@ oc-switch model enable <provider>/<model-id...>
 oc-switch model disable <provider>/<model-id...>
 oc-switch use <provider>/<model-id...>
 
-# 同步
-oc-switch provider sync <name>          # 从 provider models 端点拉取更新
-oc-switch import                        # 从 openclaw.json 反向导入 preset
-oc-switch diff                          # 预览当前配置 vs 上次备份
+# 同步（发现；默认不写盘）
+oc-switch provider sync <name>                # 发现远端模型列表（不写配置）
+oc-switch provider sync <name> --add id1,id2  # 按需 batch-add（可选 --enable）
+oc-switch import                              # 从 openclaw.json 反向导入 preset
+oc-switch diff                                # 预览当前配置 vs 上次备份
 
 # 备份
 oc-switch backup list
@@ -366,7 +372,9 @@ oc-switch use nvidia/deepseek-ai/deepseek-v4-flash
 | POST | `/api/providers` | 从 preset 添加 provider |
 | PUT | `/api/providers/:id` | 更新 provider |
 | DELETE | `/api/providers/:id` | 删除 provider |
-| POST | `/api/providers/:id/sync` | 从远端拉取模型列表 |
+| POST | `/api/providers/:id/sync` | discover 别名（只读；权威见 Discover 规格） |
+| POST | `/api/providers/:id/discover` | 发现远端模型（不写盘） |
+| POST | `/api/providers/:id/models/batch-add` | 按需添加选中模型 |
 | GET | `/api/models` | 列出 allowlist 模型 |
 | PUT | `/api/models/primary` | 设置 primary model，body: `{ "ref": "provider/model" }` |
 | PATCH | `/api/models` | 启用/禁用 allowlist 条目，body: `{ "ref": "provider/model", "enabled": true }` |
@@ -428,17 +436,17 @@ JSON5 处理约定：
 | 文件锁超时 | 拒绝写入，提示已有 oc-switch 操作正在进行 |
 | diff guard 发现非白名单字段变化 | 拒绝写入，并保留临时 diff 用于诊断 |
 
-### 7.4 Provider Sync 兼容性
+### 7.4 Provider Sync / Discover 兼容性
 
-`provider sync` 首版按 API 类型分层处理：
+远端模型流已改为 **discover → 按需 batch-add**（不再无参全量合并入库）。权威规格：`2026-07-09-oc-switch-provider-model-discover-design.md`。
 
-| API 类型 | 首版行为 |
+| API 类型 | 行为摘要 |
 |----------|----------|
-| `openai-completions` | 归一化 baseUrl 后请求 models 端点，避免重复 `/v1`，兼容 OpenAI list models 响应 |
-| `anthropic-messages` | 默认不自动拉取，提示手动维护；后续可加 provider-specific adapter |
-| `google-generative-ai` | 默认不自动拉取，提示手动维护；后续可加 provider-specific adapter |
+| `openai-completions` | 支持 discover；归一化 baseUrl 后请求 models 端点 |
+| `anthropic-messages` | 支持 discover（含分页耗尽 / truncated） |
+| `google-generative-ai` | unsupported，提示手动维护 |
 
-sync 合并模型时只新增缺失模型，不删除已有模型；删除需由用户显式确认。
+CLI：`provider sync <id>` 仅发现不写盘；`--add` 才写入。删除本地目录模型须用户显式确认（多选删除 / 只保留已启用）。
 
 ---
 
@@ -499,7 +507,7 @@ oc-switch/
 - [ ] 写入不影响 `acp`、`channels` 等非目标字段
 - [ ] WebGUI 在 iPad Safari 上可完成 provider 添加与模型切换
 - [ ] CLI `oc-switch use` 与 WebGUI 切换 primary model 行为一致
-- [ ] `oc-switch provider sync` 能从 OpenAI 兼容端点拉取模型列表
+- [ ] `oc-switch provider sync` 能从兼容端点发现模型（默认不写盘）；`--add` 按需写入
 - [ ] 远程 VPS 上 `serve --host 0.0.0.0 --token` 可通过浏览器管理
 
 ### 10.1 Fixture 验收用例

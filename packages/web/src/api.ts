@@ -217,6 +217,50 @@ export interface EnvIndexResponse {
 
 export type ApiType = "openai-completions" | "anthropic-messages" | "google-generative-ai";
 
+/** 远端发现的模型条目（provider-local raw id） */
+export interface RemoteModelInfo {
+  id: string;
+  name?: string;
+}
+
+/** POST /api/providers/:id/discover 响应 */
+export interface ProviderDiscoverResponse {
+  ok: boolean;
+  providerId: string;
+  remoteModels: RemoteModelInfo[];
+  alreadyAddedIds: string[];
+  truncated: boolean;
+  truncationReason?: string;
+  unsupportedReason?: string | null;
+}
+
+/** POST /api/providers/:id/models/batch-add 请求体 */
+export interface BatchAddProviderModelsInput {
+  models: Array<{ id: string; name?: string }>;
+  enable?: boolean;
+}
+
+/** POST /api/providers/:id/models/batch-add 响应 */
+export interface BatchAddProviderModelsResponse {
+  ok: boolean;
+  addedModelIds: string[];
+  skippedModelIds: string[];
+  enabled: boolean;
+  backupId?: string;
+}
+
+/** POST /api/providers/:id/models/batch-remove 请求体（二选一） */
+export type BatchRemoveProviderModelsInput =
+  | { modelIds: string[]; keepEnabledOnly?: undefined }
+  | { keepEnabledOnly: true; modelIds?: undefined };
+
+/** POST /api/providers/:id/models/batch-remove 响应 */
+export interface BatchRemoveProviderModelsResponse {
+  ok: boolean;
+  removedModelIds: string[];
+  backupId?: string;
+}
+
 export interface CustomProviderModelInput {
   id: string;
   name?: string;
@@ -364,11 +408,22 @@ export function createApiClient(options: ApiClientOptions) {
           body: JSON.stringify({ enabled })
         }
       ),
+    /** 发现远端模型目录（只读，不写盘） */
+    discoverProvider: (id: string) =>
+      request<ProviderDiscoverResponse>(`/api/providers/${id}/discover`, { method: "POST" }),
+    /** @deprecated 与 discoverProvider 相同；旧 sync 全量写入语义已移除 */
     syncProvider: (id: string) =>
-      request<{ ok: boolean; addedModelIds?: string[]; unsupportedReason?: string }>(
-        `/api/providers/${id}/sync`,
-        { method: "POST" }
-      ),
+      request<ProviderDiscoverResponse>(`/api/providers/${id}/discover`, { method: "POST" }),
+    batchAddProviderModels: (id: string, body: BatchAddProviderModelsInput) =>
+      request<BatchAddProviderModelsResponse>(`/api/providers/${id}/models/batch-add`, {
+        method: "POST",
+        body: JSON.stringify(body)
+      }),
+    batchRemoveProviderModels: (id: string, body: BatchRemoveProviderModelsInput) =>
+      request<BatchRemoveProviderModelsResponse>(`/api/providers/${id}/models/batch-remove`, {
+        method: "POST",
+        body: JSON.stringify(body)
+      }),
     getBackups: () => request<{ backups: BackupEntry[] }>("/api/backups"),
     restoreBackup: (id: string, target?: "backup" | "current") =>
       request<{ ok: boolean; id: string; safetyBackupId?: string; gatewayEnvSync?: GatewayEnvSyncResult; gatewayRestartRequired?: boolean }>(`/api/backups/${id}/restore`, {

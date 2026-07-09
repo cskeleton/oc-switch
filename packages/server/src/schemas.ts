@@ -174,6 +174,50 @@ export interface MergeCaseDuplicateInput {
   keepModelIds?: string[];
 }
 
+/** batch-add 请求体：models 为 provider-local raw id */
+export function requireBatchAddProviderModelsInput(body: Record<string, unknown>) {
+  const modelsValue = body.models;
+  if (!Array.isArray(modelsValue) || modelsValue.length === 0) {
+    throw new Error("models must be a non-empty array");
+  }
+  const models = modelsValue.map((item, index) => {
+    if (!item || typeof item !== "object") throw new Error(`models.${index} must be an object`);
+    const entry = item as Record<string, unknown>;
+    const parsed: { id: string; name?: string } = {
+      id: requireString(entry.id, `models.${index}.id`)
+    };
+    const name = optionalString(entry.name, `models.${index}.name`);
+    if (name !== undefined) parsed.name = name;
+    return parsed;
+  });
+  return {
+    models,
+    enable: requireBooleanDefault(body.enable, "enable", false)
+  };
+}
+
+/** batch-remove 请求体：modelIds 与 keepEnabledOnly 二选一 */
+export function requireBatchRemoveProviderModelsInput(
+  body: Record<string, unknown>
+): { modelIds: string[]; keepEnabledOnly?: undefined } | { keepEnabledOnly: true; modelIds?: undefined } {
+  const hasKeepEnabledOnly = body.keepEnabledOnly === true;
+  const modelIdsValue = body.modelIds;
+  const hasModelIds = Array.isArray(modelIdsValue) && modelIdsValue.length > 0;
+
+  if (hasKeepEnabledOnly && hasModelIds) {
+    throw new Error("modelIds and keepEnabledOnly are mutually exclusive");
+  }
+  if (hasKeepEnabledOnly) {
+    return { keepEnabledOnly: true };
+  }
+  if (!hasModelIds) {
+    throw new Error("modelIds must be a non-empty array");
+  }
+  return {
+    modelIds: modelIdsValue.map((id, index) => requireString(id, `modelIds.${index}`))
+  };
+}
+
 export function requireMergeCaseDuplicateInput(body: Record<string, unknown>): MergeCaseDuplicateInput {
   const removeIdsValue = body.removeIds;
   if (!Array.isArray(removeIdsValue) || removeIdsValue.length === 0) {

@@ -116,6 +116,39 @@ test("patchProviderState sends enabled flag to provider state route", async () =
   expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ enabled: false });
 });
 
+test("discover 与 batch-add/remove 使用正确路径与 JSON body", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const client = createApiClient({
+    baseUrl: "http://localhost:7420",
+    token: "token",
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url: String(url), init });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+  });
+
+  await client.discoverProvider("nvidia");
+  await client.syncProvider("nvidia");
+  await client.batchAddProviderModels("nvidia", {
+    models: [{ id: "openai/gpt-4o", name: "GPT-4o" }],
+    enable: true
+  });
+  await client.batchRemoveProviderModels("nvidia", { modelIds: ["openai/gpt-4o"] });
+  await client.batchRemoveProviderModels("nvidia", { keepEnabledOnly: true });
+
+  expect(calls[0]!.url).toBe("http://localhost:7420/api/providers/nvidia/discover");
+  expect(calls[0]!.init.method).toBe("POST");
+  expect(calls[1]!.url).toBe("http://localhost:7420/api/providers/nvidia/discover");
+  expect(calls[2]!.url).toBe("http://localhost:7420/api/providers/nvidia/models/batch-add");
+  expect(JSON.parse(String(calls[2]!.init.body))).toEqual({
+    models: [{ id: "openai/gpt-4o", name: "GPT-4o" }],
+    enable: true
+  });
+  expect(calls[3]!.url).toBe("http://localhost:7420/api/providers/nvidia/models/batch-remove");
+  expect(JSON.parse(String(calls[3]!.init.body))).toEqual({ modelIds: ["openai/gpt-4o"] });
+  expect(JSON.parse(String(calls[4]!.init.body))).toEqual({ keepEnabledOnly: true });
+});
+
 test("getConfigStatus 请求 /api/config-status 并携带 Bearer auth", async () => {
   const calls: Request[] = [];
   const client = createApiClient({

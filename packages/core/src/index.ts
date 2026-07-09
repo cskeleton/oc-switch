@@ -26,3 +26,5 @@ export * from "./gateway-systemd-env-sync";
 export * from "./gateway-systemd-unit";
 export * from "./gateway-actions";
 export * from "./openclaw-compat";
+export * from "./provider-model-limits";
+export * from "./provider-model-batch";

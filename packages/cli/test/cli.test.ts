@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sample from "../../core/test/fixtures/openclaw.sample.json";
 import type { OpenClawConfig } from "@oc-switch/core";
+import { MAX_PROVIDER_MODELS } from "@oc-switch/core";
 import { prepareGatewayEnvTarget, expectedGatewayEnvPath } from "../../core/test/gateway-sync-fixture";
 
 const tempDirs: string[] = [];
@@ -456,10 +457,11 @@ describe("cli model crud", () => {
 });
 
 describe("cli provider sync", () => {
-  test("syncs openai-compatible provider with mocked fetch", async () => {
+  test("discovers openai-compatible provider with mocked fetch without writing config", async () => {
     const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
     const configPath = join(dir, "openclaw.json");
-    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+    const configText = `${JSON.stringify(sample, null, 2)}\n`;
+    writeFileSync(configPath, configText);
 
     const result = await runCli(["provider", "sync", "nvidia"], {
       OPENCLAW_CONFIG_PATH: configPath,
@@ -469,24 +471,207 @@ describe("cli provider sync", () => {
 
     expect(result.code).toBe(0);
     expect(result.stdout).not.toContain("sk-");
-    const config = JSON.parse(readFileSync(configPath, "utf8"));
-    expect(config.models.providers.nvidia.models.map((m: { id: string }) => m.id)).toContain("remote-model-a");
-    expect(config.models.providers.nvidia.models.map((m: { id: string }) => m.id)).toContain("remote-model-b");
-    expect(config.agents.defaults.models["nvidia/remote-model-a"]).toBeUndefined();
+    expect(result.stdout).toContain("remote-model-a");
+    expect(result.stdout).toContain("remote-model-b");
+    expect(readFileSync(configPath, "utf8")).toBe(configText);
   });
 
-  test("reports unsupported for anthropic provider", async () => {
+  test("reports unsupported for google-generative-ai provider", async () => {
     const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
     const configPath = join(dir, "openclaw.json");
-    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+    const config = structuredClone(sample) as OpenClawConfig;
+    config.models!.providers!["google-test"] = {
+      baseUrl: "https://generativelanguage.googleapis.com",
+      api: "google-generative-ai",
+      apiKey: { source: "env", id: "GOOGLE_API_KEY" },
+      models: [{ id: "gemini-pro" }]
+    };
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
 
-    const result = await runCli(["provider", "sync", "minimax-portal"], {
+    const result = await runCli(["provider", "sync", "google-test"], {
       OPENCLAW_CONFIG_PATH: configPath,
       HOME: dir
     });
 
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain("anthropic-messages");
+    expect(result.stdout).toContain("google-generative-ai");
+  });
+
+  test("sync --add writes models including ids with slashes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+    const result = await runCli([
+      "provider", "sync", "nvidia",
+      "--add", "vendor/new-model,vendor/nested/extra"
+    ], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("已添加 2 个模型");
+    expect(result.stdout).toContain("vendor/new-model");
+    expect(result.stdout).toContain("vendor/nested/extra");
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    const ids = config.models.providers.nvidia.models.map((m: { id: string }) => m.id);
+    expect(ids).toContain("vendor/new-model");
+    expect(ids).toContain("vendor/nested/extra");
+    expect(config.agents.defaults.models["nvidia/vendor/new-model"]).toBeUndefined();
+    expect(config.agents.defaults.models["nvidia/vendor/nested/extra"]).toBeUndefined();
+  });
+
+  test("sync --add --enable writes allowlist", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+    const result = await runCli([
+      "provider", "sync", "nvidia",
+      "--add", "vendor/enabled-model",
+      "--enable"
+    ], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    expect(result.code).toBe(0);
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(config.models.providers.nvidia.models.map((m: { id: string }) => m.id)).toContain("vendor/enabled-model");
+    expect(config.agents.defaults.models["nvidia/vendor/enabled-model"]).toEqual({});
+  });
+
+  test("sync --add rejects when provider model catalog is over limit", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "openclaw.json");
+    const config = structuredClone(sample) as OpenClawConfig;
+    config.models!.providers!.nvidia!.models = Array.from({ length: MAX_PROVIDER_MODELS }, (_, index) => ({
+      id: `catalog-model-${index}`,
+      name: `Catalog ${index}`
+    }));
+    const configText = `${JSON.stringify(config, null, 2)}\n`;
+    writeFileSync(configPath, configText);
+
+    const result = await runCli([
+      "provider", "sync", "nvidia",
+      "--add", "vendor/over-cap"
+    ], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toMatch(/20|limit|capacity/i);
+    expect(readFileSync(configPath, "utf8")).toBe(configText);
+  });
+
+  test("sync --add rejects disabled provider", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+    await runCli(["provider", "disable", "nvidia"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    const result = await runCli([
+      "provider", "sync", "nvidia",
+      "--add", "vendor/blocked"
+    ], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("Provider nvidia is disabled");
+  });
+});
+
+describe("cli provider models remove", () => {
+  test("removes models by --ids", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "openclaw.json");
+    const config = structuredClone(sample) as OpenClawConfig;
+    config.models!.providers!.nvidia!.models!.push(
+      { id: "vendor/removable-a", name: "Removable A" },
+      { id: "vendor/removable-b", name: "Removable B" }
+    );
+    config.agents!.defaults!.models!["nvidia/vendor/removable-b"] = {};
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    const result = await runCli([
+      "provider", "models", "remove", "nvidia",
+      "--ids", "vendor/removable-a"
+    ], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("已删除 1 个模型");
+    expect(result.stdout).toContain("vendor/removable-a");
+    const after = JSON.parse(readFileSync(configPath, "utf8"));
+    const ids = after.models.providers.nvidia.models.map((m: { id: string }) => m.id);
+    expect(ids).not.toContain("vendor/removable-a");
+    expect(ids).toContain("vendor/removable-b");
+    expect(after.agents.defaults.models["nvidia/vendor/removable-a"]).toBeUndefined();
+    expect(after.agents.defaults.models["nvidia/vendor/removable-b"]).toEqual({});
+  });
+
+  test("keep-enabled-only removes unlisted catalog models", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "openclaw.json");
+    const config = structuredClone(sample) as OpenClawConfig;
+    config.models!.providers!.nvidia!.models!.push({ id: "vendor/unlisted-catalog", name: "Unlisted" });
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    const result = await runCli([
+      "provider", "models", "remove", "nvidia",
+      "--keep-enabled-only"
+    ], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("vendor/unlisted-catalog");
+    const after = JSON.parse(readFileSync(configPath, "utf8"));
+    const ids = after.models.providers.nvidia.models.map((m: { id: string }) => m.id).sort();
+    expect(ids).toEqual(["deepseek-ai/deepseek-v4-flash", "z-ai/glm5.1"].sort());
+    expect(after.agents.defaults.models["nvidia/vendor/unlisted-catalog"]).toBeUndefined();
+  });
+
+  test("requires one of --ids or --keep-enabled-only", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+    const missing = await runCli(["provider", "models", "remove", "nvidia"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+    expect(missing.code).not.toBe(0);
+    expect(missing.stderr).toContain("require one of --ids or --keep-enabled-only");
+
+    const both = await runCli([
+      "provider", "models", "remove", "nvidia",
+      "--ids", "z-ai/glm5.1",
+      "--keep-enabled-only"
+    ], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+    expect(both.code).not.toBe(0);
+    expect(both.stderr).toContain("mutually exclusive");
   });
 });
 
