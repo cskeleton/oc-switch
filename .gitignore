@@ -15,6 +15,9 @@ docs/superpowers/plans/
 # Cursor IDE 本地配置与 hooks 状态
 .cursor/
 
+# Codex 本地运行产物（误落在仓库根目录时不纳入 Git）
+.codex-runs/
+
 # 本机私有 agent 补充规则，不进入公开仓库
 AGENTS.local.md
 
