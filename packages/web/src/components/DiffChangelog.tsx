@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { ArrowRightLeft, KeyRound, Minus, Plus, Settings, Star } from "lucide-react";
+import { ArrowRightLeft, KeyRound, Minus, Plus, Power, PowerOff, Settings, Star } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import type { ConfigDiffSummary, CredentialDiffItem } from "../api";
 
@@ -17,6 +17,8 @@ export interface DiffChangelogEntry {
 export function buildDiffChangelogEntries(diff: ConfigDiffSummary): DiffChangelogEntry[] {
   const entries: DiffChangelogEntry[] = [];
   const mergedCredentialKeys = new Set<string>();
+  const providerIdsWithStateChange = new Set(diff.providerStateChanges.map((item) => item.providerId));
+  const providerIdsWithFieldChanges = new Set(diff.providerFieldChanges.map((item) => item.providerId));
 
   for (const providerId of diff.providersAdded) {
     const credential = diff.credentialsChanged.find(
@@ -59,7 +61,37 @@ export function buildDiffChangelogEntries(diff: ConfigDiffSummary): DiffChangelo
     entries.push(credentialEntry(item));
   }
 
+  for (const item of diff.providerStateChanges) {
+    if (item.change === "disable") {
+      entries.push({
+        id: `provider-state:disable:${item.providerId}`,
+        icon: PowerOff,
+        iconClassName: "text-destructive",
+        title: (
+          <>
+            停用了 Provider <strong>{item.providerId}</strong>
+          </>
+        ),
+        subtitle: "备份中为：已启用"
+      });
+      continue;
+    }
+
+    entries.push({
+      id: `provider-state:enable:${item.providerId}`,
+      icon: Power,
+      iconClassName: "text-primary",
+      title: (
+        <>
+          启用了 Provider <strong>{item.providerId}</strong>
+        </>
+      ),
+      subtitle: "备份中为：已停用"
+    });
+  }
+
   for (const ref of diff.modelsEnabled) {
+    if (providerIdsWithStateChange.has(providerFromRef(ref))) continue;
     entries.push({
       id: `model-enabled:${ref}`,
       icon: Plus,
@@ -73,6 +105,7 @@ export function buildDiffChangelogEntries(diff: ConfigDiffSummary): DiffChangelo
   }
 
   for (const ref of diff.modelsDisabled) {
+    if (providerIdsWithStateChange.has(providerFromRef(ref))) continue;
     entries.push({
       id: `model-disabled:${ref}`,
       icon: Minus,
@@ -86,7 +119,22 @@ export function buildDiffChangelogEntries(diff: ConfigDiffSummary): DiffChangelo
     });
   }
 
+  for (const item of diff.providerFieldChanges) {
+    entries.push({
+      id: `provider-field:${item.providerId}:${item.parameterName}`,
+      icon: Settings,
+      iconClassName: "text-muted-foreground",
+      title: (
+        <>
+          修改了 <strong>{item.providerId}</strong> 的 <code>{item.parameterName}</code>
+        </>
+      ),
+      subtitle: `当前: ${item.newValue}（原值: ${item.oldValue}）`
+    });
+  }
+
   for (const providerId of diff.providersChanged) {
+    if (providerIdsWithFieldChanges.has(providerId)) continue;
     entries.push({
       id: `provider-changed:${providerId}`,
       icon: Settings,
@@ -117,6 +165,11 @@ export function buildDiffChangelogEntries(diff: ConfigDiffSummary): DiffChangelo
   }
 
   return entries;
+}
+
+function providerFromRef(ref: string): string {
+  const slashIndex = ref.indexOf("/");
+  return slashIndex < 0 ? ref : ref.slice(0, slashIndex);
 }
 
 function credentialEntry(item: CredentialDiffItem): DiffChangelogEntry {

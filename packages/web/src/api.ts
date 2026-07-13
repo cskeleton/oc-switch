@@ -98,6 +98,18 @@ export interface CredentialDiffItem {
   change: "added" | "removed" | "changed";
 }
 
+export interface ProviderStateChangeItem {
+  providerId: string;
+  change: "disable" | "enable";
+}
+
+export interface ProviderFieldChangeItem {
+  providerId: string;
+  parameterName: string;
+  oldValue: string;
+  newValue: string;
+}
+
 export interface ConfigDiffSummary {
   providersAdded: string[];
   providersRemoved: string[];
@@ -106,6 +118,8 @@ export interface ConfigDiffSummary {
   modelsDisabled: string[];
   primaryChanged: { before: string | undefined; after: string | undefined } | null;
   credentialsChanged: CredentialDiffItem[];
+  providerStateChanges: ProviderStateChangeItem[];
+  providerFieldChanges: ProviderFieldChangeItem[];
 }
 
 export type CaseDuplicateKind = "provider-duplicate" | "allowlist-drift" | "same-origin-hint" | "primary-split";

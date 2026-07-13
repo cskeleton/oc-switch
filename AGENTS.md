@@ -144,6 +144,8 @@ bun run packages/cli/src/index.ts     # 直接调用 CLI
 - `anthropic-messages` 应支持模型发现；`google-generative-ai` 保持 unsupported（官方 API 仍在演进、第三方少用）。
 - 本地目录膨胀时需要批量删除 /「只保留已启用」，避免逐条删。
 - 本机日常启动优先 `oc-switch start` / `stop`（`~/bin` 薄包装），不优先 `bun compile` 独立二进制；无需为 macOS 单独拆包或仓库。
+- Dashboard 备份差异 Changelog：P0 为 Provider 增删与 Key/Credentials 变更；P1 为停用/启用、模型增删、非密钥参数与主模型切换。
+- 关注 OpenClaw `doctor`/`secrets audit` 对 `apiKey` 格式的告警；新写入宜优先 canonical SecretRef 以减少被判 plaintext 的噪音。
 
 ## Learned Workspace Facts
 
@@ -151,3 +153,4 @@ bun run packages/cli/src/index.ts     # 直接调用 CLI
 - 「模型」弹窗读的是本地已写入的 Provider 目录，不是实时远端全量列表；列表膨胀通常来自历史全量同步，可用多选删除 /「只保留已启用」清理。
 - 已禁用 Provider：禁止 batch-add / 启用类写入；批量删除与「只保留已启用」仍应可用，以便把超限目录降到上限以下。
 - 本机 launcher：`./scripts/install-local-launcher.sh` 只安装 `~/bin/oc-switch` 包装；需自行保证 `~/bin` 在 PATH；Web 登录用 API token（`~/.oc-switch/token.json` / `token rotate`），不是 macOS 系统登录密码。
+- OpenClaw 2026.6.11+ 的 `doctor`/`secrets audit` 将 `${ENV_VAR}` 字符串视为 plaintext residue；`{ source: "env", provider: "default", id: "..." }` 才算合规 SecretRef。勿用 `health repair` 把对象格式迁成 `${VAR}` 来消除 doctor 告警。

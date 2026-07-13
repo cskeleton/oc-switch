@@ -117,6 +117,8 @@ function isConfigDiffSummary(value: unknown): value is ConfigDiffSummary {
     Array.isArray(diff.modelsEnabled) &&
     Array.isArray(diff.modelsDisabled) &&
     Array.isArray(diff.credentialsChanged) &&
+    Array.isArray(diff.providerStateChanges) &&
+    Array.isArray(diff.providerFieldChanges) &&
     (diff.primaryChanged === null || diff.primaryChanged === undefined || typeof diff.primaryChanged === "object");
 }
 

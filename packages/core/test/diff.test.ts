@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import {
   parseManagedEnvVars,
   summarizeConfigDiff,
-  summarizeCredentialsDiff
+  summarizeCredentialsDiff,
+  summarizeProviderFieldChanges,
+  summarizeProviderStateChanges
 } from "../src/diff";
 import type { OpenClawConfig } from "../src/types";
 
@@ -24,7 +26,9 @@ describe("summarizeConfigDiff", () => {
       modelsEnabled: ["next/b"],
       modelsDisabled: [],
       primaryChanged: { before: "old/a", after: "next/b" },
-      credentialsChanged: []
+      credentialsChanged: [],
+      providerStateChanges: [],
+      providerFieldChanges: []
     });
   });
 });
@@ -88,5 +92,81 @@ describe("summarizeCredentialsDiff", () => {
       providersAdded: ["nvidia"],
       credentialsChanged: [{ envVar: "NVIDIA_API_KEY", change: "added", providerId: "nvidia" }]
     });
+  });
+});
+
+describe("summarizeProviderStateChanges", () => {
+  test("derives disable and enable from allowlist transitions", () => {
+    const before: OpenClawConfig = {
+      models: { providers: { alpha: { models: [] }, beta: { models: [] } } },
+      agents: {
+        defaults: {
+          models: {
+            "alpha/a1": {},
+            "beta/b1": {}
+          }
+        }
+      }
+    };
+    const after: OpenClawConfig = {
+      models: { providers: { alpha: { models: [] }, beta: { models: [] } } },
+      agents: {
+        defaults: {
+          models: {
+            "beta/b1": {},
+            "beta/b2": {}
+          }
+        }
+      }
+    };
+    expect(summarizeProviderStateChanges(before, after)).toEqual([
+      { providerId: "alpha", change: "disable" }
+    ]);
+  });
+});
+
+describe("summarizeProviderFieldChanges", () => {
+  test("returns non-secret top-level field changes", () => {
+    const before: OpenClawConfig = {
+      models: {
+        providers: {
+          nvidia: {
+            api: "openai-completions",
+            baseUrl: "https://api.nvidia.com/v1",
+            authHeader: false,
+            apiKey: "${NVIDIA_API_KEY}",
+            models: [{ id: "a" }]
+          }
+        }
+      }
+    };
+    const after: OpenClawConfig = {
+      models: {
+        providers: {
+          nvidia: {
+            api: "openai-completions",
+            baseUrl: "https://integrate.api.nvidia.com/v1",
+            authHeader: true,
+            apiKey: "${NVIDIA_API_KEY}",
+            models: [{ id: "a" }, { id: "b" }]
+          }
+        }
+      }
+    };
+
+    expect(summarizeProviderFieldChanges(before, after)).toEqual([
+      {
+        providerId: "nvidia",
+        parameterName: "authHeader",
+        oldValue: "false",
+        newValue: "true"
+      },
+      {
+        providerId: "nvidia",
+        parameterName: "baseUrl",
+        oldValue: "https://api.nvidia.com/v1",
+        newValue: "https://integrate.api.nvidia.com/v1"
+      }
+    ]);
   });
 });

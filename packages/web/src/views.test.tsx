@@ -71,7 +71,9 @@ describe("Dashboard", () => {
             modelsEnabled: ["nvidia/deepseek-ai/deepseek-v4-flash"],
             modelsDisabled: [],
             primaryChanged: null,
-            credentialsChanged: []
+            credentialsChanged: [],
+            providerStateChanges: [],
+            providerFieldChanges: []
           })
         })}
       />
@@ -684,7 +686,9 @@ describe("ProvidersView", () => {
       modelsEnabled: ["custom-openai/model-a", "custom-openai/vendor/model-b"],
       modelsDisabled: [],
       primaryChanged: null,
-      credentialsChanged: []
+      credentialsChanged: [],
+      providerStateChanges: [],
+      providerFieldChanges: []
     }));
     const addCustomProvider = mock(async () => ({
       ok: true,
@@ -938,6 +942,8 @@ describe("ProvidersView", () => {
       modelsDisabled: [],
       primaryChanged: null,
       credentialsChanged: [],
+      providerStateChanges: [],
+      providerFieldChanges: [],
       envPreview: {
         affectedKeys: ["NVIDIA_API_KEY"],
         requiresConfirmation: false,
@@ -996,6 +1002,8 @@ describe("ProvidersView", () => {
       modelsDisabled: [],
       primaryChanged: null,
       credentialsChanged: [],
+      providerStateChanges: [],
+      providerFieldChanges: [],
       envPreview: {
         affectedKeys: ["NVIDIA_API_KEY"],
         requiresConfirmation: false,
@@ -1044,6 +1052,8 @@ describe("ProvidersView", () => {
       modelsDisabled: [],
       primaryChanged: null,
       credentialsChanged: [],
+      providerStateChanges: [],
+      providerFieldChanges: [],
       envPreview: {
         affectedKeys: ["NVIDIA_API_KEY"],
         requiresConfirmation: true,
@@ -1237,7 +1247,9 @@ describe("PresetsView", () => {
       modelsEnabled: ["nvidia/deepseek-ai/deepseek-v4-flash"],
       modelsDisabled: [],
       primaryChanged: null,
-      credentialsChanged: []
+      credentialsChanged: [],
+      providerStateChanges: [],
+      providerFieldChanges: []
     }));
     const getPresets = mock(async () => ({
       presets: [{ id: "nvidia", name: "NVIDIA", source: "builtin" as const, tags: [], modelCount: 1 }]
@@ -1369,7 +1381,9 @@ describe("DiffChangelog", () => {
             credentialsChanged: [
               { envVar: "NEW_KEY", change: "added", providerId: "p2" },
               { envVar: "OLD_KEY", change: "removed" }
-            ]
+            ],
+            providerStateChanges: [],
+            providerFieldChanges: []
           })
         })}
       />
@@ -1394,7 +1408,9 @@ describe("DiffSummary", () => {
           modelsEnabled: ["a/b"],
           modelsDisabled: ["c/d"],
           primaryChanged: { before: "x/y", after: "a/b" },
-          credentialsChanged: []
+          credentialsChanged: [],
+          providerStateChanges: [],
+          providerFieldChanges: []
         }}
       />
     );

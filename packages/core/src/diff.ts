@@ -1,4 +1,5 @@
 import { providerEnvVar } from "./openclaw-compat";
+import { parseModelRef } from "./model-ref";
 import type { OpenClawConfig } from "./types";
 
 const MANAGED_START = "# oc-switch:start";
@@ -10,6 +11,18 @@ export interface CredentialDiffItem {
   change: "added" | "removed" | "changed";
 }
 
+export interface ProviderStateChangeItem {
+  providerId: string;
+  change: "disable" | "enable";
+}
+
+export interface ProviderFieldChangeItem {
+  providerId: string;
+  parameterName: string;
+  oldValue: string;
+  newValue: string;
+}
+
 export interface ConfigDiffSummary {
   providersAdded: string[];
   providersRemoved: string[];
@@ -18,6 +31,8 @@ export interface ConfigDiffSummary {
   modelsDisabled: string[];
   primaryChanged: { before: string | undefined; after: string | undefined } | null;
   credentialsChanged: CredentialDiffItem[];
+  providerStateChanges: ProviderStateChangeItem[];
+  providerFieldChanges: ProviderFieldChangeItem[];
 }
 
 export interface SummarizeConfigDiffOptions {
@@ -83,6 +98,82 @@ export function summarizeCredentialsDiff(
   return items;
 }
 
+function summarizeProviderEnabledCounts(config: OpenClawConfig): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const ref of Object.keys(config.agents?.defaults?.models ?? {})) {
+    const providerId = parseModelRef(ref).providerId;
+    counts.set(providerId, (counts.get(providerId) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/** 推导 Provider 启用态变化（启用模型数由有到无/由无到有） */
+export function summarizeProviderStateChanges(
+  before: OpenClawConfig,
+  after: OpenClawConfig
+): ProviderStateChangeItem[] {
+  const beforeCounts = summarizeProviderEnabledCounts(before);
+  const afterCounts = summarizeProviderEnabledCounts(after);
+  const providerIds = Object.keys(before.models?.providers ?? {})
+    .filter((id) => Boolean(after.models?.providers?.[id]))
+    .sort();
+
+  const changes: ProviderStateChangeItem[] = [];
+  for (const providerId of providerIds) {
+    const beforeEnabled = beforeCounts.get(providerId) ?? 0;
+    const afterEnabled = afterCounts.get(providerId) ?? 0;
+    if (beforeEnabled > 0 && afterEnabled === 0) {
+      changes.push({ providerId, change: "disable" });
+    } else if (beforeEnabled === 0 && afterEnabled > 0) {
+      changes.push({ providerId, change: "enable" });
+    }
+  }
+  return changes;
+}
+
+function displayValue(value: unknown): string {
+  if (value === undefined) return "(未设置)";
+  if (value === null) return "null";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
+}
+
+const PROVIDER_DETAIL_EXCLUDE = new Set(["apiKey", "models"]);
+
+/** 细化 Provider 非密钥字段变更，避免只返回笼统 changed 列表 */
+export function summarizeProviderFieldChanges(
+  before: OpenClawConfig,
+  after: OpenClawConfig
+): ProviderFieldChangeItem[] {
+  const result: ProviderFieldChangeItem[] = [];
+  const beforeProviders = before.models?.providers ?? {};
+  const afterProviders = after.models?.providers ?? {};
+  const sharedProviderIds = Object.keys(beforeProviders).filter((id) => id in afterProviders).sort();
+
+  for (const providerId of sharedProviderIds) {
+    const beforeProvider = beforeProviders[providerId] ?? {};
+    const afterProvider = afterProviders[providerId] ?? {};
+    const keys = new Set([...Object.keys(beforeProvider), ...Object.keys(afterProvider)]);
+
+    for (const key of [...keys].sort()) {
+      if (PROVIDER_DETAIL_EXCLUDE.has(key)) continue;
+      const oldRaw = beforeProvider[key];
+      const newRaw = afterProvider[key];
+      if (JSON.stringify(oldRaw) === JSON.stringify(newRaw)) continue;
+
+      result.push({
+        providerId,
+        parameterName: key,
+        oldValue: displayValue(oldRaw),
+        newValue: displayValue(newRaw)
+      });
+    }
+  }
+
+  return result;
+}
+
 export function summarizeConfigDiff(
   before: OpenClawConfig,
   after: OpenClawConfig,
@@ -116,6 +207,8 @@ export function summarizeConfigDiff(
   const credentialsChanged = options?.beforeEnv !== undefined && options?.afterEnv !== undefined
     ? summarizeCredentialsDiff(options.beforeEnv, options.afterEnv, before, after)
     : [];
+  const providerStateChanges = summarizeProviderStateChanges(before, after);
+  const providerFieldChanges = summarizeProviderFieldChanges(before, after);
 
   return {
     providersAdded,
@@ -124,6 +217,8 @@ export function summarizeConfigDiff(
     modelsEnabled,
     modelsDisabled,
     primaryChanged,
-    credentialsChanged
+    credentialsChanged,
+    providerStateChanges,
+    providerFieldChanges
   };
 }
