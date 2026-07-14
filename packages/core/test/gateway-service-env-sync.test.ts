@@ -5,7 +5,6 @@ import { join } from "node:path";
 import {
   readLaunchdServiceEnv,
   readManagedBlockEntries,
-  resolveGatewayServiceEnvTarget,
   syncManagedBlockToGatewayServiceEnv
 } from "../src/gateway-service-env-sync";
 
@@ -22,89 +21,20 @@ function workspace() {
 function macWorkspace() {
   const dir = mkdtempSync(join(tmpdir(), "oc-switch-launchd-sync-"));
   tempDirs.push(dir);
-  const homeDir = join(dir, "home");
-  const launchAgentsDir = join(homeDir, "Library/LaunchAgents");
   const stateDir = join(dir, "openclaw-state");
   const serviceEnvDir = join(stateDir, "service-env");
-  mkdirSync(launchAgentsDir, { recursive: true });
   mkdirSync(serviceEnvDir, { recursive: true });
   const envPath = join(stateDir, ".env");
   const serviceEnvPath = join(serviceEnvDir, "ai.openclaw.gateway.env");
-  const wrapperPath = join(stateDir, "bin", "openclaw-env-wrapper.sh");
-  mkdirSync(join(stateDir, "bin"), { recursive: true });
-  writeFileSync(wrapperPath, "#!/bin/sh\n");
-  const plistPath = join(launchAgentsDir, "ai.openclaw.gateway.plist");
-  writeFileSync(plistPath, [
-    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
-    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">",
-    "<plist version=\"1.0\">",
-    "<dict>",
-    "  <key>ProgramArguments</key>",
-    "  <array>",
-    `    <string>${wrapperPath}</string>`,
-    `    <string>${serviceEnvPath}</string>`,
-    "  </array>",
-    "</dict>",
-    "</plist>"
-  ].join("\n"));
-  return { dir, homeDir, envPath, serviceEnvPath, plistPath, wrapperPath };
+  return { dir, envPath, serviceEnvPath, serviceEnvDir };
 }
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-describe("resolveGatewayServiceEnvTarget", () => {
-  test("linux resolves gateway.systemd.env beside env file", () => {
-    const ws = workspace();
-    const target = resolveGatewayServiceEnvTarget({ envPath: ws.envPath, platform: "linux" });
-    expect(target).toEqual({
-      targetKind: "systemd",
-      targetPath: ws.gatewayPath
-    });
-  });
-
-  test("darwin resolves service-env path from LaunchAgent plist", () => {
-    const ws = macWorkspace();
-    const target = resolveGatewayServiceEnvTarget({
-      envPath: ws.envPath,
-      platform: "darwin",
-      homeDir: ws.homeDir
-    });
-    expect(target).toEqual({
-      targetKind: "launchd",
-      targetPath: ws.serviceEnvPath
-    });
-  });
-
-  test("darwin rejects plist without env-wrapper ProgramArguments[0]", () => {
-    const ws = macWorkspace();
-    writeFileSync(ws.plistPath, [
-      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
-      "<plist version=\"1.0\"><dict>",
-      "  <key>ProgramArguments</key>",
-      "  <array>",
-      "    <string>/bin/sh</string>",
-      `    <string>${ws.serviceEnvPath}</string>`,
-      "  </array>",
-      "</dict></plist>"
-    ].join("\n"));
-    expect(() => resolveGatewayServiceEnvTarget({
-      envPath: ws.envPath,
-      platform: "darwin",
-      homeDir: ws.homeDir
-    })).toThrow(/env-wrapper/);
-  });
-
-  test("unsupported platform throws without creating guessed paths", () => {
-    const ws = workspace();
-    expect(() => resolveGatewayServiceEnvTarget({ envPath: ws.envPath, platform: "win32" })).toThrow(/unsupported|platform/i);
-    expect(existsSync(ws.gatewayPath)).toBe(false);
-  });
-});
-
 describe("syncManagedBlockToGatewayServiceEnv linux", () => {
-  test("preserves systemd format and outside keys", () => {
+  test("requires explicit target and preserves systemd format", () => {
     const ws = workspace();
     writeFileSync(ws.envPath, [
       "# oc-switch:start",
@@ -115,8 +45,11 @@ describe("syncManagedBlockToGatewayServiceEnv linux", () => {
 
     const result = syncManagedBlockToGatewayServiceEnv({
       envPath: ws.envPath,
-      gatewayServiceEnvPath: ws.gatewayPath,
-      platform: "linux"
+      target: {
+        targetKind: "systemd",
+        targetPath: ws.gatewayPath,
+        candidateId: "systemd:openclaw-gateway.service:test"
+      }
     });
 
     expect(result).toMatchObject({
@@ -128,10 +61,38 @@ describe("syncManagedBlockToGatewayServiceEnv linux", () => {
     expect(readFileSync(ws.gatewayPath, "utf8")).toContain("NVIDIA_API_KEY=new-secret");
     expect(readFileSync(ws.gatewayPath, "utf8")).toContain("HTTP_PROXY=http://proxy");
   });
+
+  test("does not guess sibling gateway.systemd.env when given another target", () => {
+    const ws = workspace();
+    const customTarget = join(ws.dir, "custom", "unit.env");
+    mkdirSync(join(ws.dir, "custom"), { recursive: true });
+    writeFileSync(ws.envPath, "# oc-switch:start\nONLY_KEY=value\n# oc-switch:end\n");
+    writeFileSync(customTarget, "HTTP_PROXY=http://proxy\n");
+
+    syncManagedBlockToGatewayServiceEnv({
+      envPath: ws.envPath,
+      target: { targetKind: "systemd", targetPath: customTarget }
+    });
+
+    expect(existsSync(ws.gatewayPath)).toBe(false);
+    expect(readFileSync(customTarget, "utf8")).toContain("ONLY_KEY=value");
+  });
+
+  test("rejects when target parent directory does not exist", () => {
+    const ws = workspace();
+    writeFileSync(ws.envPath, "# oc-switch:start\nONLY_KEY=value\n# oc-switch:end\n");
+    const missingParent = join(ws.dir, "missing-parent", "gateway.systemd.env");
+
+    expect(() => syncManagedBlockToGatewayServiceEnv({
+      envPath: ws.envPath,
+      target: { targetKind: "systemd", targetPath: missingParent }
+    })).toThrow(/parent directory|does not exist/i);
+    expect(existsSync(missingParent)).toBe(false);
+  });
 });
 
 describe("syncManagedBlockToGatewayServiceEnv darwin", () => {
-  test("writes export format inside oc-switch block", () => {
+  test("writes export format to explicit launchd target", () => {
     const ws = macWorkspace();
     writeFileSync(ws.envPath, [
       "# oc-switch:start",
@@ -146,8 +107,11 @@ describe("syncManagedBlockToGatewayServiceEnv darwin", () => {
 
     const result = syncManagedBlockToGatewayServiceEnv({
       envPath: ws.envPath,
-      platform: "darwin",
-      homeDir: ws.homeDir
+      target: {
+        targetKind: "launchd",
+        targetPath: ws.serviceEnvPath,
+        candidateId: "launchd:ai.openclaw.gateway:/Users/gc/.openclaw"
+      }
     });
 
     expect(result).toMatchObject({
@@ -181,8 +145,7 @@ describe("syncManagedBlockToGatewayServiceEnv darwin", () => {
 
     const result = syncManagedBlockToGatewayServiceEnv({
       envPath: ws.envPath,
-      platform: "darwin",
-      homeDir: ws.homeDir
+      target: { targetKind: "launchd", targetPath: ws.serviceEnvPath }
     });
 
     expect(result.warnings.some((w) => w.includes("NVIDIA_API_KEY") && w.includes("outside oc-switch block"))).toBe(true);
@@ -191,7 +154,7 @@ describe("syncManagedBlockToGatewayServiceEnv darwin", () => {
     expect(content).toContain("export NVIDIA_API_KEY='new-secret'");
   });
 
-  test("creates service-env file atomically with mode 0600", () => {
+  test("creates service-env file atomically with mode 0600 when parent exists", () => {
     const ws = macWorkspace();
     writeFileSync(ws.envPath, [
       "# oc-switch:start",
@@ -202,8 +165,7 @@ describe("syncManagedBlockToGatewayServiceEnv darwin", () => {
 
     syncManagedBlockToGatewayServiceEnv({
       envPath: ws.envPath,
-      platform: "darwin",
-      homeDir: ws.homeDir
+      target: { targetKind: "launchd", targetPath: ws.serviceEnvPath }
     });
 
     expect(existsSync(ws.serviceEnvPath)).toBe(true);
@@ -221,8 +183,7 @@ describe("syncManagedBlockToGatewayServiceEnv darwin", () => {
 
     expect(() => syncManagedBlockToGatewayServiceEnv({
       envPath: ws.envPath,
-      platform: "darwin",
-      homeDir: ws.homeDir
+      target: { targetKind: "launchd", targetPath: ws.serviceEnvPath }
     })).toThrow(/empty/);
     expect(readFileSync(ws.serviceEnvPath, "utf8")).toBe("export HTTP_PROXY='http://proxy'\n");
   });

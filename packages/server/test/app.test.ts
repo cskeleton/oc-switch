@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sample from "../../core/test/fixtures/openclaw.sample.json";
 import { createApp } from "../src/app";
-import type { FetchImpl, OcSwitchPaths, PresetDirs } from "@oc-switch/core";
+import type {
+  FetchImpl,
+  OcSwitchPaths,
+  PresetDirs,
+  RuntimeDiscoveryProvider,
+  RuntimeDiscoveryResult
+} from "@oc-switch/core";
 import { createBackup, upsertDisabledProviderState, MAX_PROVIDER_MODELS } from "@oc-switch/core";
 import { prepareGatewayEnvTarget, expectedGatewayEnvPath } from "../../core/test/gateway-sync-fixture";
 
@@ -51,7 +57,7 @@ function createTestApp(
   ws: Workspace,
   fetchImpl?: FetchImpl,
   extra?: {
-    runningInstances?: Array<{ pid: number; openclawPath?: string; envPath?: string }>;
+    runtimeDiscoveryProvider?: RuntimeDiscoveryProvider;
     gatewayRouteOptions?: import("../src/routes/gateway").GatewayRouteOptions;
   }
 ) {
@@ -60,7 +66,9 @@ function createTestApp(
     paths: ws.paths,
     presetDirs: ws.presetDirs,
     ...(fetchImpl ? { fetchImpl } : {}),
-    ...(extra?.runningInstances ? { runningInstances: extra.runningInstances } : {}),
+    ...(extra?.runtimeDiscoveryProvider
+      ? { runtimeDiscoveryProvider: extra.runtimeDiscoveryProvider }
+      : {}),
     ...(extra?.gatewayRouteOptions ? { gatewayRouteOptions: extra.gatewayRouteOptions } : {})
   });
 }
@@ -413,6 +421,53 @@ describe("server write endpoints", () => {
       isFullUrl: false,
       orphan: false
     });
+  });
+
+  test("POST /api/providers/custom 透传 runtimeDiscoveryProvider 并自动 sync service env", async () => {
+    const ws = workspace();
+    const gatewayPath = expectedGatewayEnvPath(ws.dir);
+    writeFileSync(gatewayPath, "HTTP_PROXY=http://proxy\n");
+    let discoverCalls = 0;
+    const serviceManager = process.platform === "darwin" ? "launchd" as const : "systemd" as const;
+    const app = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: () => {
+        discoverCalls += 1;
+        return {
+          status: "resolved",
+          instances: [],
+          candidateGroups: [
+            {
+              candidateId: "test:provider-write:sync",
+              instanceId: "test:provider-write",
+              stateDir: ws.dir,
+              openclawPath: ws.paths.openclawPath,
+              envPath: ws.paths.envPath,
+              serviceEnvPath: gatewayPath,
+              serviceManager,
+              serviceId: serviceManager === "launchd" ? "ai.openclaw.gateway" : "openclaw-gateway.service",
+              pid: 42,
+              confidence: "strong",
+              evidence: ["systemd-unit"]
+            }
+          ],
+          diagnostics: []
+        };
+      }
+    });
+
+    const { response, json } = await jsonRequest(app, "/api/providers/custom", {
+      method: "POST",
+      body: JSON.stringify({ ...customProviderBody(), apiKey: "sk-provider-sync-secret-key-001" })
+    });
+
+    expect(response.status).toBe(200);
+    expect(discoverCalls).toBeGreaterThanOrEqual(2);
+    expect(json.gatewayEnvSync).toMatchObject({
+      ok: true,
+      syncedKeys: ["CUSTOM_OPENAI_API_KEY"]
+    });
+    expect(readFileSync(gatewayPath, "utf8")).toContain("CUSTOM_OPENAI_API_KEY");
+    expect(JSON.stringify(json)).not.toContain("sk-provider-sync-secret-key-001");
   });
 
   test("POST /api/providers/custom rejects invalid provider id", async () => {
@@ -865,7 +920,26 @@ describe("server write endpoints", () => {
 
   test("POST /api/backups/:id/restore syncs restored env block to gateway.systemd.env", async () => {
     const ws = workspace();
-    const app = createTestApp(ws);
+    const gatewayPath = expectedGatewayEnvPath(ws.dir);
+    const runtimeDiscoveryProvider: RuntimeDiscoveryProvider = () => ({
+      status: "resolved",
+      instances: [],
+      candidateGroups: [
+        {
+          candidateId: "systemd:gw:restore-api",
+          instanceId: "systemd:gw",
+          stateDir: ws.dir,
+          openclawPath: ws.paths.openclawPath,
+          envPath: ws.paths.envPath,
+          serviceEnvPath: gatewayPath,
+          serviceManager: "systemd",
+          pid: 1,
+          evidence: ["systemd-unit"]
+        }
+      ],
+      diagnostics: []
+    });
+    const app = createTestApp(ws, undefined, { runtimeDiscoveryProvider });
     writeFileSync(ws.paths.envPath, "# oc-switch:start\nRESTORED_KEY=restored-secret\n# oc-switch:end\n");
     const backupDir = createBackup({
       ...ws.paths,
@@ -874,7 +948,6 @@ describe("server write endpoints", () => {
     });
     const backupId = backupDir.split("/").pop();
     writeFileSync(ws.paths.envPath, "# oc-switch:start\nCURRENT_KEY=current-secret\n# oc-switch:end\n");
-    const gatewayPath = expectedGatewayEnvPath(ws.dir);
     writeFileSync(gatewayPath, [
       "HTTP_PROXY=http://proxy",
       "# oc-switch:start",
@@ -895,6 +968,33 @@ describe("server write endpoints", () => {
     expect(readFileSync(gatewayPath, "utf8")).toContain("restored-secret");
     expect(readFileSync(gatewayPath, "utf8")).not.toContain("CURRENT_KEY=current-secret");
     expect(JSON.stringify(json)).not.toContain("restored-secret");
+  });
+
+  test("POST /api/backups/:id/restore skips gatewayRestartRequired when sync cannot associate", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: () => ({
+        status: "gateway-not-detected",
+        instances: [],
+        candidateGroups: [],
+        diagnostics: []
+      })
+    });
+    writeFileSync(ws.paths.envPath, "# oc-switch:start\nRESTORED_KEY=restored-secret\n# oc-switch:end\n");
+    const backupDir = createBackup({
+      ...ws.paths,
+      reason: "restore without association",
+      beforeHash: "hash"
+    });
+    const backupId = backupDir.split("/").pop();
+    writeFileSync(ws.paths.envPath, "# oc-switch:start\nCURRENT_KEY=current-secret\n# oc-switch:end\n");
+
+    const { response, json } = await jsonRequest(app, `/api/backups/${backupId}/restore`, { method: "POST" });
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.gatewayEnvSync).toMatchObject({ ok: false });
+    expect(json.gatewayRestartRequired).not.toBe(true);
   });
 
   test("GET /api/backups includes path metadata and active path match", async () => {
@@ -1204,6 +1304,36 @@ describe("server write endpoints", () => {
 });
 
 describe("server path settings", () => {
+  test("initialization probes once only when paths are absent", () => {
+    const ws = workspace();
+    const discovery: RuntimeDiscoveryResult = {
+      status: "gateway-not-detected",
+      instances: [],
+      candidateGroups: [],
+      diagnostics: []
+    };
+    let calls = 0;
+    const runtimeDiscoveryProvider = () => {
+      calls += 1;
+      return discovery;
+    };
+
+    createApp({
+      token: TOKEN,
+      presetDirs: ws.presetDirs,
+      runtimeDiscoveryProvider
+    });
+    expect(calls).toBe(1);
+
+    createApp({
+      token: TOKEN,
+      paths: ws.paths,
+      presetDirs: ws.presetDirs,
+      runtimeDiscoveryProvider
+    });
+    expect(calls).toBe(1);
+  });
+
   test("PUT /api/settings/paths switches subsequent reads immediately", async () => {
     const ws = workspace();
     const nextDir = mkdtempSync(join(tmpdir(), "oc-switch-server-next-"));
@@ -1289,30 +1419,304 @@ describe("server path settings", () => {
     expect(accepted.response.status).toBe(200);
   });
 
-  test("GET /api/settings/paths includes running-instance candidates when injected", async () => {
+  test("GET /api/settings/paths uses one injected runtime snapshot", async () => {
     const ws = workspace();
     const runningConfig = join(ws.dir, "running-openclaw.json");
     const runningEnv = join(ws.dir, "running.env");
     writeFileSync(runningConfig, "{}");
     writeFileSync(runningEnv, "RUNNING=1\n");
+    let calls = 0;
     const app = createTestApp(ws, undefined, {
-      runningInstances: [{
-        pid: 4242,
-        openclawPath: runningConfig,
-        envPath: runningEnv
-      }]
+      runtimeDiscoveryProvider: () => {
+        calls += 1;
+        return {
+          status: "resolved",
+          instances: [{
+            instanceId: "pid:4242",
+            pid: 4242,
+            stateDir: ws.dir,
+            openclawPath: runningConfig,
+            envPath: runningEnv,
+            confidence: "strong",
+            evidence: ["process-environ"]
+          }],
+          candidateGroups: [{
+            candidateId: "pid:4242:candidate",
+            instanceId: "pid:4242",
+            stateDir: ws.dir,
+            openclawPath: runningConfig,
+            envPath: runningEnv,
+            pid: 4242,
+            confidence: "strong",
+            evidence: ["process-environ"]
+          }],
+          diagnostics: []
+        };
+      }
     });
 
     const { response, json } = await jsonRequest(app, "/api/settings/paths");
     expect(response.status).toBe(200);
+    expect(calls).toBe(1);
     expect((json.openclawPaths as Array<{ path: string; source: string }>).find((item) => item.path === runningConfig)).toMatchObject({
       source: "running-instance",
-      recommended: true
+      recommended: true,
+      candidateId: "pid:4242:candidate"
     });
     expect((json.envPaths as Array<{ path: string; source: string }>).find((item) => item.path === runningEnv)).toMatchObject({
       source: "running-instance",
       recommended: true
     });
+  });
+
+  test("GET /api/settings/paths returns runtimeDiscovery/groups without probe secrets", async () => {
+    const ws = workspace();
+    const runningConfig = join(ws.dir, "running-openclaw.json");
+    const runningEnv = join(ws.dir, "running.env");
+    const serviceEnv = join(ws.dir, "service-env", "gateway.env");
+    writeFileSync(runningConfig, "{}");
+    writeFileSync(runningEnv, "RUNNING=1\n");
+    mkdirSync(join(ws.dir, "service-env"), { recursive: true });
+    writeFileSync(serviceEnv, "SECRET_FROM_SERVICE=should-not-leak\nOPENCLAW_STATE_DIR=/leak\n");
+    const discovery: RuntimeDiscoveryResult = {
+      status: "resolved",
+      instances: [{
+        instanceId: "launchd:ai.openclaw.gateway",
+        pid: 27561,
+        stateDir: ws.dir,
+        openclawPath: runningConfig,
+        envPath: runningEnv,
+        serviceEnvPath: serviceEnv,
+        confidence: "strong",
+        evidence: ["launchd-plist", "process-environ"]
+      }],
+      candidateGroups: [{
+        candidateId: "launchd:ai.openclaw.gateway:candidate",
+        instanceId: "launchd:ai.openclaw.gateway",
+        stateDir: ws.dir,
+        openclawPath: runningConfig,
+        envPath: runningEnv,
+        serviceEnvPath: serviceEnv,
+        pid: 27561,
+        confidence: "strong",
+        evidence: ["launchd-plist", "process-environ"]
+      }],
+      diagnostics: []
+    };
+    const app = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: () => discovery
+    });
+
+    const { response, json } = await jsonRequest(app, "/api/settings/paths");
+    expect(response.status).toBe(200);
+    expect(json.runtimeDiscovery).toMatchObject({
+      status: "resolved",
+      instances: [{ confidence: "strong", instanceId: "launchd:ai.openclaw.gateway" }]
+    });
+    expect(json.runtimeCandidateGroups).toEqual(discovery.candidateGroups);
+    const serialized = JSON.stringify(json);
+    expect(serialized).not.toContain("SECRET_FROM_SERVICE");
+    expect(serialized).not.toContain("should-not-leak");
+    expect(serialized).not.toContain("OPENCLAW_STATE_DIR=/leak");
+    expect(serialized).not.toContain("/bin/sh");
+    expect(serialized).not.toContain("probe stderr");
+    expect((json.envPaths as Array<{ path: string }>).some((item) => item.path === serviceEnv)).toBe(false);
+  });
+
+  test("GET /api/settings/paths distinguishes inferred/unresolved/not-detected/probe-failed", async () => {
+    const cases: Array<{
+      status: RuntimeDiscoveryResult["status"];
+      confidence?: "inferred";
+      expectConfidence: boolean;
+    }> = [
+      { status: "resolved", confidence: "inferred", expectConfidence: true },
+      { status: "gateway-detected-path-unresolved", expectConfidence: false },
+      { status: "gateway-not-detected", expectConfidence: false },
+      { status: "probe-failed", expectConfidence: false }
+    ];
+
+    for (const item of cases) {
+      const ws = workspace();
+      const discovery: RuntimeDiscoveryResult = {
+        status: item.status,
+        instances: item.status === "resolved"
+          ? [{
+            instanceId: "pid:9",
+            pid: 9,
+            stateDir: ws.dir,
+            openclawPath: ws.paths.openclawPath,
+            envPath: ws.paths.envPath,
+            ...(item.confidence ? { confidence: item.confidence } : {}),
+            evidence: ["default-state-dir"]
+          }]
+          : item.status === "gateway-detected-path-unresolved"
+            ? [{
+              instanceId: "pid:9",
+              pid: 9,
+              conflicted: true,
+              evidence: ["process-cmdline"]
+            }]
+            : [],
+        candidateGroups: item.status === "resolved"
+          ? [{
+            candidateId: "pid:9:candidate",
+            instanceId: "pid:9",
+            stateDir: ws.dir,
+            openclawPath: ws.paths.openclawPath,
+            envPath: ws.paths.envPath,
+            pid: 9,
+            ...(item.confidence ? { confidence: item.confidence } : {}),
+            evidence: ["default-state-dir"]
+          }]
+          : [],
+        diagnostics: item.status === "probe-failed" ? ["process-probe-failed"] : []
+      };
+      const app = createTestApp(ws, undefined, {
+        runtimeDiscoveryProvider: () => discovery
+      });
+      const { response, json } = await jsonRequest(app, "/api/settings/paths");
+      expect(response.status).toBe(200);
+      expect((json.runtimeDiscovery as { status: string }).status).toBe(item.status);
+      const instances = (json.runtimeDiscovery as { instances: Array<{ confidence?: string }> }).instances;
+      if (item.expectConfidence) {
+        expect(instances[0]?.confidence).toBe("inferred");
+      } else if (instances[0]) {
+        expect(instances[0].confidence).toBeUndefined();
+      }
+    }
+  });
+
+  test("PUT /api/settings/paths accepts candidateId and rejects stale/mixed/serviceEnv", async () => {
+    const ws = workspace();
+    const nextDir = mkdtempSync(join(tmpdir(), "oc-switch-server-runtime-put-"));
+    tempDirs.push(nextDir);
+    const nextOpenclawPath = join(nextDir, "openclaw.json");
+    const nextEnvPath = join(nextDir, ".env");
+    const otherEnvPath = join(nextDir, "other.env");
+    const serviceEnvPath = join(nextDir, "gateway.systemd.env");
+    writeFileSync(nextOpenclawPath, JSON.stringify({
+      models: { providers: { runtime: { models: [{ id: "m" }] } } },
+      agents: { defaults: { models: {} } }
+    }, null, 2));
+    writeFileSync(nextEnvPath, "RUNTIME=1\n");
+    writeFileSync(otherEnvPath, "OTHER=1\n");
+    writeFileSync(serviceEnvPath, "SERVICE=1\n");
+    const candidateId = "launchd:ai.openclaw.gateway:candidate";
+    const discovery: RuntimeDiscoveryResult = {
+      status: "resolved",
+      instances: [{
+        instanceId: "launchd:ai.openclaw.gateway",
+        pid: 42,
+        stateDir: nextDir,
+        openclawPath: nextOpenclawPath,
+        envPath: nextEnvPath,
+        serviceEnvPath,
+        confidence: "confirmed",
+        evidence: ["cli-status"]
+      }],
+      candidateGroups: [{
+        candidateId,
+        instanceId: "launchd:ai.openclaw.gateway",
+        stateDir: nextDir,
+        openclawPath: nextOpenclawPath,
+        envPath: nextEnvPath,
+        serviceEnvPath,
+        pid: 42,
+        confidence: "confirmed",
+        evidence: ["cli-status"]
+      }],
+      diagnostics: []
+    };
+    const app = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: () => discovery
+    });
+
+    const accepted = await jsonRequest(app, "/api/settings/paths", {
+      method: "PUT",
+      body: JSON.stringify({
+        openclawPath: nextOpenclawPath,
+        envPath: nextEnvPath,
+        candidateId
+      })
+    });
+    expect(accepted.response.status).toBe(200);
+
+    const stale = await jsonRequest(app, "/api/settings/paths", {
+      method: "PUT",
+      body: JSON.stringify({
+        openclawPath: nextOpenclawPath,
+        envPath: nextEnvPath,
+        candidateId: "stale-id"
+      })
+    });
+    expect(stale.response.status).toBe(400);
+    expect(String((stale.json as { error?: string }).error)).toContain("candidateId");
+
+    const mixed = await jsonRequest(app, "/api/settings/paths", {
+      method: "PUT",
+      body: JSON.stringify({
+        openclawPath: nextOpenclawPath,
+        envPath: otherEnvPath,
+        candidateId
+      })
+    });
+    expect(mixed.response.status).toBe(400);
+    expect(String((mixed.json as { error?: string }).error)).toContain("配对");
+
+    const serviceEnv = await jsonRequest(app, "/api/settings/paths", {
+      method: "PUT",
+      body: JSON.stringify({
+        openclawPath: nextOpenclawPath,
+        envPath: serviceEnvPath
+      })
+    });
+    expect(serviceEnv.response.status).toBe(400);
+    expect(String((serviceEnv.json as { error?: string }).error)).toContain("service env");
+  });
+
+  test("PUT /api/settings/paths without candidateId stays manual mode", async () => {
+    const ws = workspace();
+    const nextDir = mkdtempSync(join(tmpdir(), "oc-switch-server-manual-put-"));
+    tempDirs.push(nextDir);
+    const nextOpenclawPath = join(nextDir, "openclaw.json");
+    const nextEnvPath = join(nextDir, ".env");
+    writeFileSync(nextOpenclawPath, JSON.stringify({
+      models: { providers: { manual: { models: [{ id: "m" }] } } },
+      agents: { defaults: { models: {} } }
+    }, null, 2));
+    writeFileSync(nextEnvPath, "MANUAL=1\n");
+    const app = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: () => ({
+        status: "resolved",
+        instances: [{
+          instanceId: "pid:1",
+          pid: 1,
+          stateDir: ws.dir,
+          openclawPath: ws.paths.openclawPath,
+          envPath: ws.paths.envPath,
+          confidence: "strong",
+          evidence: ["process-environ"]
+        }],
+        candidateGroups: [{
+          candidateId: "pid:1:candidate",
+          instanceId: "pid:1",
+          stateDir: ws.dir,
+          openclawPath: ws.paths.openclawPath,
+          envPath: ws.paths.envPath,
+          pid: 1,
+          confidence: "strong",
+          evidence: ["process-environ"]
+        }],
+        diagnostics: []
+      })
+    });
+
+    const accepted = await jsonRequest(app, "/api/settings/paths", {
+      method: "PUT",
+      body: JSON.stringify({ openclawPath: nextOpenclawPath, envPath: nextEnvPath })
+    });
+    expect(accepted.response.status).toBe(200);
+    expect((accepted.json as { paths: { openclawPath: string } }).paths.openclawPath).toBe(nextOpenclawPath);
   });
 });
 
@@ -1495,7 +1899,51 @@ describe("server env APIs", () => {
     expect(states.disabledProviders.DeepSeek).toBeUndefined();
   });
 
-  test("POST /api/gateway/sync-env merges managed block into gateway.systemd.env", async () => {
+  function gatewayDiscoveryFor(
+    ws: Workspace,
+    options: {
+      candidateId?: string;
+      extraGroups?: RuntimeDiscoveryResult["candidateGroups"];
+      serviceEnvPath?: string;
+    } = {}
+  ): RuntimeDiscoveryResult {
+    const serviceEnvPath = options.serviceEnvPath ?? expectedGatewayEnvPath(ws.dir);
+    const serviceManager = process.platform === "darwin" ? "launchd" as const : "systemd" as const;
+    const candidateId = options.candidateId ?? "test:single:candidate";
+    const primary = {
+      candidateId,
+      instanceId: "test:single",
+      stateDir: ws.dir,
+      openclawPath: ws.paths.openclawPath,
+      envPath: ws.paths.envPath,
+      serviceEnvPath,
+      serviceManager,
+      serviceId: serviceManager === "launchd" ? "ai.openclaw.gateway" : "openclaw-gateway.service",
+      pid: 1001,
+      confidence: "strong" as const,
+      evidence: ["process-environ" as const]
+    };
+    const groups = [primary, ...(options.extraGroups ?? [])];
+    return {
+      status: "resolved",
+      instances: groups.map((group) => ({
+        instanceId: group.instanceId,
+        pid: group.pid,
+        openclawPath: group.openclawPath,
+        envPath: group.envPath,
+        stateDir: group.stateDir,
+        ...(group.serviceEnvPath ? { serviceEnvPath: group.serviceEnvPath } : {}),
+        ...(group.serviceManager ? { serviceManager: group.serviceManager } : {}),
+        ...(group.serviceId ? { serviceId: group.serviceId } : {}),
+        ...(group.confidence ? { confidence: group.confidence } : {}),
+        evidence: group.evidence
+      })),
+      candidateGroups: groups,
+      diagnostics: []
+    };
+  }
+
+  test("POST /api/gateway/sync-env merges managed block for single active candidate", async () => {
     const ws = workspace();
     writeFileSync(ws.paths.envPath, [
       "# oc-switch:start",
@@ -1504,39 +1952,177 @@ describe("server env APIs", () => {
     ].join("\n") + "\n");
     const gatewayPath = expectedGatewayEnvPath(ws.dir);
     writeFileSync(gatewayPath, "HTTP_PROXY=http://proxy\nNVIDIA_API_KEY=old-secret\n");
-    const app = createTestApp(ws);
+    const discovery = gatewayDiscoveryFor(ws);
+    const app = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: () => discovery
+    });
 
     const { response, json } = await jsonRequest(app, "/api/gateway/sync-env", { method: "POST" });
 
     expect(response.status).toBe(200);
     expect(json.ok).toBe(true);
-    const sync = json.sync as { syncedKeys: string[] };
+    const sync = json.sync as { syncedKeys: string[]; candidateId?: string };
     expect(sync.syncedKeys).toContain("NVIDIA_API_KEY");
+    expect(sync.candidateId).toBe("test:single:candidate");
     const content = readFileSync(gatewayPath, "utf8");
     expect(content).toContain("HTTP_PROXY=http://proxy");
     expect(content).toContain("NVIDIA_API_KEY");
     expect(content).toContain("synced-secret");
   });
 
-  test("POST /api/gateway/apply syncs and restarts with injected executor", async () => {
+  test("POST /api/gateway/sync-env accepts candidateId and rejects stale/multi without id", async () => {
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, "# oc-switch:start\nK=v\n# oc-switch:end\n");
+    const serviceEnvPath = expectedGatewayEnvPath(ws.dir);
+    writeFileSync(serviceEnvPath, "");
+    const extra = {
+      candidateId: "test:other:candidate",
+      instanceId: "test:other",
+      stateDir: join(ws.dir, "other"),
+      openclawPath: join(ws.dir, "other", "openclaw.json"),
+      envPath: join(ws.dir, "other", ".env"),
+      serviceEnvPath: join(ws.dir, "other", "gateway.systemd.env"),
+      serviceManager: "systemd" as const,
+      serviceId: "openclaw-gateway@other.service",
+      pid: 1002,
+      confidence: "strong" as const,
+      evidence: ["process-environ" as const]
+    };
+    const discovery = gatewayDiscoveryFor(ws, {
+      candidateId: "test:single:candidate",
+      extraGroups: [extra]
+    });
+    let discoverCalls = 0;
+    const app = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: () => {
+        discoverCalls += 1;
+        return discovery;
+      }
+    });
+
+    const missing = await jsonRequest(app, "/api/gateway/sync-env", { method: "POST", body: "{}" });
+    expect(missing.response.status).toBe(400);
+    expect(String((missing.json as { error?: string }).error)).toMatch(/candidateId|Multiple/i);
+
+    const stale = await jsonRequest(app, "/api/gateway/sync-env", {
+      method: "POST",
+      body: JSON.stringify({ candidateId: "stale-id" })
+    });
+    expect(stale.response.status).toBe(400);
+    expect(String((stale.json as { error?: string }).error)).toContain("stale-id");
+
+    const ok = await jsonRequest(app, "/api/gateway/sync-env", {
+      method: "POST",
+      body: JSON.stringify({ candidateId: "test:single:candidate" })
+    });
+    expect(ok.response.status).toBe(200);
+    expect((ok.json.sync as { candidateId?: string }).candidateId).toBe("test:single:candidate");
+    expect(discoverCalls).toBeGreaterThanOrEqual(3);
+  });
+
+  test("POST /api/gateway/sync-env rejects client-supplied serviceEnvPath/command/env", async () => {
+    const ws = workspace();
+    const discovery = gatewayDiscoveryFor(ws);
+    const app = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: () => discovery
+    });
+
+    for (const body of [
+      { serviceEnvPath: "/tmp/evil.env" },
+      { command: "rm" },
+      { env: { OPENCLAW_HOME: "/evil" } }
+    ]) {
+      const { response, json } = await jsonRequest(app, "/api/gateway/sync-env", {
+        method: "POST",
+        body: JSON.stringify(body)
+      });
+      expect(response.status).toBe(400);
+      expect(String((json as { error?: string }).error).length).toBeGreaterThan(0);
+    }
+  });
+
+  test("POST /api/gateway/apply resolves once and skips restart when sync fails", async () => {
     const ws = workspace();
     writeFileSync(ws.paths.envPath, "# oc-switch:start\nTEST_KEY=value\n# oc-switch:end\n");
+    const discovery = gatewayDiscoveryFor(ws);
+    let discoverCalls = 0;
     let restarted = false;
+    let seenCandidateId = "";
     const app = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: () => {
+        discoverCalls += 1;
+        return discovery;
+      },
       gatewayRouteOptions: {
+        restartGateway: async (input) => {
+          restarted = true;
+          seenCandidateId = input.target.candidateId;
+          return { ok: true, exitCode: 0, message: "Gateway restarted" };
+        }
+      }
+    });
+
+    const { response, json } = await jsonRequest(app, "/api/gateway/apply", {
+      method: "POST",
+      body: JSON.stringify({ candidateId: "test:single:candidate" })
+    });
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(restarted).toBe(true);
+    expect(seenCandidateId).toBe("test:single:candidate");
+    expect(discoverCalls).toBe(1);
+    expect(readFileSync(expectedGatewayEnvPath(ws.dir), "utf8")).toContain("TEST_KEY");
+
+    restarted = false;
+    discoverCalls = 0;
+    const failApp = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: () => {
+        discoverCalls += 1;
+        return discovery;
+      },
+      gatewayRouteOptions: {
+        syncManagedBlockToGatewayServiceEnv: () => {
+          throw new Error("sync boom");
+        },
         restartGateway: async () => {
           restarted = true;
           return { ok: true, exitCode: 0, message: "Gateway restarted" };
         }
       }
     });
+    const failed = await jsonRequest(failApp, "/api/gateway/apply", {
+      method: "POST",
+      body: JSON.stringify({ candidateId: "test:single:candidate" })
+    });
+    expect(failed.response.status).toBe(400);
+    expect(restarted).toBe(false);
+    expect(discoverCalls).toBe(1);
+  });
 
-    const { response, json } = await jsonRequest(app, "/api/gateway/apply", { method: "POST" });
+  test("POST /api/gateway/restart uses resolved runtime target not placeholder", async () => {
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, "# oc-switch:start\nK=v\n# oc-switch:end\n");
+    const discovery = gatewayDiscoveryFor(ws);
+    let seenTargetPath = "";
+    let seenCandidateId = "";
+    const app = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: () => discovery,
+      gatewayRouteOptions: {
+        restartGateway: async (input) => {
+          seenTargetPath = input.target.serviceEnvTarget.targetPath;
+          seenCandidateId = input.target.candidateId;
+          return { ok: true, exitCode: 0, message: "Gateway restarted" };
+        }
+      }
+    });
+
+    const { response, json } = await jsonRequest(app, "/api/gateway/restart", { method: "POST" });
 
     expect(response.status).toBe(200);
     expect(json.ok).toBe(true);
-    expect(restarted).toBe(true);
-    expect(readFileSync(expectedGatewayEnvPath(ws.dir), "utf8")).toContain("TEST_KEY");
-    expect(readFileSync(expectedGatewayEnvPath(ws.dir), "utf8")).toContain("value");
+    expect(seenCandidateId).toBe("test:single:candidate");
+    expect(seenTargetPath).toBe(expectedGatewayEnvPath(ws.dir));
+    expect(seenTargetPath).not.toContain("restart-placeholder");
   });
 });

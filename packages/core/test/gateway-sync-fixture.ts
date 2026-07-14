@@ -4,14 +4,15 @@ import { dirname, join } from "node:path";
 const DEFAULT_LAUNCHD_LABEL = "ai.openclaw.gateway";
 
 /** 在测试 HOME 下安装 LaunchAgent fixture，使 macOS 同步指向指定 gateway env 文件 */
-export function installLaunchdGatewayFixture(homeDir: string, serviceEnvPath: string, wrapperBaseDir?: string): void {
+export function installLaunchdGatewayFixture(homeDir: string, serviceEnvPath: string): void {
   const launchAgentsDir = join(homeDir, "Library/LaunchAgents");
   mkdirSync(launchAgentsDir, { recursive: true });
-  const wrapperDir = wrapperBaseDir ?? homeDir;
-  const wrapperBinDir = join(wrapperDir, "bin");
-  mkdirSync(wrapperBinDir, { recursive: true });
-  const wrapperPath = join(wrapperBinDir, "openclaw-env-wrapper.sh");
+  mkdirSync(dirname(serviceEnvPath), { recursive: true });
+  // 与共享 LaunchAgent parser 一致：wrapper 与 env 同属 service-env
+  const wrapperPath = join(dirname(serviceEnvPath), "ai.openclaw.gateway-env-wrapper.sh");
   writeFileSync(wrapperPath, "#!/bin/sh\n");
+  const nodePath = "/usr/bin/node";
+  const openclawEntry = "/opt/homebrew/lib/node_modules/openclaw/dist/index.js";
   const plistPath = join(launchAgentsDir, `${DEFAULT_LAUNCHD_LABEL}.plist`);
   writeFileSync(plistPath, [
     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
@@ -20,8 +21,12 @@ export function installLaunchdGatewayFixture(homeDir: string, serviceEnvPath: st
     "<dict>",
     "  <key>ProgramArguments</key>",
     "  <array>",
+    "    <string>/bin/sh</string>",
     `    <string>${wrapperPath}</string>`,
     `    <string>${serviceEnvPath}</string>`,
+    `    <string>${nodePath}</string>`,
+    `    <string>${openclawEntry}</string>`,
+    "    <string>gateway</string>",
     "  </array>",
     "</dict>",
     "</plist>"
@@ -41,7 +46,7 @@ export function prepareGatewayEnvTarget(dir: string, homeDir: string): string {
   if (process.platform === "darwin") {
     const serviceEnvPath = join(dir, "service-env", "ai.openclaw.gateway.env");
     mkdirSync(dirname(serviceEnvPath), { recursive: true });
-    installLaunchdGatewayFixture(homeDir, serviceEnvPath, dir);
+    installLaunchdGatewayFixture(homeDir, serviceEnvPath);
     return serviceEnvPath;
   }
   return join(dir, "gateway.systemd.env");

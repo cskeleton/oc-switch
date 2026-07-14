@@ -32,6 +32,7 @@ export function registerStatusCommands(program: Command, context: CommandContext
       }
       const result = await writeOpenClawTransaction({
         ...paths,
+        runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: "repair OpenClaw compatibility",
         mutate() {
           return repaired.config;

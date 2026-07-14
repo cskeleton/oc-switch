@@ -7,6 +7,14 @@ import {
   syncManagedBlockToGatewayServiceEnv,
   type GatewayServiceEnvSyncResult
 } from "./gateway-service-env-sync";
+import {
+  gatewayRuntimeTargetErrorToSyncResult,
+  isGatewayRuntimeTargetError,
+  resolveGatewayRuntimeTarget,
+  type GatewayRuntimeTarget
+} from "./gateway-runtime-target";
+import { discoverOpenClawRuntime } from "./path-discovery";
+import type { RuntimeDiscoveryProvider } from "./runtime-discovery-types";
 
 export const DEFAULT_BACKUP_RETENTION = 20;
 
@@ -23,6 +31,9 @@ export interface BackupMetadata {
   sourceFiles: string[];
   createdAt: string;
   pathSources?: BackupPathSources;
+  /** 创建时尽力记录；恢复时不得直接信任 */
+  runtimeInstanceId?: string;
+  serviceEnvPath?: string;
 }
 
 export interface BackupSummary {
@@ -40,6 +51,8 @@ export interface BackupInput {
   retentionLimit?: number;
   protectedBackupDirs?: string[];
   pathSources?: BackupPathSources;
+  runtimeInstanceId?: string;
+  serviceEnvPath?: string;
 }
 
 function safeChmod(path: string, mode: number): void {
@@ -68,6 +81,8 @@ export function createBackup(input: BackupInput): string {
     openclawPath: input.openclawPath,
     envPath: input.envPath,
     ...(input.pathSources ? { pathSources: input.pathSources } : {}),
+    ...(input.runtimeInstanceId ? { runtimeInstanceId: input.runtimeInstanceId } : {}),
+    ...(input.serviceEnvPath ? { serviceEnvPath: input.serviceEnvPath } : {}),
     beforeHash: input.beforeHash,
     sourceFiles: [basename(input.openclawPath), basename(input.envPath)],
     createdAt
@@ -146,6 +161,8 @@ export function restoreBackup(input: RestoreBackupInput): void {
 export interface SafeRestoreBackupInput extends RestoreBackupInput {
   stateDir: string;
   allowPathMismatch?: boolean;
+  /** 注入 discovery；默认 discoverOpenClawRuntime */
+  runtimeDiscoveryProvider?: RuntimeDiscoveryProvider;
 }
 
 export interface SafeRestoreBackupResult {
@@ -192,28 +209,82 @@ function fileSha256(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
+function tryResolveAutomaticTarget(input: {
+  openclawPath: string;
+  envPath: string;
+  discover: RuntimeDiscoveryProvider;
+}): GatewayRuntimeTarget | undefined {
+  try {
+    return resolveGatewayRuntimeTarget({
+      activePaths: { openclawPath: input.openclawPath, envPath: input.envPath },
+      discovery: input.discover(),
+      mode: "automatic"
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function syncAfterRestore(input: {
+  openclawPath: string;
+  envPath: string;
+  discover: RuntimeDiscoveryProvider;
+}): GatewayServiceEnvSyncResult {
+  try {
+    // 按当前 discovery 重新匹配；不信任备份 metadata 中的旧 serviceEnvPath
+    const target = resolveGatewayRuntimeTarget({
+      activePaths: { openclawPath: input.openclawPath, envPath: input.envPath },
+      discovery: input.discover(),
+      mode: "automatic"
+    });
+    return syncManagedBlockToGatewayServiceEnv({
+      envPath: input.envPath,
+      target: target.serviceEnvTarget
+    });
+  } catch (error) {
+    if (isGatewayRuntimeTargetError(error)) {
+      // 恢复文件已成功；无法关联时跳过 sync
+      return gatewayRuntimeTargetErrorToSyncResult(error);
+    }
+    if (isGatewayServiceEnvTargetError(error)) {
+      // 关联后目标不可写（如 parent 缺失）仍不撤销已恢复的文件
+      return gatewayServiceEnvTargetErrorToSyncResult(error);
+    }
+    throw error;
+  }
+}
+
 export function restoreBackupSafely(input: SafeRestoreBackupInput): SafeRestoreBackupResult {
   if (!input.allowPathMismatch) {
     const mismatch = validateBackupPathMatch(input);
     if (mismatch) throw new Error(formatBackupPathMismatchError(mismatch));
   }
+  const discover = input.runtimeDiscoveryProvider ?? discoverOpenClawRuntime;
   const targetId = basename(input.backupDir);
+  const currentAssociation = tryResolveAutomaticTarget({
+    openclawPath: input.openclawPath,
+    envPath: input.envPath,
+    discover
+  });
   const safetyBackupDir = createBackup({
     stateDir: input.stateDir,
     openclawPath: input.openclawPath,
     envPath: input.envPath,
     reason: `before restore ${targetId}`,
     beforeHash: fileSha256(input.openclawPath),
-    protectedBackupDirs: [input.backupDir]
+    protectedBackupDirs: [input.backupDir],
+    ...(currentAssociation
+      ? {
+          runtimeInstanceId: currentAssociation.instanceId,
+          serviceEnvPath: currentAssociation.serviceEnvTarget.targetPath
+        }
+      : {})
   });
   restoreBackup(input);
-  let gatewayEnvSync: GatewayServiceEnvSyncResult;
-  try {
-    gatewayEnvSync = syncManagedBlockToGatewayServiceEnv({ envPath: input.envPath });
-  } catch (error) {
-    if (!isGatewayServiceEnvTargetError(error)) throw error;
-    // 恢复文件已经成功；仅服务 env 目标不可发现时降级为可提示的结果。
-    gatewayEnvSync = gatewayServiceEnvTargetErrorToSyncResult(error);
-  }
+  const gatewayEnvSync = syncAfterRestore({
+    openclawPath: input.openclawPath,
+    envPath: input.envPath,
+    discover
+  });
   return { safetyBackupDir, gatewayEnvSync };
 }

@@ -2,10 +2,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Command } from "commander";
 import sample from "../../core/test/fixtures/openclaw.sample.json";
-import type { OpenClawConfig } from "@oc-switch/core";
+import type { OpenClawConfig, RuntimeDiscoveryResult } from "@oc-switch/core";
 import { MAX_PROVIDER_MODELS } from "@oc-switch/core";
 import { prepareGatewayEnvTarget, expectedGatewayEnvPath } from "../../core/test/gateway-sync-fixture";
+import { createCommandContext, repoRoot } from "../src/command-context";
+import { registerGatewayCommands } from "../src/commands/gateway";
 
 const tempDirs: string[] = [];
 
@@ -13,12 +16,30 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-async function runCli(args: string[], env: Record<string, string>) {
-  if (env.HOME && process.platform === "darwin") {
+async function runCli(
+  args: string[],
+  env: Record<string, string>,
+  options: { skipGatewayFixture?: boolean } = {}
+) {
+  if (env.HOME && process.platform === "darwin" && !options.skipGatewayFixture) {
     const baseDir = env.OPENCLAW_CONFIG_PATH
       ? join(env.OPENCLAW_CONFIG_PATH, "..")
       : env.HOME;
     prepareGatewayEnvTarget(baseDir, env.HOME);
+  }
+  // 固定 settings，避免本机真实 Gateway discovery 覆盖测试 envPath
+  if (env.HOME && env.OPENCLAW_CONFIG_PATH) {
+    const stateDir = join(env.HOME, ".oc-switch");
+    const settingsPath = join(stateDir, "settings.json");
+    if (!existsSync(settingsPath)) {
+      mkdirSync(stateDir, { recursive: true });
+      const envPath = join(env.HOME, ".openclaw", ".env");
+      mkdirSync(join(env.HOME, ".openclaw"), { recursive: true });
+      writeFileSync(settingsPath, JSON.stringify({
+        openclawPath: env.OPENCLAW_CONFIG_PATH,
+        envPath
+      }));
+    }
   }
   const proc = Bun.spawn(["bun", "run", "packages/cli/src/index.ts", ...args], {
     cwd: join(import.meta.dir, "../../.."),
@@ -34,6 +55,54 @@ async function runCli(args: string[], env: Record<string, string>) {
 }
 
 describe("cli read commands", () => {
+  test("command context caches one runtime discovery snapshot", () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-context-"));
+    tempDirs.push(dir);
+    const home = join(dir, "home");
+    const runtimeState = join(dir, "runtime");
+    mkdirSync(runtimeState, { recursive: true });
+    const openclawPath = join(runtimeState, "openclaw.json");
+    const envPath = join(runtimeState, ".env");
+    writeFileSync(openclawPath, "{}\n");
+    writeFileSync(envPath, "RUNTIME=1\n");
+    let calls = 0;
+    const context = createCommandContext({
+      env: { HOME: home },
+      stateDir: join(home, ".oc-switch"),
+      runtimeDiscoveryProvider: () => {
+        calls += 1;
+        return {
+          status: "resolved",
+          instances: [{
+            instanceId: "pid:7",
+            pid: 7,
+            stateDir: runtimeState,
+            openclawPath,
+            envPath,
+            confidence: "strong",
+            evidence: ["process-environ"]
+          }],
+          candidateGroups: [{
+            candidateId: "pid:7:candidate",
+            instanceId: "pid:7",
+            stateDir: runtimeState,
+            openclawPath,
+            envPath,
+            pid: 7,
+            confidence: "strong",
+            evidence: ["process-environ"]
+          }],
+          diagnostics: []
+        };
+      }
+    });
+
+    expect(context.activePaths().openclawPath).toBe(openclawPath);
+    expect(context.activePaths().envPath).toBe(envPath);
+    expect(calls).toBe(1);
+    expect(repoRoot).toBe(join(import.meta.dir, "../../.."));
+  });
+
   test("prints status", async () => {
     const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
     const configPath = join(dir, "openclaw.json");
@@ -809,23 +878,158 @@ describe("cli provider disable/enable", () => {
     expect(enableModel.code).not.toBe(0);
     expect(enableModel.stderr).toContain("Provider nvidia is disabled");
   });
+});
 
-  test("gateway sync-env merges managed block into gateway.systemd.env", async () => {
+describe("cli gateway commands", () => {
+  test("gateway sync-env merges managed block for single active candidate", async () => {
     const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-gateway-"));
     tempDirs.push(dir);
+    const homeDir = join(dir, "home");
+    mkdirSync(homeDir, { recursive: true });
+    prepareGatewayEnvTarget(dir, homeDir);
+    const openclawPath = join(dir, "openclaw.json");
     const envPath = join(dir, ".env");
+    const stateDir = join(homeDir, ".oc-switch");
+    const serviceEnvPath = expectedGatewayEnvPath(dir);
     writeFileSync(envPath, "# oc-switch:start\nCLI_SYNC_KEY=cli-secret\n# oc-switch:end\n");
-    mkdirSync(join(dir, ".oc-switch"), { recursive: true });
-    writeFileSync(join(dir, ".oc-switch", "settings.json"), JSON.stringify({ openclawPath: join(dir, "openclaw.json"), envPath }));
-    writeFileSync(join(dir, "openclaw.json"), `${JSON.stringify(sample, null, 2)}\n`);
+    writeFileSync(openclawPath, `${JSON.stringify(sample, null, 2)}\n`);
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(join(stateDir, "settings.json"), JSON.stringify({ openclawPath, envPath }));
 
-    const result = await runCli(["gateway", "sync-env"], {
-      OPENCLAW_CONFIG_PATH: join(dir, "openclaw.json"),
-      HOME: dir
+    const serviceManager = process.platform === "darwin" ? "launchd" as const : "systemd" as const;
+    const discovery: RuntimeDiscoveryResult = {
+      status: "resolved",
+      instances: [{
+        instanceId: "cli:single",
+        pid: 42,
+        openclawPath,
+        envPath,
+        stateDir: dir,
+        serviceEnvPath,
+        serviceManager,
+        confidence: "strong",
+        evidence: ["process-environ"]
+      }],
+      candidateGroups: [{
+        candidateId: "cli:single:candidate",
+        instanceId: "cli:single",
+        stateDir: dir,
+        openclawPath,
+        envPath,
+        serviceEnvPath,
+        serviceManager,
+        pid: 42,
+        confidence: "strong",
+        evidence: ["process-environ"]
+      }],
+      diagnostics: []
+    };
+
+    const program = new Command();
+    program.exitOverride();
+    const context = createCommandContext({
+      env: { HOME: homeDir, OPENCLAW_CONFIG_PATH: openclawPath },
+      stateDir,
+      runtimeDiscoveryProvider: () => discovery
     });
-    expect(result.code).toBe(0);
-    const gatewayContent = readFileSync(expectedGatewayEnvPath(dir), "utf8");
+    registerGatewayCommands(program, context);
+    await program.parseAsync(["gateway", "sync-env"], { from: "user" });
+
+    const gatewayContent = readFileSync(serviceEnvPath, "utf8");
     expect(gatewayContent).toContain("CLI_SYNC_KEY");
     expect(gatewayContent).toContain("cli-secret");
+  });
+
+  test("gateway commands require --candidate when multiple candidates exist", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-gateway-multi-"));
+    tempDirs.push(dir);
+    const homeDir = join(dir, "home");
+    mkdirSync(homeDir, { recursive: true });
+    const openclawPath = join(dir, "openclaw.json");
+    const envPath = join(dir, ".env");
+    const stateDir = join(homeDir, ".oc-switch");
+    const serviceEnvPath = join(dir, "gateway.systemd.env");
+    writeFileSync(envPath, "# oc-switch:start\nK=v\n# oc-switch:end\n");
+    writeFileSync(openclawPath, `${JSON.stringify(sample, null, 2)}\n`);
+    writeFileSync(serviceEnvPath, "");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(join(stateDir, "settings.json"), JSON.stringify({ openclawPath, envPath }));
+
+    const discovery: RuntimeDiscoveryResult = {
+      status: "resolved",
+      instances: [],
+      candidateGroups: [
+        {
+          candidateId: "cli:a:candidate",
+          instanceId: "cli:a",
+          stateDir: dir,
+          openclawPath,
+          envPath,
+          serviceEnvPath,
+          serviceManager: "systemd",
+          pid: 1,
+          confidence: "strong",
+          evidence: ["process-environ"]
+        },
+        {
+          candidateId: "cli:b:candidate",
+          instanceId: "cli:b",
+          stateDir: join(dir, "b"),
+          openclawPath: join(dir, "b", "openclaw.json"),
+          envPath: join(dir, "b", ".env"),
+          serviceEnvPath: join(dir, "b", "gateway.systemd.env"),
+          serviceManager: "systemd",
+          pid: 2,
+          confidence: "strong",
+          evidence: ["process-environ"]
+        }
+      ],
+      diagnostics: []
+    };
+
+    const program = new Command();
+    program.exitOverride();
+    const context = createCommandContext({
+      env: { HOME: homeDir, OPENCLAW_CONFIG_PATH: openclawPath },
+      stateDir,
+      runtimeDiscoveryProvider: () => discovery
+    });
+    let stderr = "";
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      stderr += args.map(String).join(" ") + "\n";
+    };
+    registerGatewayCommands(program, context, {
+      restartGateway: async () => ({ ok: true, exitCode: 0, message: "ok" })
+    });
+    try {
+      await expect(program.parseAsync(["gateway", "restart"], { from: "user" })).rejects.toThrow();
+      expect(stderr).toContain("cli:a:candidate");
+      expect(stderr).toContain("cli:b:candidate");
+      expect(stderr).not.toContain("K=v");
+    } finally {
+      console.error = originalError;
+    }
+
+    const okProgram = new Command();
+    okProgram.exitOverride();
+    let seenCandidate = "";
+    registerGatewayCommands(okProgram, context, {
+      restartGateway: async (input) => {
+        seenCandidate = input.target.candidateId;
+        return { ok: true, exitCode: 0, message: "Gateway restarted" };
+      }
+    });
+    await okProgram.parseAsync(["gateway", "restart", "--candidate", "cli:a:candidate"], { from: "user" });
+    expect(seenCandidate).toBe("cli:a:candidate");
+
+    const staleProgram = new Command();
+    staleProgram.exitOverride();
+    registerGatewayCommands(staleProgram, context, {
+      restartGateway: async () => ({ ok: true, exitCode: 0, message: "ok" })
+    });
+    await expect(
+      staleProgram.parseAsync(["gateway", "restart", "--candidate", "missing"], { from: "user" })
+    ).rejects.toThrow(/missing|stale|no longer/i);
   });
 });

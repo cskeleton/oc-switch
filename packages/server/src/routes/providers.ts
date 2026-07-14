@@ -131,6 +131,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       const enabledModels = models ?? preset.models.map((model) => model.id);
       const result = await writeOpenClawTransaction({
         ...runtime.currentPaths(),
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `add provider ${presetId}`,
         envUpdates: { [preset.provider.apiKeyEnv]: apiKey },
         envUpdateOptions: optionalEnvUpdateOptions(body as Record<string, unknown>),
@@ -194,6 +195,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       const apiKey = requireString(body.apiKey, "apiKey");
       const result = await writeOpenClawTransaction({
         ...runtime.currentPaths(),
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `add custom provider ${input.providerId}`,
         envUpdates: { [input.apiKeyEnv]: apiKey },
         envUpdateOptions: optionalEnvUpdateOptions(body),
@@ -276,6 +278,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       let warnings: string[] = [];
       const result = await writeOpenClawTransaction({
         ...runtime.currentPaths(),
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `merge case duplicate ${input.groupKey} -> ${input.canonicalId}`,
         mutate(config) {
           const merged = mergeProviderCaseDuplicates(config, input);
@@ -300,6 +303,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
         let disabledState: { providerId: string; allowlistEntries: Record<string, unknown> } | undefined;
         const result = await writeOpenClawTransaction({
           ...paths,
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
           reason: `disable provider ${providerId}`,
           mutate(config) {
             const disabled = disableProvider(config, providerId);
@@ -333,6 +337,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       }
       const result = await writeOpenClawTransaction({
         ...paths,
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `enable provider ${providerId}`,
         mutate(config) {
           return restoreDisabledProvider(config, providerId, snapshot.allowlistEntries).config;
@@ -387,6 +392,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       }
       const result = await writeOpenClawTransaction({
         ...runtime.currentPaths(),
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `edit provider ${providerId}`,
         ...(Object.keys(envUpdates).length ? { envUpdates } : {}),
         ...(Object.keys(envUpdates).length
@@ -430,6 +436,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       const envVar = contextProviderEnvVar(config, providerId);
       const result = await writeOpenClawTransaction({
         ...runtime.currentPaths(),
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `delete provider ${providerId}`,
         ...(envVar
           ? { manifestUpdates: [{ type: "mark-provider-orphan" as const, providerId, envVar }] }
@@ -475,6 +482,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       let skippedModelIds: string[] = [];
       const result = await writeOpenClawTransaction({
         ...paths,
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `batch-add models for provider ${providerId}`,
         mutate(config) {
           const batch = batchAddProviderModels(config, providerId, input);
@@ -503,6 +511,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       let removedModelIds: string[] = [];
       const result = await writeOpenClawTransaction({
         ...runtime.currentPaths(),
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `batch-remove models for provider ${providerId}`,
         mutate(config) {
           const batch = batchRemoveProviderModels(config, providerId, input);

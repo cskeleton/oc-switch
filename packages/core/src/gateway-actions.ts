@@ -1,11 +1,21 @@
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { GatewayRuntimeTarget, GatewayRestartEnvKey } from "./gateway-runtime-target";
 
 const ALLOWED_COMMAND = "openclaw";
 const ALLOWED_ARGS = ["gateway", "restart"] as const;
 const DEFAULT_TIMEOUT_MS = 60_000;
 const STDERR_LIMIT = 2000;
+
+const RESTART_ENV_ALLOWLIST = new Set<GatewayRestartEnvKey>([
+  "OPENCLAW_HOME",
+  "OPENCLAW_STATE_DIR",
+  "OPENCLAW_CONFIG_PATH",
+  "OPENCLAW_PROFILE",
+  "OPENCLAW_LAUNCHD_LABEL",
+  "OPENCLAW_SYSTEMD_UNIT"
+]);
 
 export interface GatewayRestartResult {
   ok: boolean;
@@ -16,11 +26,11 @@ export interface GatewayRestartResult {
 export type GatewayRestartExecutor = (
   command: string,
   args: string[],
-  options: { timeoutMs: number }
+  options: { timeoutMs: number; env: NodeJS.ProcessEnv }
 ) => Promise<{ exitCode: number | null; stderr: string }>;
 
 /** serve 进程 PATH 常不含 ~/.npm-global/bin，补全常见 OpenClaw 安装路径 */
-function gatewayRestartEnv(): NodeJS.ProcessEnv {
+function gatewayRestartBaseEnv(): NodeJS.ProcessEnv {
   const home = homedir();
   const prefix = [
     join(home, ".npm-global/bin"),
@@ -32,15 +42,28 @@ function gatewayRestartEnv(): NodeJS.ProcessEnv {
   return { ...process.env, PATH: path };
 }
 
+/** 仅合并白名单 selector，丢弃非 allowlist 键 */
+function mergeRestartEnv(
+  base: NodeJS.ProcessEnv,
+  restartEnv: GatewayRuntimeTarget["restartEnv"]
+): NodeJS.ProcessEnv {
+  const merged: NodeJS.ProcessEnv = { ...base };
+  for (const [key, value] of Object.entries(restartEnv)) {
+    if (!RESTART_ENV_ALLOWLIST.has(key as GatewayRestartEnvKey) || value === undefined) continue;
+    merged[key] = value;
+  }
+  return merged;
+}
+
 function defaultExecutor(
   command: string,
   args: string[],
-  options: { timeoutMs: number }
+  options: { timeoutMs: number; env: NodeJS.ProcessEnv }
 ): Promise<{ exitCode: number | null; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       stdio: ["ignore", "pipe", "pipe"],
-      env: gatewayRestartEnv()
+      env: options.env
     });
     let stderr = "";
     const timer = setTimeout(() => {
@@ -71,8 +94,9 @@ function assertAllowedRestart(command: string, args: string[]): void {
   }
 }
 
-/** 执行白名单内的 Gateway 重启命令 */
-export async function restartGateway(input?: {
+/** 对已校验的 runtime 目标执行白名单内 Gateway 重启 */
+export async function restartGateway(input: {
+  target: GatewayRuntimeTarget;
   executor?: GatewayRestartExecutor;
   timeoutMs?: number;
 }): Promise<GatewayRestartResult> {
@@ -80,11 +104,12 @@ export async function restartGateway(input?: {
   const args = [...ALLOWED_ARGS];
   assertAllowedRestart(command, args);
 
-  const executor = input?.executor ?? defaultExecutor;
-  const timeoutMs = input?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const executor = input.executor ?? defaultExecutor;
+  const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const env = mergeRestartEnv(gatewayRestartBaseEnv(), input.target.restartEnv);
 
   try {
-    const { exitCode, stderr } = await executor(command, args, { timeoutMs });
+    const { exitCode, stderr } = await executor(command, args, { timeoutMs, env });
     const ok = exitCode === 0;
     return {
       ok,

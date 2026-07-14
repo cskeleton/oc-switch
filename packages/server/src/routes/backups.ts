@@ -50,6 +50,7 @@ export function registerBackupRoutes(app: Hono, runtime: AppRuntime): void {
         backupDir,
         openclawPath: restorePaths.openclawPath,
         envPath: restorePaths.envPath,
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         ...(target === "current" ? { allowPathMismatch: true } : {})
       });
       return c.json({
@@ -58,7 +59,7 @@ export function registerBackupRoutes(app: Hono, runtime: AppRuntime): void {
         safetyBackupId: result.safetyBackupDir.split("/").pop(),
         ...(result.gatewayEnvSync ? {
           gatewayEnvSync: result.gatewayEnvSync,
-          gatewayRestartRequired: true
+          ...(result.gatewayEnvSync.ok ? { gatewayRestartRequired: true } : {})
         } : {})
       });
     } catch (error) {

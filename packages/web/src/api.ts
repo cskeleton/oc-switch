@@ -37,6 +37,7 @@ export interface GatewayEnvSyncResult {
   syncedKeys: string[];
   removedKeys: string[];
   warnings: string[];
+  candidateId?: string;
 }
 
 export interface GatewayRestartResult {
@@ -208,12 +209,64 @@ export interface PathCandidate {
   readable: boolean;
   writable: boolean;
   parentWritable: boolean;
+  candidateId?: string;
+}
+
+export type RuntimeDiscoveryConfidence = "confirmed" | "strong" | "inferred";
+export type RuntimeDiscoveryStatus =
+  | "resolved"
+  | "gateway-detected-path-unresolved"
+  | "gateway-not-detected"
+  | "probe-failed";
+export type RuntimeDiscoveryEvidence =
+  | "process-cmdline"
+  | "process-environ"
+  | "systemd-unit"
+  | "launchd-plist"
+  | "cli-status"
+  | "default-state-dir";
+
+export interface RuntimeDiscoveryInstanceSummary {
+  instanceId: string;
+  pid: number;
+  openclawPath?: string;
+  envPath?: string;
+  stateDir?: string;
+  serviceEnvPath?: string;
+  serviceManager?: "systemd" | "launchd";
+  serviceId?: string;
+  confidence?: RuntimeDiscoveryConfidence;
+  conflicted?: boolean;
+  evidence: RuntimeDiscoveryEvidence[];
+}
+
+export interface RuntimePathCandidateGroup {
+  candidateId: string;
+  instanceId: string;
+  stateDir: string;
+  openclawPath: string;
+  envPath: string;
+  serviceEnvPath?: string;
+  serviceManager?: "systemd" | "launchd";
+  serviceId?: string;
+  pid: number;
+  confidence?: RuntimeDiscoveryConfidence;
+  conflicted?: boolean;
+  evidence: RuntimeDiscoveryEvidence[];
+}
+
+export interface RuntimeDiscoverySummary {
+  status: RuntimeDiscoveryStatus;
+  instances: RuntimeDiscoveryInstanceSummary[];
+  diagnostics: string[];
 }
 
 export interface PathSettingsResponse {
   active: { openclawPath: string; envPath: string; stateDir: string };
   openclawPaths: PathCandidate[];
   envPaths: PathCandidate[];
+  runtimeDiscovery?: RuntimeDiscoverySummary;
+  runtimeCandidateGroups?: RuntimePathCandidateGroup[];
 }
 
 export interface EnvVariableSummary {
@@ -481,10 +534,14 @@ export function createApiClient(options: ApiClientOptions) {
       }),
     getSettings: () => request<SettingsResponse>("/api/settings"),
     getPathSettings: () => request<PathSettingsResponse>("/api/settings/paths"),
-    updatePathSettings: (openclawPath: string, envPath: string) =>
+    updatePathSettings: (openclawPath: string, envPath: string, candidateId?: string) =>
       request<{ ok: boolean; paths: { openclawPath: string; envPath: string; stateDir: string } }>("/api/settings/paths", {
         method: "PUT",
-        body: JSON.stringify({ openclawPath, envPath })
+        body: JSON.stringify({
+          openclawPath,
+          envPath,
+          ...(candidateId ? { candidateId } : {})
+        })
       }),
     getEnvIndex: () => request<EnvIndexResponse>("/api/env"),
     updateEnvVar: (body: { type: "upsert"; envVar: string; value: string; note?: string; confirmMigration?: boolean; confirmComplex?: boolean }) =>
@@ -514,13 +571,20 @@ export function createApiClient(options: ApiClientOptions) {
       request<{ ok: boolean; removedKeys: string[]; backupId?: string }>("/api/settings/orphans/cleanup", {
         method: "POST"
       }),
-    syncGatewayEnv: () =>
-      request<{ ok: boolean; sync: GatewayEnvSyncResult }>("/api/gateway/sync-env", { method: "POST" }),
-    restartGateway: () =>
-      request<{ ok: boolean; restart: GatewayRestartResult }>("/api/gateway/restart", { method: "POST" }),
-    applyGateway: () =>
+    syncGatewayEnv: (candidateId?: string) =>
+      request<{ ok: boolean; sync: GatewayEnvSyncResult }>("/api/gateway/sync-env", {
+        method: "POST",
+        body: JSON.stringify(candidateId ? { candidateId } : {})
+      }),
+    restartGateway: (candidateId?: string) =>
+      request<{ ok: boolean; restart: GatewayRestartResult }>("/api/gateway/restart", {
+        method: "POST",
+        body: JSON.stringify(candidateId ? { candidateId } : {})
+      }),
+    applyGateway: (candidateId?: string) =>
       request<{ ok: boolean; sync: GatewayEnvSyncResult; restart: GatewayRestartResult }>("/api/gateway/apply", {
-        method: "POST"
+        method: "POST",
+        body: JSON.stringify(candidateId ? { candidateId } : {})
       })
   };
 }

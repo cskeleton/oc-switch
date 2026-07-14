@@ -1,6 +1,18 @@
 import type { EnvWriteVerification, GatewayEnvSyncResult } from "./api";
 
-export const GATEWAY_NEXT_STEP_HINT = "下一步：同步并重启 Gateway，使运行中的 Gateway 加载新密钥。";
+/** 自动 sync 成功后的下一步提示 */
+export const GATEWAY_RESTART_NEXT_STEP_HINT = "下一步：重启 Gateway";
+
+/** sync 跳过/失败时的下一步提示 */
+export const GATEWAY_CONFIRM_SYNC_NEXT_STEP_HINT = "下一步：确认目标并同步/重启 Gateway";
+
+/** @deprecated 兼容旧引用；等价于确认目标提示 */
+export const GATEWAY_NEXT_STEP_HINT = GATEWAY_CONFIRM_SYNC_NEXT_STEP_HINT;
+
+/** 根据 sync 结果选择下一步文案 */
+export function nextStepHintForGatewayEnvSync(gatewayEnvSync?: GatewayEnvSyncResult): string {
+  return gatewayEnvSync?.ok ? GATEWAY_RESTART_NEXT_STEP_HINT : GATEWAY_CONFIRM_SYNC_NEXT_STEP_HINT;
+}
 
 /** 根据 sync 结果生成服务环境文件展示名（不含完整路径） */
 export function formatGatewayServiceEnvLabel(sync?: GatewayEnvSyncResult): string {
@@ -12,6 +24,7 @@ export function formatGatewayServiceEnvLabel(sync?: GatewayEnvSyncResult): strin
 export function formatEnvWriteSuccess(input: {
   label: string;
   envWrite?: EnvWriteVerification | undefined;
+  gatewayEnvSync?: GatewayEnvSyncResult | undefined;
   fallback?: string | undefined;
 }): string {
   if (!input.envWrite) return input.fallback ?? `${input.label} 已更新。`;
@@ -25,5 +38,5 @@ export function formatEnvWriteSuccess(input: {
     : entry.maskedValue
       ? `${input.label} 已写入托管块：${entry.envVar} = ${entry.maskedValue}`
       : (input.fallback ?? `${input.label} 已写入托管块。`);
-  return `${base} ${GATEWAY_NEXT_STEP_HINT}`;
+  return `${base} ${nextStepHintForGatewayEnvSync(input.gatewayEnvSync)}`;
 }

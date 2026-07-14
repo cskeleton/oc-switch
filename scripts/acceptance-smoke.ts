@@ -7,6 +7,16 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { listBackups } from "../packages/core/src/backup-manager";
+import { parseLaunchAgentGatewayMetadata } from "../packages/core/src/gateway-launchd-metadata";
+import { discoverLinuxOpenClawRuntime } from "../packages/core/src/path-discovery-linux";
+import { discoverMacOSOpenClawRuntime } from "../packages/core/src/path-discovery-macos";
+import { validateRuntimePathSelection } from "../packages/core/src/paths";
+import type {
+  RuntimeDiscoveryDependencies,
+  RuntimeDiscoveryResult,
+  RuntimePathCandidateGroup
+} from "../packages/core/src/runtime-discovery-types";
+import { writeOpenClawTransaction } from "../packages/core/src/transaction-writer";
 import sample from "../packages/core/test/fixtures/openclaw.sample.json";
 import { createApp } from "../packages/server/src/app";
 
@@ -15,6 +25,8 @@ const CLI_ENTRY = join(repoRoot, "packages/cli/src/index.ts");
 const fixtureBuiltinDir = join(repoRoot, "packages/core/test/fixtures/presets/builtin");
 const TOKEN = "acceptance-smoke-token";
 const SERVER_PORT = 17_421;
+/** fixture 专用密钥，任何响应/探测结果都不得回显 */
+const FIXTURE_SECRET = "acceptance-fixture-secret-NEVER-LEAK";
 
 /** 疑似真实密钥的输出模式（与 builtin-presets 测试保持一致） */
 const SECRET_PATTERNS = [
@@ -39,6 +51,9 @@ function assertNoSecrets(text: string, label: string): void {
       fail(`${label} 输出疑似包含密钥: ${pattern}`);
     }
   }
+  if (text.includes(FIXTURE_SECRET)) {
+    fail(`${label} 输出包含 fixture 密钥明文`);
+  }
 }
 
 /** 运行 CLI 子进程并收集 stdout/stderr */
@@ -53,6 +68,380 @@ async function runCli(args: string[], env: Record<string, string>) {
   const stdout = await new Response(proc.stdout).text();
   const stderr = await new Response(proc.stderr).text();
   return { code, stdout, stderr, combined: stdout + stderr };
+}
+
+function plistWithArgs(args: string[]): string {
+  return `<?xml version="1.0"?>
+<plist><dict><key>ProgramArguments</key><array>
+${args.map((arg) => `<string>${arg}</string>`).join("\n")}
+</array></dict></plist>`;
+}
+
+function discoveryGroup(
+  partial: Partial<RuntimePathCandidateGroup> & Pick<
+    RuntimePathCandidateGroup,
+    "candidateId" | "instanceId" | "stateDir" | "openclawPath" | "envPath" | "serviceEnvPath"
+  >
+): RuntimePathCandidateGroup {
+  return {
+    pid: 42,
+    evidence: ["systemd-unit"],
+    serviceManager: "systemd",
+    confidence: "strong",
+    ...partial
+  };
+}
+
+function discoveryResult(groups: RuntimePathCandidateGroup[]): RuntimeDiscoveryResult {
+  return {
+    status: groups.length ? "resolved" : "gateway-not-detected",
+    instances: groups.map((group) => ({
+      instanceId: group.instanceId,
+      pid: group.pid,
+      openclawPath: group.openclawPath,
+      envPath: group.envPath,
+      stateDir: group.stateDir,
+      serviceEnvPath: group.serviceEnvPath,
+      serviceManager: group.serviceManager,
+      evidence: group.evidence,
+      ...(group.confidence ? { confidence: group.confidence } : {})
+    })),
+    candidateGroups: groups,
+    diagnostics: []
+  };
+}
+
+/**
+ * 跨平台 runtime discovery / 多实例隔离 / service-env 拒绝 验收
+ * 全部使用临时 fixture 与注入依赖，不触碰真实 OpenClaw 配置。
+ */
+async function assertRuntimeDiscoveryAcceptance(outputs: string[]): Promise<void> {
+  const runtimeDir = mkdtempSync(join(tmpdir(), "oc-switch-acceptance-runtime-"));
+  try {
+    // --- Linux：无 --config 的默认 systemd（由 gateway.systemd.env 推导 state dir）---
+    const linuxDefaultDeps: RuntimeDiscoveryDependencies = {
+      platform: "linux",
+      homeDir: "/home/alice",
+      userId: undefined,
+      listGatewayProcesses: () => [{
+        pid: 401,
+        argv: ["node", "/opt/openclaw/dist/index.js", "gateway", "--port", "18789"]
+      }],
+      readTextFile: (path) => {
+        if (path === "/proc/401/environ") {
+          return [
+            "HOME=/home/alice",
+            "OPENCLAW_SYSTEMD_UNIT=openclaw-gateway.service",
+            `SECRET_TOKEN=${FIXTURE_SECRET}`
+          ].join("\0");
+        }
+        if (path.endsWith("openclaw-gateway.service")) {
+          return "[Service]\nEnvironmentFile=/home/alice/.openclaw/gateway.systemd.env\n";
+        }
+        throw new Error("ENOENT");
+      },
+      listDirectory: (path) => path.endsWith("/systemd/user")
+        ? ["openclaw-gateway.service"]
+        : [],
+      runCommand: () => ({
+        status: 0,
+        stdout: [
+          "MainPID=401",
+          "FragmentPath=/home/alice/.config/systemd/user/openclaw-gateway.service"
+        ].join("\n"),
+        timedOut: false
+      }),
+      pathExists: (path) => path === "/home/alice/.openclaw/openclaw.json"
+    };
+    const linuxDefault = discoverLinuxOpenClawRuntime(linuxDefaultDeps);
+    outputs.push(JSON.stringify(linuxDefault));
+    assert(linuxDefault.status === "resolved", "Linux 无 --config systemd 应 resolved");
+    assert(
+      linuxDefault.instances[0]?.stateDir === "/home/alice/.openclaw",
+      "Linux 无 --config 应由 gateway.systemd.env 推导 state dir"
+    );
+    assert(
+      linuxDefault.instances[0]?.envPath === "/home/alice/.openclaw/.env",
+      "Linux 管理源应为 state dir 下 .env"
+    );
+    assert(
+      linuxDefault.instances[0]?.serviceEnvPath === "/home/alice/.openclaw/gateway.systemd.env",
+      "Linux 应记录 canonical service env"
+    );
+    assert(
+      linuxDefault.instances[0]?.openclawPath === "/home/alice/.openclaw/openclaw.json",
+      "Linux 无 --config 时 config 应为 state dir 默认 openclaw.json"
+    );
+
+    // --- Linux：自定义 EnvironmentFile（不得猜测 canonical 路径）---
+    const customEnvFile = "/srv/alpha/runtime/custom gateway.env";
+    const linuxCustomDeps: RuntimeDiscoveryDependencies = {
+      platform: "linux",
+      homeDir: "/home/alice",
+      userId: undefined,
+      listGatewayProcesses: () => [{
+        pid: 402,
+        argv: ["node", "/opt/openclaw/dist/index.js", "gateway"]
+      }],
+      readTextFile: (path) => {
+        if (path === "/proc/402/environ") {
+          return [
+            "HOME=/home/alice",
+            "OPENCLAW_STATE_DIR=/srv/alpha",
+            "OPENCLAW_CONFIG_PATH=/etc/openclaw/alpha.json",
+            "OPENCLAW_SYSTEMD_UNIT=openclaw-alpha.service",
+            `API_KEY=${FIXTURE_SECRET}`
+          ].join("\0");
+        }
+        if (path.endsWith("openclaw-alpha.service")) {
+          // 与 unit 测试一致：带空格的自定义 EnvironmentFile 需引号
+          return `[Service]\nEnvironmentFile=-"${customEnvFile}"\n`;
+        }
+        throw new Error("ENOENT");
+      },
+      listDirectory: (path) => path.endsWith("/systemd/user")
+        ? ["openclaw-alpha.service"]
+        : [],
+      runCommand: () => ({
+        status: 0,
+        stdout: [
+          "MainPID=402",
+          "FragmentPath=/home/alice/.config/systemd/user/openclaw-alpha.service"
+        ].join("\n"),
+        timedOut: false
+      }),
+      pathExists: (path) => path === "/etc/openclaw/alpha.json"
+    };
+    const linuxCustom = discoverLinuxOpenClawRuntime(linuxCustomDeps);
+    outputs.push(JSON.stringify(linuxCustom));
+    assert(
+      linuxCustom.instances[0]?.serviceEnvPath === customEnvFile,
+      "Linux 自定义 EnvironmentFile 必须使用 unit 实际目标"
+    );
+    assert(
+      linuxCustom.instances[0]?.envPath === "/srv/alpha/.env",
+      "Linux 自定义 EnvironmentFile 时管理源仍为 state dir .env"
+    );
+    assert(
+      linuxCustom.instances[0]?.serviceEnvPath !== "/srv/alpha/gateway.systemd.env",
+      "不得用 canonical gateway.systemd.env 覆盖自定义 EnvironmentFile"
+    );
+
+    // --- macOS：当前 /bin/sh + wrapper 布局 ---
+    const macStateDir = "/Users/alice/.openclaw";
+    const macServiceEnv = `${macStateDir}/service-env/ai.openclaw.gateway.env`;
+    const macWrapper = `${macStateDir}/service-env/ai.openclaw.gateway-env-wrapper.sh`;
+    const currentArgs = [
+      "/bin/sh",
+      macWrapper,
+      macServiceEnv,
+      "/usr/local/bin/node",
+      "/opt/openclaw/dist/index.js",
+      "gateway",
+      "--port",
+      "18789"
+    ];
+    const currentMeta = parseLaunchAgentGatewayMetadata(plistWithArgs(currentArgs));
+    assert(currentMeta.wrapperPath === macWrapper, "macOS 当前布局应解析 wrapper");
+    assert(currentMeta.serviceEnvPath === macServiceEnv, "macOS 当前布局应解析 service env");
+    assert(
+      currentMeta.gatewayCommand[0] === "/usr/local/bin/node"
+        && currentMeta.gatewayCommand.includes("gateway"),
+      "macOS 当前布局应解包 Gateway command"
+    );
+
+    const macCurrentDeps: RuntimeDiscoveryDependencies = {
+      platform: "darwin",
+      homeDir: "/Users/alice",
+      userId: 501,
+      listGatewayProcesses: () => [{
+        pid: 501,
+        argv: ["/usr/local/bin/node", "/opt/openclaw/dist/index.js", "gateway"]
+      }],
+      readTextFile: (path) => {
+        if (path.endsWith("ai.openclaw.gateway.plist")) return plistWithArgs(currentArgs);
+        if (path === macServiceEnv) {
+          return [
+            `OPENCLAW_STATE_DIR=${macStateDir}`,
+            `API_KEY=${FIXTURE_SECRET}`
+          ].join("\n");
+        }
+        throw new Error("ENOENT");
+      },
+      listDirectory: (path) => path.endsWith("/LaunchAgents")
+        ? ["ai.openclaw.gateway.plist"]
+        : [],
+      runCommand: () => ({ status: 0, stdout: "pid = 501\n", timedOut: false }),
+      pathExists: () => true
+    };
+    const macCurrent = discoverMacOSOpenClawRuntime(macCurrentDeps);
+    outputs.push(JSON.stringify(macCurrent));
+    assert(macCurrent.status === "resolved", "macOS 当前 wrapper 应 resolved");
+    assert(
+      macCurrent.instances[0]?.serviceEnvPath === macServiceEnv,
+      "macOS 当前布局应绑定 service-env"
+    );
+    assert(
+      macCurrent.instances[0]?.envPath === `${macStateDir}/.env`,
+      "macOS 管理源应为 state dir .env"
+    );
+
+    // --- macOS：旧 wrapper 布局（无 /bin/sh）---
+    const legacyArgs = currentArgs.slice(1);
+    const legacyMeta = parseLaunchAgentGatewayMetadata(plistWithArgs(legacyArgs));
+    assert(legacyMeta.wrapperPath === macWrapper, "macOS 旧布局应解析同一 wrapper");
+    assert(legacyMeta.serviceEnvPath === macServiceEnv, "macOS 旧布局应解析同一 service env");
+    assert(
+      JSON.stringify(legacyMeta.gatewayCommand) === JSON.stringify(currentMeta.gatewayCommand),
+      "macOS 新旧布局解包后的 Gateway command 应一致"
+    );
+
+    const macLegacyDeps: RuntimeDiscoveryDependencies = {
+      ...macCurrentDeps,
+      readTextFile: (path) => {
+        if (path.endsWith("ai.openclaw.gateway.plist")) return plistWithArgs(legacyArgs);
+        if (path === macServiceEnv) return `OPENCLAW_STATE_DIR=${macStateDir}\nSECRET=${FIXTURE_SECRET}`;
+        throw new Error("ENOENT");
+      }
+    };
+    const macLegacy = discoverMacOSOpenClawRuntime(macLegacyDeps);
+    outputs.push(JSON.stringify(macLegacy));
+    assert(macLegacy.status === "resolved", "macOS 旧 wrapper 应 resolved");
+    assert(
+      macLegacy.instances[0]?.serviceEnvPath === macServiceEnv,
+      "macOS 旧布局应绑定同一 service-env"
+    );
+
+    // --- A/B 多实例隔离：同步 A 不得改写 B ---
+    const openclawA = join(runtimeDir, "a", "openclaw.json");
+    const envA = join(runtimeDir, "a", ".env");
+    const serviceEnvA = join(runtimeDir, "a", "gateway.env");
+    const openclawB = join(runtimeDir, "b", "openclaw.json");
+    const envB = join(runtimeDir, "b", ".env");
+    const serviceEnvB = join(runtimeDir, "b", "gateway.env");
+    const stateDir = join(runtimeDir, ".oc-switch");
+    mkdirSync(join(runtimeDir, "a"), { recursive: true });
+    mkdirSync(join(runtimeDir, "b"), { recursive: true });
+    writeFileSync(openclawA, `${JSON.stringify(sample, null, 2)}\n`);
+    writeFileSync(openclawB, `${JSON.stringify(sample, null, 2)}\n`);
+    writeFileSync(envA, "# oc-switch:start\nNVIDIA_API_KEY=old-a\n# oc-switch:end\n");
+    writeFileSync(envB, "# oc-switch:start\nNVIDIA_API_KEY=old-b\n# oc-switch:end\n");
+    writeFileSync(serviceEnvA, "KEEP_A=1\n");
+    writeFileSync(serviceEnvB, "KEEP_B=1\n");
+
+    const groupA = discoveryGroup({
+      candidateId: "systemd:a:acceptance",
+      instanceId: "systemd:a",
+      stateDir: join(runtimeDir, "a"),
+      openclawPath: openclawA,
+      envPath: envA,
+      serviceEnvPath: serviceEnvA,
+      pid: 1
+    });
+    const groupB = discoveryGroup({
+      candidateId: "systemd:b:acceptance",
+      instanceId: "systemd:b",
+      stateDir: join(runtimeDir, "b"),
+      openclawPath: openclawB,
+      envPath: envB,
+      serviceEnvPath: serviceEnvB,
+      pid: 2
+    });
+
+    const txResult = await writeOpenClawTransaction({
+      openclawPath: openclawA,
+      envPath: envA,
+      stateDir,
+      reason: "acceptance A/B isolation",
+      envUpdates: { NVIDIA_API_KEY: "secret-only-for-a" },
+      runtimeDiscoveryProvider: () => discoveryResult([groupA, groupB]),
+      mutate(config) {
+        return config;
+      }
+    });
+    outputs.push(JSON.stringify(txResult.gatewayEnvSync ?? {}));
+    assert(txResult.gatewayEnvSync?.ok === true, "唯一匹配 A 时应自动 sync 成功");
+    assert(
+      readFileSync(serviceEnvA, "utf8").includes("NVIDIA_API_KEY=secret-only-for-a"),
+      "A 的 service env 应收到托管块"
+    );
+    assert(
+      readFileSync(serviceEnvB, "utf8") === "KEEP_B=1\n",
+      "B 的 service env 不得被 A 的写入修改"
+    );
+
+    // --- service env 拒绝成为 active envPath ---
+    let rejected = false;
+    try {
+      validateRuntimePathSelection({
+        openclawPath: openclawA,
+        envPath: serviceEnvA,
+        discovery: discoveryResult([groupA, groupB])
+      });
+    } catch (error) {
+      rejected = true;
+      assert(
+        error instanceof Error && error.message.includes("service env"),
+        "拒绝 service env 时应说明其为运行时快照"
+      );
+    }
+    assert(rejected, "已知 serviceEnvPath 不得通过 env 切换校验");
+
+    // --- API：拒绝 service env + 响应不含 fixture 密钥 ---
+    const customDir = join(stateDir, "presets", "custom");
+    mkdirSync(customDir, { recursive: true });
+    const discoveryForApi = discoveryResult([groupA, groupB]);
+    // 故意在 discovery 旁路数据中不塞密钥；探测侧密钥已在上方断言不泄漏
+    const app = createApp({
+      token: TOKEN,
+      paths: { openclawPath: openclawA, envPath: envA, stateDir },
+      presetDirs: { builtinDir: fixtureBuiltinDir, customDir },
+      runtimeDiscoveryProvider: () => discoveryForApi
+    });
+    const server = Bun.serve({
+      port: SERVER_PORT + 1,
+      hostname: "127.0.0.1",
+      fetch: app.fetch
+    });
+    try {
+      const baseUrl = `http://127.0.0.1:${SERVER_PORT + 1}`;
+      const pathsGet = await fetch(`${baseUrl}/api/settings/paths`, {
+        headers: { Authorization: `Bearer ${TOKEN}` }
+      });
+      const pathsJson = await pathsGet.json() as Record<string, unknown>;
+      const pathsText = JSON.stringify(pathsJson);
+      outputs.push(pathsText);
+      assert(pathsGet.status === 200, "GET /api/settings/paths 应成功");
+      assert(!pathsText.includes(FIXTURE_SECRET), "paths 响应不得含 fixture 密钥");
+      const groups = pathsJson.runtimeCandidateGroups as Array<{ serviceEnvPath?: string }> | undefined;
+      assert(Array.isArray(groups) && groups.length === 2, "paths 应返回 A/B 候选组");
+      assert(
+        !(pathsJson.envPaths as Array<{ path: string }>).some((item) => item.path === serviceEnvA),
+        "service env 不得出现在可编辑 envPaths"
+      );
+
+      const rejectPut = await fetch(`${baseUrl}/api/settings/paths`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          openclawPath: openclawA,
+          envPath: serviceEnvA
+        })
+      });
+      const rejectBody = await rejectPut.text();
+      outputs.push(rejectBody);
+      assert(rejectPut.status === 400, "PUT 将 service env 设为 active 应返回 400");
+      assert(rejectBody.includes("service env") || rejectBody.includes("运行时"), "400 应说明 service env 不可用");
+      assert(!rejectBody.includes(FIXTURE_SECRET), "拒绝响应不得含 fixture 密钥");
+    } finally {
+      server.stop();
+    }
+  } finally {
+    rmSync(runtimeDir, { recursive: true, force: true });
+  }
 }
 
 async function main(): Promise<void> {
@@ -209,6 +598,9 @@ async function main(): Promise<void> {
     } finally {
       server.stop();
     }
+
+    // Runtime discovery / 多实例 / service-env 验收（临时 fixture）
+    await assertRuntimeDiscoveryAcceptance(outputs);
 
     // 汇总扫描所有输出
     for (const text of outputs) {

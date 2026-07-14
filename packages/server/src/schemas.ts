@@ -91,6 +91,42 @@ export function optionalRestoreBackupTarget(body: Record<string, unknown>): Rest
   return target;
 }
 
+/** 路径切换请求：openclaw/env 必填，candidateId 可选（运行实例候选组） */
+export function requirePathSettingsUpdate(body: Record<string, unknown>): {
+  openclawPath: string;
+  envPath: string;
+  candidateId?: string;
+} {
+  const candidateId = optionalString(body.candidateId, "candidateId");
+  return {
+    openclawPath: requireString(body.openclawPath, "openclawPath"),
+    envPath: requireString(body.envPath, "envPath"),
+    ...(candidateId ? { candidateId } : {})
+  };
+}
+
+/** Gateway sync/restart/apply：仅允许可选 candidateId，拒绝客户端传入目标路径或命令 */
+export function optionalGatewayActionBody(body: Record<string, unknown>): {
+  candidateId?: string;
+} {
+  const forbiddenKeys = [
+    "serviceEnvPath",
+    "targetPath",
+    "command",
+    "args",
+    "env",
+    "restartEnv",
+    "serviceEnvTarget"
+  ] as const;
+  for (const key of forbiddenKeys) {
+    if (body[key] !== undefined) {
+      throw new Error(`${key} must not be provided by clients`);
+    }
+  }
+  const candidateId = optionalString(body.candidateId, "candidateId");
+  return candidateId ? { candidateId } : {};
+}
+
 export function optionalEnvUpdateOptions(body: Record<string, unknown>) {
   return {
     ...(body.confirmMigration !== undefined ? { confirmMigration: requireBoolean(body.confirmMigration, "confirmMigration") } : {}),

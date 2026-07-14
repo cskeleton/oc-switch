@@ -45,6 +45,7 @@ export function registerEnvRoutes(app: Hono, runtime: AppRuntime): void {
       const operation = requireEnvOperation(body);
       const result = await applyEnvOperation({
         paths: runtime.currentPaths(),
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         operation: operation as never
       });
       return c.json(result);

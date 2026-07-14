@@ -49,6 +49,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
       }
       const result = await writeOpenClawTransaction({
         ...context.activePaths(),
+        runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `merge case duplicate ${input.groupKey} -> ${input.canonicalId}`,
         mutate(config) {
           return mergeProviderCaseDuplicates(config, input).config;
@@ -70,6 +71,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
       const enabledModels = options.models ?? preset.models.map((model) => model.id);
       await writeOpenClawTransaction({
         ...paths,
+        runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `add provider ${presetId}`,
         envUpdates: { [preset.provider.apiKeyEnv]: options.key },
         envUpdateOptions: {
@@ -136,6 +138,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
       };
       await writeOpenClawTransaction({
         ...paths,
+        runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `add custom provider ${input.providerId}`,
         envUpdates: { [input.apiKeyEnv]: options.key },
         envUpdateOptions: {
@@ -179,6 +182,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
       }
       await writeOpenClawTransaction({
         ...paths,
+        runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `edit provider ${name}`,
         ...(Object.keys(envUpdates).length ? { envUpdates } : {}),
         ...(Object.keys(envUpdates).length
@@ -215,6 +219,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
       const envVar = context.providerEnvVar(config, name);
       await writeOpenClawTransaction({
         ...paths,
+        runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `delete provider ${name}`,
         ...(envVar
           ? { manifestUpdates: [{ type: "mark-provider-orphan" as const, providerId: name, envVar }] }
@@ -233,6 +238,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
       let disabledState: { allowlistEntries: Record<string, unknown> } | undefined;
       await writeOpenClawTransaction({
         ...paths,
+        runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `disable provider ${name}`,
         mutate(config) {
           const result = disableProvider(config, name);
@@ -263,6 +269,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
       }
       await writeOpenClawTransaction({
         ...paths,
+        runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `enable provider ${name}`,
         mutate(config) {
           return restoreDisabledProvider(config, name, snapshot.allowlistEntries).config;
@@ -287,6 +294,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
         let addedModelIds: string[] = [];
         await writeOpenClawTransaction({
           ...context.activePaths(),
+          runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
           reason: `batch-add models for provider ${name}`,
           mutate(config) {
             const batch = batchAddProviderModels(config, name, {
@@ -349,6 +357,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
 
       await writeOpenClawTransaction({
         ...context.activePaths(),
+        runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `batch-remove models for provider ${providerId}`,
         mutate(config) {
           const batch = batchRemoveProviderModels(config, providerId, input);

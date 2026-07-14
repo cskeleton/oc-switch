@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
-import type { ApiClient, EnvIndexResponse, EnvVariableSummary, EnvWriteVerification, GatewayEnvSyncResult, PathSettingsResponse, SettingsResponse } from "../api";
-import { formatEnvWriteSuccess, formatGatewayServiceEnvLabel, GATEWAY_NEXT_STEP_HINT } from "../env-feedback";
+import type {
+  ApiClient,
+  EnvIndexResponse,
+  EnvVariableSummary,
+  EnvWriteVerification,
+  GatewayEnvSyncResult,
+  PathSettingsResponse,
+  RuntimePathCandidateGroup,
+  SettingsResponse
+} from "../api";
+import { formatEnvWriteSuccess, formatGatewayServiceEnvLabel, nextStepHintForGatewayEnvSync } from "../env-feedback";
 import { EnvMigrationConfirmDialog } from "../components/EnvMigrationConfirmDialog";
 import { GatewayApplyBanner } from "../components/GatewayApplyBanner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
@@ -40,6 +49,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
   const [envIndex, setEnvIndex] = useState<EnvIndexResponse | null>(null);
   const [selectedOpenClawPath, setSelectedOpenClawPath] = useState("");
   const [selectedEnvPath, setSelectedEnvPath] = useState("");
+  const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
   const [manualOpenClawPath, setManualOpenClawPath] = useState("");
   const [manualEnvPath, setManualEnvPath] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -57,6 +67,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
   } | null>(null);
   const [gatewayManualMessage, setGatewayManualMessage] = useState<string | null>(null);
   const [gatewayManualLoading, setGatewayManualLoading] = useState(false);
+  const [gatewayApplyCandidateId, setGatewayApplyCandidateId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -71,6 +82,13 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
       setEnvIndex(nextEnv);
       setSelectedOpenClawPath(nextPaths.active.openclawPath);
       setSelectedEnvPath(nextPaths.active.envPath);
+      const matchedGroup = (nextPaths.runtimeCandidateGroups ?? []).find(
+        (group) =>
+          group.openclawPath === nextPaths.active.openclawPath &&
+          group.envPath === nextPaths.active.envPath
+      );
+      setSelectedCandidateId(matchedGroup?.candidateId ?? null);
+      setGatewayApplyCandidateId(matchedGroup?.candidateId ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载失败");
     }
@@ -103,7 +121,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
   }
 
   function withGatewayHint(message: string, result: { gatewayEnvSync?: GatewayEnvSyncResult }) {
-    return result.gatewayEnvSync?.ok ? `${message} ${GATEWAY_NEXT_STEP_HINT}` : message;
+    return `${message} ${nextStepHintForGatewayEnvSync(result.gatewayEnvSync)}`;
   }
 
   async function handleManualGatewayApply() {
@@ -111,7 +129,14 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
     setGatewayManualMessage(null);
     setError(null);
     try {
-      const result = await client.applyGateway();
+      const groups = pathSettings?.runtimeCandidateGroups ?? [];
+      if (groups.length > 1 && !gatewayApplyCandidateId) {
+        setError("请先选择运行实例后再同步并重启 Gateway");
+        return;
+      }
+      const candidateId = gatewayApplyCandidateId
+        ?? (groups.length === 1 ? groups[0]?.candidateId : undefined);
+      const result = await client.applyGateway(candidateId);
       if (!result.ok) throw new Error(result.restart.message);
       setGatewayManualMessage(`已同步托管块到 ${formatGatewayServiceEnvLabel(result.sync)} 并重启 Gateway。`);
     } catch (err) {
@@ -150,6 +175,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
       setSuccessMessage(formatEnvWriteSuccess({
         label: envVar,
         envWrite: result.envWrite,
+        gatewayEnvSync: result.gatewayEnvSync,
         fallback: `${envVar} 已写入新值`
       }));
       showGatewayApply(result);
@@ -234,6 +260,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
         setSuccessMessage(formatEnvWriteSuccess({
           label: envVar,
           envWrite: result.envWrite,
+          gatewayEnvSync: result.gatewayEnvSync,
           fallback: pendingAction.confirmMigration
             ? `${envVar} 已迁入托管块并写入新值`
             : pendingAction.confirmComplex
@@ -286,12 +313,81 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
   async function handleSwitchPaths() {
     try {
       setSuccessMessage(null);
-      await client.updatePathSettings(selectedOpenClawPath, selectedEnvPath);
+      const matchedCandidateId =
+        selectedCandidateId &&
+        (pathSettings?.runtimeCandidateGroups ?? []).some(
+          (group) =>
+            group.candidateId === selectedCandidateId &&
+            group.openclawPath === selectedOpenClawPath &&
+            group.envPath === selectedEnvPath
+        )
+          ? selectedCandidateId
+          : undefined;
+      if (matchedCandidateId) {
+        await client.updatePathSettings(
+          selectedOpenClawPath,
+          selectedEnvPath,
+          matchedCandidateId
+        );
+      } else {
+        await client.updatePathSettings(selectedOpenClawPath, selectedEnvPath);
+      }
       await load();
       setSuccessMessage("路径已切换");
     } catch (err) {
       setError(err instanceof Error ? err.message : "切换路径失败");
     }
+  }
+
+  function selectRuntimeGroup(group: RuntimePathCandidateGroup) {
+    setSelectedOpenClawPath(group.openclawPath);
+    setSelectedEnvPath(group.envPath);
+    setSelectedCandidateId(group.candidateId);
+    setManualOpenClawPath("");
+    setManualEnvPath("");
+  }
+
+  function applyManualPaths() {
+    if (manualOpenClawPath.trim()) setSelectedOpenClawPath(manualOpenClawPath.trim());
+    if (manualEnvPath.trim()) setSelectedEnvPath(manualEnvPath.trim());
+    setSelectedCandidateId(null);
+  }
+
+  function runtimeStatusCopy(settings: PathSettingsResponse): {
+    text: string;
+    tone: "neutral" | "amber" | "none";
+  } | null {
+    const status = settings.runtimeDiscovery?.status;
+    if (!status) return null;
+    if (status === "resolved") {
+      const confidences = [
+        ...(settings.runtimeDiscovery?.instances ?? []).map((item) => item.confidence),
+        ...(settings.runtimeCandidateGroups ?? []).map((item) => item.confidence)
+      ].filter(Boolean);
+      if (confidences.some((item) => item === "confirmed" || item === "strong")) {
+        return { text: "已确认管理源", tone: "neutral" };
+      }
+      if (confidences.some((item) => item === "inferred")) {
+        return {
+          text: "由运行中 Gateway 与默认 state dir 推断",
+          tone: "neutral"
+        };
+      }
+      return { text: "已确认管理源", tone: "neutral" };
+    }
+    if (status === "gateway-detected-path-unresolved") {
+      return {
+        text: "检测到 Gateway，但无法确认其管理源 .env",
+        tone: "amber"
+      };
+    }
+    if (status === "gateway-not-detected") {
+      return { text: "未检测到运行中的 Gateway", tone: "neutral" };
+    }
+    if (status === "probe-failed") {
+      return { text: "运行实例探测失败，当前路径未改变", tone: "neutral" };
+    }
+    return null;
   }
 
   function renderStatus(item: EnvVariableSummary) {
@@ -376,6 +472,30 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
               <p className="text-sm text-muted-foreground">
                 命令等价于 <code className="rounded bg-muted px-1">{effective.gatewayRestartCommand}</code>，会先执行 sync-env。
               </p>
+              {(pathSettings?.runtimeCandidateGroups?.length ?? 0) > 1 ? (
+                <div className="space-y-2" role="radiogroup" aria-label="Gateway 目标运行实例">
+                  <p className="text-sm text-muted-foreground">检测到多个运行实例，请先选择要同步/重启的目标：</p>
+                  {(pathSettings?.runtimeCandidateGroups ?? []).map((group) => (
+                    <label
+                      key={group.candidateId}
+                      className="flex cursor-pointer items-start gap-2 rounded-md border p-2 text-sm hover:bg-muted/40"
+                    >
+                      <input
+                        type="radio"
+                        name="gateway-apply-candidate"
+                        className="mt-1"
+                        checked={gatewayApplyCandidateId === group.candidateId}
+                        aria-label={`Gateway 目标运行实例 ${group.candidateId}`}
+                        onChange={() => setGatewayApplyCandidateId(group.candidateId)}
+                      />
+                      <span className="min-w-0 break-all">
+                        <span className="font-medium">{group.candidateId}</span>
+                        <span className="mt-0.5 block text-xs text-muted-foreground">{group.envPath}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              ) : null}
               {gatewayManualMessage ? (
                 <p className="text-sm text-emerald-600 dark:text-emerald-400">{gatewayManualMessage}</p>
               ) : null}
@@ -424,11 +544,67 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
                 <CardDescription>配置 openclaw.json 和 .env 的文件路径。</CardDescription>
               </CardHeader>
               <CardContent>
-                {!pathSettings.envPaths.some((item) => item.source === "running-instance") ? (
-                  <p className="mb-4 text-sm font-medium text-amber-500">
-                    未能确认运行中 OpenClaw 使用的 env 文件。请选择候选路径，或向当前 OpenClaw 实例确认实际 runtime env 文件。
-                  </p>
+                {(() => {
+                  const statusCopy = runtimeStatusCopy(pathSettings);
+                  if (!statusCopy) return null;
+                  return (
+                    <p
+                      className={
+                        statusCopy.tone === "amber"
+                          ? "mb-4 text-sm font-medium text-amber-600 dark:text-amber-400"
+                          : "mb-4 text-sm text-muted-foreground"
+                      }
+                    >
+                      {statusCopy.text}
+                    </p>
+                  );
+                })()}
+
+                {(pathSettings.runtimeCandidateGroups ?? []).length > 0 ? (
+                  <div className="mb-6 space-y-3">
+                    <p className="text-sm font-medium">运行中实例候选</p>
+                    <div className="space-y-3">
+                      {(pathSettings.runtimeCandidateGroups ?? []).map((group) => {
+                        const selected = selectedCandidateId === group.candidateId;
+                        return (
+                          <button
+                            key={group.candidateId}
+                            type="button"
+                            aria-label={`选择运行实例 ${group.candidateId}`}
+                            aria-pressed={selected}
+                            onClick={() => selectRuntimeGroup(group)}
+                            className={
+                              selected
+                                ? "w-full rounded-lg border border-primary bg-primary/5 p-4 text-left"
+                                : "w-full rounded-lg border border-input bg-background p-4 text-left hover:bg-accent/40"
+                            }
+                          >
+                            <div className="space-y-1 text-sm">
+                              <p className="font-medium">{group.instanceId}</p>
+                              <p className="break-all text-muted-foreground">config: {group.openclawPath}</p>
+                              <p className="break-all text-muted-foreground">.env: {group.envPath}</p>
+                              {group.confidence ? (
+                                <p className="text-muted-foreground">
+                                  置信度：{group.confidence}
+                                  {group.confidence === "confirmed" || group.confidence === "strong"
+                                    ? "（已确认管理源）"
+                                    : ""}
+                                </p>
+                              ) : null}
+                              {group.serviceEnvPath ? (
+                                <p className="break-all text-muted-foreground">
+                                  <code className="rounded bg-muted px-1">{group.serviceEnvPath}</code>
+                                  <span className="ml-2">Gateway 运行时快照，由 sync 维护，不作为 active .env。</span>
+                                </p>
+                              ) : null}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 ) : null}
+
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
                     <label className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
@@ -437,7 +613,10 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
                     <select
                       aria-label="openclaw.json 路径"
                       value={selectedOpenClawPath}
-                      onChange={(event) => setSelectedOpenClawPath(event.target.value)}
+                      onChange={(event) => {
+                        setSelectedOpenClawPath(event.target.value);
+                        setSelectedCandidateId(null);
+                      }}
                       className="flex h-9 w-full items-center justify-between whitespace-nowrap rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {pathSettings.openclawPaths.map((item) => (
@@ -454,7 +633,10 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
                     <select
                       aria-label=".env 路径"
                       value={selectedEnvPath}
-                      onChange={(event) => setSelectedEnvPath(event.target.value)}
+                      onChange={(event) => {
+                        setSelectedEnvPath(event.target.value);
+                        setSelectedCandidateId(null);
+                      }}
                       className="flex h-9 w-full items-center justify-between whitespace-nowrap rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {pathSettings.envPaths.map((item) => (
@@ -473,7 +655,10 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
                       <input
                         aria-label="手动 openclaw.json 路径"
                         value={manualOpenClawPath}
-                        onChange={(event) => setManualOpenClawPath(event.target.value)}
+                        onChange={(event) => {
+                          setManualOpenClawPath(event.target.value);
+                          setSelectedCandidateId(null);
+                        }}
                         className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
                       />
                     </div>
@@ -482,21 +667,26 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
                       <input
                         aria-label="手动 .env 路径"
                         value={manualEnvPath}
-                        onChange={(event) => setManualEnvPath(event.target.value)}
+                        onChange={(event) => {
+                          setManualEnvPath(event.target.value);
+                          setSelectedCandidateId(null);
+                        }}
                         className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
                       />
                     </div>
                     <button
                       type="button"
-                      onClick={() => {
-                        if (manualOpenClawPath.trim()) setSelectedOpenClawPath(manualOpenClawPath.trim());
-                        if (manualEnvPath.trim()) setSelectedEnvPath(manualEnvPath.trim());
-                      }}
+                      onClick={applyManualPaths}
                       className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >
                       使用手动路径
                     </button>
                   </div>
+                  {!selectedCandidateId ? (
+                    <p className="text-sm text-muted-foreground">
+                      当前为手动模式：未验证配对，不会附带运行实例 candidateId。
+                    </p>
+                  ) : null}
                 </div>
 
                 <div className="mt-6">

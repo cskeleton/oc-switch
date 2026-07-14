@@ -6,6 +6,7 @@ import { removeManagedEnvKeys, renameManagedEnvKey } from "./env-manager";
 import { readManifest, removeExtraEnvManifest, upsertExtraEnvManifest } from "./manifest-manager";
 import { writeEnvTransaction } from "./transaction-writer";
 import type { OcSwitchPaths } from "./paths";
+import type { RuntimeDiscoveryProvider } from "./runtime-discovery-types";
 import type { OpenClawConfig } from "./types";
 import JSON5 from "json5";
 import type { EnvWriteVerification } from "./env-verification";
@@ -89,7 +90,12 @@ export function previewEnvOperation(input: {
   };
 }
 
-export async function applyEnvOperation(input: { paths: OcSwitchPaths; operation: EnvOperation }): Promise<EnvOperationResult> {
+export async function applyEnvOperation(input: {
+  paths: OcSwitchPaths;
+  operation: EnvOperation;
+  /** 注入 discovery；产品入口须透传，禁止依赖默认真实探测回退 */
+  runtimeDiscoveryProvider?: RuntimeDiscoveryProvider;
+}): Promise<EnvOperationResult> {
   const envVar = input.operation.type === "rename" ? input.operation.fromEnvVar : input.operation.envVar;
   assertEnvVar(envVar);
   if (input.operation.type === "rename") assertEnvVar(input.operation.toEnvVar);
@@ -114,6 +120,9 @@ export async function applyEnvOperation(input: { paths: OcSwitchPaths; operation
 
   const result = await writeEnvTransaction({
     ...input.paths,
+    ...(input.runtimeDiscoveryProvider
+      ? { runtimeDiscoveryProvider: input.runtimeDiscoveryProvider }
+      : {}),
     reason: input.operation.type === "rename"
       ? `rename env var ${input.operation.fromEnvVar} to ${input.operation.toEnvVar}`
       : `${input.operation.type} env var ${input.operation.envVar}`,

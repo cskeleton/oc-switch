@@ -45,8 +45,7 @@ export function registerHealthRoutes(app: Hono, runtime: AppRuntime): void {
       ...(config ? { config } : {}),
       ...(configReadError ? { configReadError } : {}),
       paths,
-      envContent,
-      ...(runtime.options.runningInstances ? { runningInstances: runtime.options.runningInstances } : {})
+      envContent
     }));
   });
 
@@ -76,6 +75,7 @@ export function registerHealthRoutes(app: Hono, runtime: AppRuntime): void {
       }
       const result = await writeOpenClawTransaction({
         ...paths,
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: "repair OpenClaw compatibility",
         mutate() {
           return repaired.config;

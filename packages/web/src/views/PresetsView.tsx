@@ -90,6 +90,7 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
       setSuccessMessage(formatEnvWriteSuccess({
         label: `Provider ${selectedPreset} 的 API Key`,
         envWrite: result.envWrite,
+        gatewayEnvSync: result.gatewayEnvSync,
         fallback: `Provider ${selectedPreset} 已添加`
       }));
       await load();

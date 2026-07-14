@@ -1,24 +1,22 @@
 import {
   cleanupOrphanEnvKeys,
   DEFAULT_BACKUP_RETENTION,
-  discoverRunningOpenClawInstances,
   listOrphanEnvKeys,
   resolveOpenClawPathCandidates,
-  validateEnvPathForSwitch,
-  validateOpenClawPathForSwitch,
+  validateRuntimePathSelection,
   writeOcSwitchSettings
 } from "@oc-switch/core";
 import type { Hono } from "hono";
 import { readConfig, type AppRuntime } from "../context";
 import { jsonError } from "../errors";
-import { requireString } from "../schemas";
+import { requirePathSettingsUpdate } from "../schemas";
 
 export function registerSettingsRoutes(app: Hono, runtime: AppRuntime): void {
   app.get("/api/settings/paths", (c) => {
-    const runningInstances = runtime.options.runningInstances ?? discoverRunningOpenClawInstances();
+    const runtimeDiscovery = runtime.runtimeDiscoveryProvider();
     return c.json(resolveOpenClawPathCandidates({
       stateDir: runtime.currentPaths().stateDir,
-      runningInstances,
+      runtimeDiscovery,
       manualOpenClawPaths: [runtime.currentPaths().openclawPath],
       manualEnvPaths: [runtime.currentPaths().envPath]
     }));
@@ -27,14 +25,21 @@ export function registerSettingsRoutes(app: Hono, runtime: AppRuntime): void {
   app.put("/api/settings/paths", async (c) => {
     try {
       const body = await c.req.json() as Record<string, unknown>;
+      const parsed = requirePathSettingsUpdate(body);
       const next = {
-        openclawPath: requireString(body.openclawPath, "openclawPath"),
-        envPath: requireString(body.envPath, "envPath"),
+        openclawPath: parsed.openclawPath,
+        envPath: parsed.envPath,
         stateDir: runtime.currentPaths().stateDir
       };
-      validateOpenClawPathForSwitch(next.openclawPath);
+      // 每次 PUT 只探测一次，供候选组校验复用
+      const discovery = runtime.runtimeDiscoveryProvider();
+      validateRuntimePathSelection({
+        openclawPath: next.openclawPath,
+        envPath: next.envPath,
+        ...(parsed.candidateId ? { candidateId: parsed.candidateId } : {}),
+        discovery
+      });
       readConfig(next);
-      validateEnvPathForSwitch(next.envPath);
       writeOcSwitchSettings(next.stateDir, {
         openclawPath: next.openclawPath,
         envPath: next.envPath

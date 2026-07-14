@@ -1,5 +1,6 @@
 import {
   defaultPresetDirs,
+  discoverOpenClawRuntime,
   getActivePaths,
   isProviderDisabled,
   providerEnvVar as coreProviderEnvVar,
@@ -9,7 +10,7 @@ import {
   type OpenClawConfig,
   type PresetDirs,
   type ProviderSummary,
-  type RunningOpenClawInstance
+  type RuntimeDiscoveryProvider
 } from "@oc-switch/core";
 import JSON5 from "json5";
 import { existsSync, readFileSync } from "node:fs";
@@ -23,8 +24,8 @@ export interface AppOptions {
   fetchImpl?: FetchImpl;
   bindAddress?: string;
   port?: number;
-  /** 测试注入：覆盖运行实例发现 */
-  runningInstances?: RunningOpenClawInstance[];
+  /** 测试注入：覆盖完整运行实例发现 */
+  runtimeDiscoveryProvider?: RuntimeDiscoveryProvider;
   /** 测试注入：Gateway sync/restart */
   gatewayRouteOptions?: GatewayRouteOptions;
 }
@@ -33,12 +34,17 @@ export interface AppRuntime {
   options: AppOptions;
   presetDirs: PresetDirs;
   fetchImpl: FetchImpl;
+  runtimeDiscoveryProvider: RuntimeDiscoveryProvider;
   currentPaths(): OcSwitchPaths;
   setActivePaths(paths: OcSwitchPaths): void;
 }
 
 export function createAppRuntime(options: AppOptions): AppRuntime {
-  let activePaths = options.paths ?? getActivePaths();
+  const runtimeDiscoveryProvider =
+    options.runtimeDiscoveryProvider ?? discoverOpenClawRuntime;
+  let activePaths = options.paths ?? getActivePaths({
+    runtimeDiscovery: runtimeDiscoveryProvider()
+  });
   const currentPaths = () => activePaths;
   const presetDirs = options.presetDirs ?? defaultPresetDirs(currentPaths().stateDir);
   const fetchImpl = options.fetchImpl ?? fetch;
@@ -46,6 +52,7 @@ export function createAppRuntime(options: AppOptions): AppRuntime {
     options,
     presetDirs,
     fetchImpl,
+    runtimeDiscoveryProvider,
     currentPaths,
     setActivePaths(paths) {
       activePaths = paths;

@@ -14,13 +14,15 @@ import { PresetsView } from "./views/PresetsView";
 import { BackupsView } from "./views/BackupsView";
 import { SettingsView } from "./views/SettingsView";
 import { modelSummary, providerSummary } from "./test-fixtures";
-import { GATEWAY_NEXT_STEP_HINT } from "./env-feedback";
+import { GATEWAY_CONFIRM_SYNC_NEXT_STEP_HINT, GATEWAY_RESTART_NEXT_STEP_HINT } from "./env-feedback";
 
 afterEach(() => {
   cleanup();
   window.sessionStorage.clear();
   mock.restore();
 });
+
+const originalFetch = globalThis.fetch;
 
 function mockClient(overrides: Partial<ApiClient> = {}): ApiClient {
   const base = createApiClient({
@@ -772,7 +774,7 @@ describe("ProvidersView", () => {
       ],
       enableAllModels: true
     }, "sk-abcdefghijklmnopqrstuvwxyz123456", undefined);
-    expect(await findByText(`Provider custom-openai 的 API Key 已写入托管块：CUSTOM_OPENAI_API_KEY = sk-abc********123456 ${GATEWAY_NEXT_STEP_HINT}`)).toBeTruthy();
+    expect(await findByText(`Provider custom-openai 的 API Key 已写入托管块：CUSTOM_OPENAI_API_KEY = sk-abc********123456 ${GATEWAY_CONFIRM_SYNC_NEXT_STEP_HINT}`)).toBeTruthy();
     expect(queryByText("sk-abcdefghijklmnopqrstuvwxyz123456")).toBeNull();
   });
 
@@ -981,7 +983,7 @@ describe("ProvidersView", () => {
       baseUrl: "https://new-nvidia.example/v1",
       apiKey: "sk-abcdefghijklmnopqrstuvwxyz123456"
     });
-    expect(await findByText(`Provider nvidia 的 API Key 已写入托管块：NVIDIA_API_KEY = sk-abc********123456 ${GATEWAY_NEXT_STEP_HINT}`)).toBeTruthy();
+    expect(await findByText(`Provider nvidia 的 API Key 已写入托管块：NVIDIA_API_KEY = sk-abc********123456 ${GATEWAY_CONFIRM_SYNC_NEXT_STEP_HINT}`)).toBeTruthy();
     expect(queryByText("sk-abcdefghijklmnopqrstuvwxyz123456")).toBeNull();
   });
 
@@ -992,7 +994,13 @@ describe("ProvidersView", () => {
         verified: true,
         entries: [{ envVar: "NVIDIA_API_KEY", verified: true, managed: true, maskedValue: "sk-abc********123456" }]
       },
-      gatewayEnvSync: { ok: true, syncedKeys: ["NVIDIA_API_KEY"], removedKeys: [], warnings: [] }
+      gatewayEnvSync: {
+        ok: true,
+        syncedKeys: ["NVIDIA_API_KEY"],
+        removedKeys: [],
+        warnings: [],
+        candidateId: "launchd:gw:test"
+      }
     }));
     const previewUpdateProvider = mock(async () => ({
       providersAdded: [],
@@ -1040,7 +1048,7 @@ describe("ProvidersView", () => {
 
     expect(await findByTestId("gateway-apply-banner")).toBeTruthy();
     await userEvent.click(getByText("重启 Gateway"));
-    await waitFor(() => expect(restartGateway).toHaveBeenCalled());
+    await waitFor(() => expect(restartGateway).toHaveBeenCalledWith("launchd:gw:test"));
   });
 
   test("provider edit previews unmanaged API key migration before saving", async () => {
@@ -1267,7 +1275,7 @@ describe("PresetsView", () => {
 
     expect(previewAddProvider).toHaveBeenCalledWith("nvidia");
     expect(addProvider).toHaveBeenCalledWith("nvidia", "sk-abcdefghijklmnopqrstuvwxyz123456", undefined, undefined);
-    expect(await findByText(`Provider nvidia 的 API Key 已写入托管块：NVIDIA_API_KEY = sk-abc********123456 ${GATEWAY_NEXT_STEP_HINT}`)).toBeTruthy();
+    expect(await findByText(`Provider nvidia 的 API Key 已写入托管块：NVIDIA_API_KEY = sk-abc********123456 ${GATEWAY_CONFIRM_SYNC_NEXT_STEP_HINT}`)).toBeTruthy();
     expect(getDiff).not.toHaveBeenCalled();
     expect(queryByText("sk-abcdefghijklmnopqrstuvwxyz123456")).toBeNull();
   });
@@ -1357,6 +1365,42 @@ describe("BackupsView", () => {
 
     expect(await findByText("备份已恢复，Gateway 环境已同步；请重启 Gateway 使运行中进程加载恢复后的密钥。")).toBeTruthy();
   });
+
+  test("does not claim env synced when gatewayEnvSync.ok is false", async () => {
+    const restoreBackup = mock(async () => ({
+      ok: true,
+      id: "backup-b",
+      gatewayEnvSync: {
+        ok: false,
+        syncedKeys: [],
+        removedKeys: [],
+        warnings: ["No runtime candidate group uniquely matches"]
+      }
+    }));
+    const { findByLabelText, findByText, getAllByText, queryByText } = render(
+      <BackupsView
+        client={mockClient({
+          getBackups: async () => ({
+            backups: [{
+              id: "backup-b",
+              createdAt: "2024-01-02",
+              reason: "test write",
+              openclawPath: "/default/openclaw.json",
+              envPath: "/default/.env",
+              pathMatchesActive: true
+            }]
+          }),
+          restoreBackup
+        })}
+      />
+    );
+
+    await userEvent.click(await findByLabelText("恢复备份 backup-b"));
+    await userEvent.click(getAllByText("恢复").at(-1)!);
+
+    expect(await findByText("备份已恢复。")).toBeTruthy();
+    expect(queryByText(/环境已同步/)).toBeNull();
+  });
 });
 
 describe("DiffChangelog", () => {
@@ -1426,7 +1470,13 @@ describe("SettingsView", () => {
   const defaultPathSettings = {
     active: { openclawPath: "/default/openclaw.json", envPath: "/default/.env", stateDir: "/state" },
     openclawPaths: [],
-    envPaths: []
+    envPaths: [],
+    runtimeDiscovery: {
+      status: "gateway-not-detected" as const,
+      instances: [],
+      diagnostics: []
+    },
+    runtimeCandidateGroups: []
   };
 
   test("shows non-secret settings", async () => {
@@ -1454,6 +1504,92 @@ describe("SettingsView", () => {
     expect(await findByText("7420")).toBeTruthy();
     expect(await findByText("20（默认）")).toBeTruthy();
     expect((await findAllByText("openclaw gateway restart")).length).toBeGreaterThan(0);
+  });
+
+  test("manual gateway apply requires selecting a runtime group when multiple exist", async () => {
+    const applyGateway = mock(async (candidateId?: string) => ({
+      ok: true,
+      sync: {
+        ok: true,
+        syncedKeys: ["K"],
+        removedKeys: [] as string[],
+        warnings: [] as string[],
+        ...(candidateId ? { candidateId } : {})
+      },
+      restart: { ok: true, exitCode: 0, message: "Gateway restarted" }
+    }));
+    const groups = [
+      {
+        candidateId: "launchd:a:candidate",
+        instanceId: "launchd:a",
+        stateDir: "/run-a",
+        openclawPath: "/run-a/openclaw.json",
+        envPath: "/run-a/.env",
+        serviceEnvPath: "/run-a/service.env",
+        serviceManager: "launchd" as const,
+        pid: 1,
+        confidence: "strong" as const,
+        evidence: ["launchd-plist" as const]
+      },
+      {
+        candidateId: "launchd:b:candidate",
+        instanceId: "launchd:b",
+        stateDir: "/run-b",
+        openclawPath: "/run-b/openclaw.json",
+        envPath: "/run-b/.env",
+        serviceEnvPath: "/run-b/service.env",
+        serviceManager: "launchd" as const,
+        pid: 2,
+        confidence: "strong" as const,
+        evidence: ["launchd-plist" as const]
+      }
+    ];
+    const { findByLabelText, findByText, getByText } = render(
+      <SettingsView
+        baseUrl="http://127.0.0.1:7420"
+        client={mockClient({
+          getSettings: async () => ({
+            configPath: "/default/openclaw.json",
+            envPath: "/default/.env",
+            bindAddress: "127.0.0.1",
+            port: 7420,
+            backupRetention: 20,
+            gatewayRestartCommand: "openclaw gateway restart",
+            orphanEnvKeys: []
+          }),
+          getPathSettings: async () => ({
+            ...defaultPathSettings,
+            runtimeDiscovery: {
+              status: "resolved" as const,
+              instances: groups.map((group) => ({
+                instanceId: group.instanceId,
+                pid: group.pid,
+                openclawPath: group.openclawPath,
+                envPath: group.envPath,
+                stateDir: group.stateDir,
+                serviceEnvPath: group.serviceEnvPath,
+                serviceManager: group.serviceManager,
+                confidence: group.confidence,
+                evidence: group.evidence
+              })),
+              diagnostics: []
+            },
+            runtimeCandidateGroups: groups
+          }),
+          getEnvIndex: async () => ({ variables: [], warnings: [] }),
+          applyGateway
+        })}
+      />
+    );
+
+    expect(await findByText("同步并重启 Gateway")).toBeTruthy();
+    await userEvent.click(getByText("同步并重启 Gateway"));
+    expect(await findByText(/请先选择运行实例/)).toBeTruthy();
+    expect(applyGateway).not.toHaveBeenCalled();
+
+    await userEvent.click(await findByLabelText("Gateway 目标运行实例 launchd:a:candidate"));
+    await userEvent.click(getByText("同步并重启 Gateway"));
+    await waitFor(() => expect(applyGateway).toHaveBeenCalledWith("launchd:a:candidate"));
   });
 
   test("can clean orphan env keys from settings", async () => {
@@ -1534,7 +1670,13 @@ describe("SettingsView", () => {
           getPathSettings: async () => ({
             active: { openclawPath: "/default/openclaw.json", envPath: "/default/.env", stateDir: "/state" },
             openclawPaths: [{ path: "/default/openclaw.json", source: "openclaw-default", label: "OpenClaw 默认路径", recommended: false, exists: true, readable: true, writable: true, parentWritable: true }],
-            envPaths: [{ path: "/default/.env", source: "openclaw-default", label: "OpenClaw 默认路径", recommended: false, exists: true, readable: true, writable: true, parentWritable: true }]
+            envPaths: [{ path: "/default/.env", source: "openclaw-default", label: "OpenClaw 默认路径", recommended: false, exists: true, readable: true, writable: true, parentWritable: true }],
+            runtimeDiscovery: {
+              status: "gateway-not-detected",
+              instances: [],
+              diagnostics: []
+            },
+            runtimeCandidateGroups: []
           }),
           updatePathSettings: putPaths,
           getEnvIndex: async () => ({ variables: [], warnings: [] })
@@ -1543,13 +1685,151 @@ describe("SettingsView", () => {
     );
 
     await userEvent.click(await findByText("路径"));
-    expect(await findByText(/未能确认运行中 OpenClaw/)).toBeTruthy();
+    expect(await findByText(/未检测到运行中的 Gateway/)).toBeTruthy();
     await userEvent.type(await findByLabelText("手动 openclaw.json 路径"), "/manual/openclaw.json");
     await userEvent.type(await findByLabelText("手动 .env 路径"), "/manual/.env");
     await userEvent.click(getByText("使用手动路径"));
+    expect(await findByText(/未验证配对/)).toBeTruthy();
     await userEvent.click(getByText("切换路径"));
 
     expect(putPaths).toHaveBeenCalledWith("/manual/openclaw.json", "/manual/.env");
+  });
+
+  test("selects runtime candidate groups together and renders status-specific copy", async () => {
+    const putPaths = mock(async () => ({
+      ok: true,
+      paths: { openclawPath: "/run/openclaw.json", envPath: "/run/.env", stateDir: "/run" }
+    }));
+    const group = {
+      candidateId: "launchd:ai.openclaw.gateway:candidate",
+      instanceId: "launchd:ai.openclaw.gateway",
+      stateDir: "/run",
+      openclawPath: "/run/openclaw.json",
+      envPath: "/run/.env",
+      serviceEnvPath: "/run/service-env/ai.openclaw.gateway.env",
+      pid: 27561,
+      confidence: "strong" as const,
+      evidence: ["launchd-plist" as const]
+    };
+    const { findByLabelText, findByText, getByText, queryByText, rerender } = render(
+      <SettingsView
+        baseUrl="http://127.0.0.1:7420"
+        client={mockClient({
+          getSettings: async () => ({
+            configPath: "/default/openclaw.json",
+            envPath: "/default/.env",
+            bindAddress: "127.0.0.1",
+            port: 7420,
+            backupRetention: 20,
+            gatewayRestartCommand: "openclaw gateway restart",
+            orphanEnvKeys: []
+          }),
+          getPathSettings: async () => ({
+            active: { openclawPath: "/default/openclaw.json", envPath: "/default/.env", stateDir: "/state" },
+            openclawPaths: [
+              { path: "/default/openclaw.json", source: "openclaw-default", label: "OpenClaw 默认路径", recommended: false, exists: true, readable: true, writable: true, parentWritable: true },
+              { path: group.openclawPath, source: "running-instance", label: "运行中 OpenClaw", recommended: true, exists: true, readable: true, writable: true, parentWritable: true, candidateId: group.candidateId }
+            ],
+            envPaths: [
+              { path: "/default/.env", source: "openclaw-default", label: "OpenClaw 默认路径", recommended: false, exists: true, readable: true, writable: true, parentWritable: true },
+              { path: group.envPath, source: "running-instance", label: "运行中 OpenClaw", recommended: true, exists: true, readable: true, writable: true, parentWritable: true, candidateId: group.candidateId }
+            ],
+            runtimeDiscovery: {
+              status: "resolved",
+              diagnostics: [],
+              instances: [{
+                instanceId: group.instanceId,
+                pid: group.pid,
+                confidence: "strong",
+                evidence: ["launchd-plist"]
+              }]
+            },
+            runtimeCandidateGroups: [group]
+          }),
+          updatePathSettings: putPaths,
+          getEnvIndex: async () => ({ variables: [], warnings: [] })
+        })}
+      />
+    );
+
+    await userEvent.click(await findByText("路径"));
+    expect(await findByText("已确认管理源")).toBeTruthy();
+    expect(queryByText(/检测到 Gateway，但无法确认/)).toBeNull();
+    expect(await findByText(group.serviceEnvPath)).toBeTruthy();
+    expect(await findByText(/Gateway 运行时快照/)).toBeTruthy();
+    const envSelect = await findByLabelText(".env 路径") as HTMLSelectElement;
+    expect([...envSelect.options].map((option) => option.value)).not.toContain(group.serviceEnvPath);
+
+    await userEvent.click(await findByLabelText(`选择运行实例 ${group.candidateId}`));
+    await userEvent.click(getByText("切换路径"));
+    expect(putPaths).toHaveBeenCalledWith("/run/openclaw.json", "/run/.env", group.candidateId);
+
+    // load 会回到 active；重新选组后再进手动，确认清除 candidateId 且 env 仍为组内路径
+    await userEvent.click(await findByLabelText(`选择运行实例 ${group.candidateId}`));
+    await userEvent.type(await findByLabelText("手动 openclaw.json 路径"), "/manual/openclaw.json");
+    await userEvent.click(getByText("使用手动路径"));
+    expect(await findByText(/未验证配对/)).toBeTruthy();
+    await userEvent.click(getByText("切换路径"));
+    expect(putPaths).toHaveBeenCalledWith("/manual/openclaw.json", "/run/.env");
+
+    const statusCases: Array<{
+      status: "resolved" | "gateway-detected-path-unresolved" | "probe-failed";
+      confidence?: "confirmed" | "inferred";
+      expectText: RegExp;
+      amber?: boolean;
+    }> = [
+      { status: "resolved", confidence: "inferred", expectText: /由运行中 Gateway 与默认 state dir 推断/ },
+      { status: "gateway-detected-path-unresolved", expectText: /检测到 Gateway，但无法确认其管理源/, amber: true },
+      { status: "probe-failed", expectText: /运行实例探测失败，当前路径未改变/ }
+    ];
+
+    for (const item of statusCases) {
+      const client = mockClient({
+        getSettings: async () => ({
+          configPath: "/default/openclaw.json",
+          envPath: "/default/.env",
+          bindAddress: "127.0.0.1",
+          port: 7420,
+          backupRetention: 20,
+          gatewayRestartCommand: "openclaw gateway restart",
+          orphanEnvKeys: []
+        }),
+        getPathSettings: async () => ({
+          active: { openclawPath: "/default/openclaw.json", envPath: "/default/.env", stateDir: "/state" },
+          openclawPaths: [],
+          envPaths: [],
+          runtimeDiscovery: {
+            status: item.status,
+            diagnostics: item.status === "probe-failed" ? ["process-probe-failed" as const] : [],
+            instances: item.confidence
+              ? [{ instanceId: "pid:1", pid: 1, confidence: item.confidence, evidence: ["default-state-dir" as const] }]
+              : [{ instanceId: "pid:1", pid: 1, evidence: ["process-cmdline" as const] }]
+          },
+          runtimeCandidateGroups: item.confidence === "inferred"
+            ? [{
+              candidateId: "pid:1:candidate",
+              instanceId: "pid:1",
+              stateDir: "/default",
+              openclawPath: "/default/openclaw.json",
+              envPath: "/default/.env",
+              pid: 1,
+              confidence: "inferred" as const,
+              evidence: ["default-state-dir" as const]
+            }]
+            : []
+        }),
+        getEnvIndex: async () => ({ variables: [], warnings: [] })
+      });
+      rerender(<SettingsView baseUrl="http://127.0.0.1:7420" client={client} />);
+      await userEvent.click(await findByText("路径"));
+      const statusNode = await findByText(item.expectText);
+      expect(statusNode).toBeTruthy();
+      if (item.amber) {
+        expect(statusNode.className).toMatch(/amber/);
+      } else {
+        expect(statusNode.className).not.toMatch(/amber/);
+      }
+    }
   });
 
   test("renders env variables without secret values", async () => {
@@ -1705,7 +1985,7 @@ describe("SettingsView", () => {
       envVar: "NVIDIA_API_KEY",
       value: "sk-abcdefghijklmnopqrstuvwxyz123456"
     });
-    expect(await findByText(`NVIDIA_API_KEY 已写入托管块：NVIDIA_API_KEY = sk-abc********123456 ${GATEWAY_NEXT_STEP_HINT}`)).toBeTruthy();
+    expect(await findByText(`NVIDIA_API_KEY 已写入托管块：NVIDIA_API_KEY = sk-abc********123456 ${GATEWAY_CONFIRM_SYNC_NEXT_STEP_HINT}`)).toBeTruthy();
     expect(queryByText("sk-abcdefghijklmnopqrstuvwxyz123456")).toBeNull();
     await waitFor(() => expect((input as HTMLInputElement).value).toBe(""));
   });
@@ -1832,7 +2112,7 @@ describe("SettingsView", () => {
       note: "MCP endpoint id"
     }));
     expect(queryByText("epid-secret")).toBeNull();
-    expect(await findByText(`SOME_MCP_EPID 已重命名为 SOME_MCP_EPID_NEXT ${GATEWAY_NEXT_STEP_HINT}`)).toBeTruthy();
+    expect(await findByText(`SOME_MCP_EPID 已重命名为 SOME_MCP_EPID_NEXT ${GATEWAY_RESTART_NEXT_STEP_HINT}`)).toBeTruthy();
   });
 });
 
@@ -1856,18 +2136,22 @@ describe("App shell", () => {
       }), { headers: { "content-type": "application/json" } })
     );
     globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const disconnected = render(<App />);
+      expect((await disconnected.findByLabelText("API 地址") as HTMLInputElement).value).toBe(window.location.origin);
+      disconnected.unmount();
 
-    const disconnected = render(<App />);
-    expect((await disconnected.findByLabelText("API 地址") as HTMLInputElement).value).toBe(window.location.origin);
-    disconnected.unmount();
-
-    window.sessionStorage.setItem("oc-switch-token", "token");
-    const connected = render(<App />);
-    await connected.findByText("minimax-portal/MiniMax-M3");
-    await connected.findByText("没有可比较备份");
-    const navLabels = Array.from(connected.container.querySelectorAll("aside nav button")).map((button) =>
-      button.textContent?.trim()
-    );
-    expect(navLabels).toEqual(["仪表盘", "Providers", "模型", "备份", "设置", "预设"]);
+      window.sessionStorage.setItem("oc-switch-token", "token");
+      const connected = render(<App />);
+      await connected.findByText("minimax-portal/MiniMax-M3");
+      await connected.findByText("没有可比较备份");
+      const navLabels = Array.from(connected.container.querySelectorAll("aside nav button")).map((button) =>
+        button.textContent?.trim()
+      );
+      expect(navLabels).toEqual(["仪表盘", "Providers", "模型", "备份", "设置", "预设"]);
+    } finally {
+      // 恢复全局 fetch，避免污染同进程后续包测试（如 cli waitForHttp）
+      globalThis.fetch = originalFetch;
+    }
   });
 });

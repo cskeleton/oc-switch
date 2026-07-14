@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { formatEnvWriteSuccess, formatGatewayServiceEnvLabel, GATEWAY_NEXT_STEP_HINT } from "./env-feedback";
+import {
+  formatEnvWriteSuccess,
+  formatGatewayServiceEnvLabel,
+  GATEWAY_CONFIRM_SYNC_NEXT_STEP_HINT,
+  GATEWAY_RESTART_NEXT_STEP_HINT
+} from "./env-feedback";
 
 describe("formatGatewayServiceEnvLabel", () => {
   test("uses basename of targetPath when available", () => {
@@ -19,7 +24,7 @@ describe("formatGatewayServiceEnvLabel", () => {
 });
 
 describe("formatEnvWriteSuccess", () => {
-  test("includes masked value only when server verification succeeded", () => {
+  test("auto-sync success hints restart only", () => {
     expect(formatEnvWriteSuccess({
       label: "Provider elysiver 的 API Key",
       envWrite: {
@@ -32,8 +37,37 @@ describe("formatEnvWriteSuccess", () => {
             maskedValue: "sk-abc********123456"
           }
         ]
+      },
+      gatewayEnvSync: {
+        ok: true,
+        syncedKeys: ["ELYSIVER_API_KEY"],
+        removedKeys: [],
+        warnings: [],
+        candidateId: "launchd:gw:1"
       }
-    })).toBe(`Provider elysiver 的 API Key 已写入托管块：ELYSIVER_API_KEY = sk-abc********123456 ${GATEWAY_NEXT_STEP_HINT}`);
+    })).toBe(`Provider elysiver 的 API Key 已写入托管块：ELYSIVER_API_KEY = sk-abc********123456 ${GATEWAY_RESTART_NEXT_STEP_HINT}`);
+  });
+
+  test("skipped or failed sync hints confirm target", () => {
+    expect(formatEnvWriteSuccess({
+      label: "TEST_KEY",
+      envWrite: {
+        verified: true,
+        entries: [
+          {
+            envVar: "TEST_KEY",
+            verified: true,
+            managed: true
+          }
+        ]
+      },
+      gatewayEnvSync: {
+        ok: false,
+        syncedKeys: [],
+        removedKeys: [],
+        warnings: ["ambiguous"]
+      }
+    })).toBe(`TEST_KEY 已写入托管块。 ${GATEWAY_CONFIRM_SYNC_NEXT_STEP_HINT}`);
   });
 
   test("does not claim verification when server did not verify the value", () => {
@@ -51,21 +85,5 @@ describe("formatEnvWriteSuccess", () => {
         ]
       }
     })).toBe("ELYSIVER_API_KEY 保存请求已返回，但写后校验失败；请不要认为新值已生效。");
-  });
-
-  test("uses a non-secret success message for short values", () => {
-    expect(formatEnvWriteSuccess({
-      label: "TEST_KEY",
-      envWrite: {
-        verified: true,
-        entries: [
-          {
-            envVar: "TEST_KEY",
-            verified: true,
-            managed: true
-          }
-        ]
-      }
-    })).toBe(`TEST_KEY 已写入托管块。 ${GATEWAY_NEXT_STEP_HINT}`);
   });
 });

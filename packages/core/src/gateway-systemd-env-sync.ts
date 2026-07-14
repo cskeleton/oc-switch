@@ -1,25 +1,28 @@
 import {
-  readGatewaySystemdEnv,
-  readManagedBlockEntries,
   syncManagedBlockToGatewayServiceEnv,
-  type GatewayServiceEnvSyncResult
+  type GatewayServiceEnvSyncResult,
+  type GatewayServiceEnvTarget
 } from "./gateway-service-env-sync";
-import { dirname, join } from "node:path";
 
 export type GatewaySystemdEnvSyncResult = GatewayServiceEnvSyncResult;
 
-export { readGatewaySystemdEnv, readManagedBlockEntries };
+export {
+  readGatewaySystemdEnv,
+  readManagedBlockEntries
+} from "./gateway-service-env-sync";
 
-/** 将托管块 merge 写入 gateway.systemd.env（Linux 兼容包装） */
+/** 将托管块 merge 写入显式 systemd EnvironmentFile 目标（Linux 兼容包装） */
 export function syncManagedBlockToGatewaySystemdEnv(input: {
   envPath: string;
-  gatewaySystemdEnvPath?: string;
+  target: GatewayServiceEnvTarget;
   removedKeys?: string[];
 }): GatewaySystemdEnvSyncResult {
+  if (input.target.targetKind !== "systemd") {
+    throw new Error(`syncManagedBlockToGatewaySystemdEnv requires targetKind "systemd", got "${input.target.targetKind}"`);
+  }
   return syncManagedBlockToGatewayServiceEnv({
     envPath: input.envPath,
-    gatewayServiceEnvPath: input.gatewaySystemdEnvPath ?? join(dirname(input.envPath), "gateway.systemd.env"),
-    ...(input.removedKeys?.length ? { removedKeys: input.removedKeys } : {}),
-    platform: "linux"
+    target: input.target,
+    ...(input.removedKeys?.length ? { removedKeys: input.removedKeys } : {})
   });
 }

@@ -26,6 +26,7 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
       const ref = requireString(body.ref, "ref");
       const result = await writeOpenClawTransaction({
         ...runtime.currentPaths(),
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `set primary model ${ref}`,
         mutate(config) {
           return setPrimaryModel(config, ref).config;
@@ -47,6 +48,7 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
       }
       const result = await writeOpenClawTransaction({
         ...runtime.currentPaths(),
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: enabled ? `enable model ${ref}` : `disable model ${ref}`,
         mutate(config) {
           return enabled ? enableModel(config, ref, body.alias).config : disableModel(config, ref).config;
@@ -69,6 +71,7 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
       const ref = `${providerId}/${model.id}`;
       const result = await writeOpenClawTransaction({
         ...runtime.currentPaths(),
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `add model ${ref}`,
         mutate(config) {
           return addProviderModel(config, providerId, model).config;
@@ -90,6 +93,7 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
       }
       const result = await writeOpenClawTransaction({
         ...runtime.currentPaths(),
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `edit model ${ref}`,
         mutate(config) {
           return updateProviderModel(config, ref, model).config;
@@ -113,6 +117,7 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
       }
       const result = await writeOpenClawTransaction({
         ...runtime.currentPaths(),
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `remove model ${ref}`,
         mutate(config) {
           return removeProviderModel(config, ref, removeOptions).config;

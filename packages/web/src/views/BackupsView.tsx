@@ -37,7 +37,7 @@ export function BackupsView({ client, onRefresh }: BackupsViewProps) {
       const result = await client.restoreBackup(restoreTarget.id, restoreTarget.pathMatchesActive ? undefined : restoreMode);
       setRestoreTarget(null);
       setRestoreMode("backup");
-      setSuccessMessage(result.gatewayRestartRequired
+      setSuccessMessage(result.gatewayEnvSync?.ok
         ? "备份已恢复，Gateway 环境已同步；请重启 Gateway 使运行中进程加载恢复后的密钥。"
         : "备份已恢复。");
       await load();

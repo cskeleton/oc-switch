@@ -22,6 +22,7 @@ export function registerBackupCommands(program: Command, context: CommandContext
       try {
         const result = restoreBackupSafely({
           stateDir: paths.stateDir,
+          runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
           backupDir: join(paths.stateDir, "backups", id),
           openclawPath: paths.openclawPath,
           envPath: paths.envPath

@@ -28,6 +28,7 @@ export function registerModelCommands(program: Command, context: CommandContext)
       const paths = context.activePaths();
       await writeOpenClawTransaction({
         ...paths,
+        runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `set primary model ${ref}`,
         mutate(config) {
           return setPrimaryModel(config, ref).config;
@@ -43,6 +44,7 @@ export function registerModelCommands(program: Command, context: CommandContext)
       const paths = context.activePaths();
       await writeOpenClawTransaction({
         ...paths,
+        runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `disable model ${ref}`,
         mutate(config) {
           return disableModel(config, ref).config;
@@ -59,6 +61,7 @@ export function registerModelCommands(program: Command, context: CommandContext)
       const paths = context.activePaths();
       await writeOpenClawTransaction({
         ...paths,
+        runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `enable model ${ref}`,
         mutate(config) {
           return enableModel(config, ref, options.alias).config;
@@ -80,6 +83,7 @@ export function registerModelCommands(program: Command, context: CommandContext)
       }
       await writeOpenClawTransaction({
         ...paths,
+        runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `add model ${ref}`,
         mutate(config) {
           return addProviderModel(config, ref, input).config;
@@ -98,6 +102,7 @@ export function registerModelCommands(program: Command, context: CommandContext)
       if (options.newPrimary !== undefined) removeOptions.newPrimary = options.newPrimary;
       await writeOpenClawTransaction({
         ...paths,
+        runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `remove model ${ref}`,
         mutate(config) {
           return removeProviderModel(config, ref, removeOptions).config;

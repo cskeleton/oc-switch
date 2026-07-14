@@ -55,7 +55,10 @@ describe("syncManagedBlockToGatewaySystemdEnv", () => {
       "# oc-switch:end"
     ].join("\n") + "\n");
 
-    const result = syncManagedBlockToGatewaySystemdEnv({ envPath: ws.envPath, gatewaySystemdEnvPath: ws.gatewayPath });
+    const result = syncManagedBlockToGatewaySystemdEnv({
+      envPath: ws.envPath,
+      target: { targetKind: "systemd", targetPath: ws.gatewayPath }
+    });
 
     expect(result.ok).toBe(true);
     expect(result.syncedKeys.sort()).toEqual(["ELY_API_KEY", "NVIDIA_API_KEY"]);
@@ -75,7 +78,10 @@ describe("syncManagedBlockToGatewaySystemdEnv", () => {
       "# oc-switch:end"
     ].join("\n") + "\n");
 
-    syncManagedBlockToGatewaySystemdEnv({ envPath: ws.envPath, gatewaySystemdEnvPath: ws.gatewayPath });
+    syncManagedBlockToGatewaySystemdEnv({
+      envPath: ws.envPath,
+      target: { targetKind: "systemd", targetPath: ws.gatewayPath }
+    });
 
     expect(readFileSync(ws.gatewayPath, "utf8")).toBe("# oc-switch:start\nNEW_KEY=value\n# oc-switch:end\n");
   });
@@ -97,7 +103,7 @@ describe("syncManagedBlockToGatewaySystemdEnv", () => {
 
     const result = syncManagedBlockToGatewaySystemdEnv({
       envPath: ws.envPath,
-      gatewaySystemdEnvPath: ws.gatewayPath
+      target: { targetKind: "systemd", targetPath: ws.gatewayPath }
     });
 
     const content = readFileSync(ws.gatewayPath, "utf8");
@@ -118,13 +124,13 @@ describe("syncManagedBlockToGatewaySystemdEnv", () => {
 
     expect(() => syncManagedBlockToGatewaySystemdEnv({
       envPath: ws.envPath,
-      gatewaySystemdEnvPath: ws.gatewayPath
+      target: { targetKind: "systemd", targetPath: ws.gatewayPath }
     })).toThrow("empty");
 
     expect(readFileSync(ws.gatewayPath, "utf8")).toBe("HTTP_PROXY=http://proxy\n");
   });
 
-  test("creates gateway.systemd.env when missing", () => {
+  test("creates gateway.systemd.env when missing and parent exists", () => {
     const ws = workspace();
     writeFileSync(ws.envPath, [
       "# oc-switch:start",
@@ -133,7 +139,10 @@ describe("syncManagedBlockToGatewaySystemdEnv", () => {
     ].join("\n") + "\n");
 
     expect(existsSync(ws.gatewayPath)).toBe(false);
-    syncManagedBlockToGatewaySystemdEnv({ envPath: ws.envPath, gatewaySystemdEnvPath: ws.gatewayPath });
+    syncManagedBlockToGatewaySystemdEnv({
+      envPath: ws.envPath,
+      target: { targetKind: "systemd", targetPath: ws.gatewayPath }
+    });
     expect(readFileSync(ws.gatewayPath, "utf8")).toContain("ONLY_KEY=value");
     expect(statSync(ws.gatewayPath).mode & 0o777).toBe(0o600);
   });

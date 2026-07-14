@@ -135,6 +135,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
       setSuccessMessage(formatEnvWriteSuccess({
         label: `Provider ${providerId} 的 API Key`,
         envWrite: result.envWrite,
+        gatewayEnvSync: result.gatewayEnvSync,
         fallback: changes.confirmMigration
           ? `Provider ${providerId} 的 API Key 已迁入托管块并更新`
           : changes.confirmComplex
@@ -397,6 +398,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
           setSuccessMessage(formatEnvWriteSuccess({
             label: `Provider ${result.providerId} 的 API Key`,
             envWrite: result.envWrite,
+            gatewayEnvSync: result.gatewayEnvSync,
             fallback: `Provider ${result.providerId} 已添加`
           }));
           showGatewayApply(result);

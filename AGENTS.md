@@ -72,9 +72,9 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 
 ### 路径与环境
 
-- 分层 env 管理；运行实例路径 best-effort 发现
-- **运行时 env 来源**：`openclaw.json` 仅存 `${ENV_VAR}` 引用；`openclaw` CLI 通常加载 state 目录 `.env`。Gateway **服务进程不直接读 `.env`**，而是读 OpenClaw 为服务生成的 env 快照（Linux：`gateway.systemd.env`；macOS：`service-env/*.env`）。改 API Key 后须同步服务 env 并 restart/apply，仅写 `.env` 不会让运行中 Gateway 自动加载新 Key（日常切模型/allowlist 通常无需重启）。
-- Gateway 服务环境：`.env` 托管块写入校验通过后自动同步至当前平台服务 env 文件（Linux：`gateway.systemd.env`；macOS：LaunchAgent 指向的 `service-env/*.env`）；按平台自动探测目标，无法在 macOS 上猜测创建 `gateway.systemd.env`；目标文件块外内容原样保留，块外同名 Key 只告警不自动改写；Web/CLI/API 提供 `sync-env`、`restart`、`apply`（同步 + 重启），不自动静默重启 Gateway
+- 分层 env 管理；跨平台运行实例探测（Linux systemd / macOS LaunchAgent），返回 `RuntimeDiscoveryResult` 与候选组（`candidateId`）；管理源 `.env` 与 Gateway service env 分离，后者只读展示且不得成为 active `envPath`
+- **运行时 env 来源**：`openclaw.json` 仅存 `${ENV_VAR}` 引用；`openclaw` CLI 通常加载 state 目录 `.env`。Gateway **服务进程不直接读 `.env`**，而是读 OpenClaw 为服务生成的 env 快照（Linux：unit 实际 `EnvironmentFile=`，常见为 `gateway.systemd.env`；macOS：`service-env/*.env`）。改 API Key 后须同步服务 env 并 restart/apply，仅写 `.env` 不会让运行中 Gateway 自动加载新 Key（日常切模型/allowlist 通常无需重启）。
+- Gateway 服务环境：`.env` 托管块在写入校验通过且能唯一关联候选组时自动同步到该组 service env（Linux：PID/unit 关联的 `EnvironmentFile=`，禁止仅按 `dirname(envPath)/gateway.systemd.env` 猜测；macOS：共享 LaunchAgent 解析器识别的 `service-env/*.env`，兼容 `/bin/sh + wrapper` 与旧 wrapper 布局）；无法唯一关联时主写入仍成功但 `gatewayEnvSync.ok=false`；目标文件块外内容原样保留，块外同名 Key 只告警不自动改写；Web/CLI/API 提供 `sync-env`、`restart`、`apply`（均可带 `--candidate` / `candidateId`），多实例时必须指定候选，不自动静默重启 Gateway
 - 已知后续：stale allowlist 专用清理 UI、chmod 警告、真实配置写 E2E、`GET /api/gateway/env-drift`
 
 ## 产品与使用定位

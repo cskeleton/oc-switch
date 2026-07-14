@@ -2,6 +2,11 @@ import { accessSync, constants, existsSync, lstatSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { readJsonState, writeJsonState } from "./json-state-store";
+import type {
+  LegacyRunningOpenClawInstance,
+  RuntimeDiscoveryResult,
+  RuntimePathCandidateGroup
+} from "./runtime-discovery-types";
 
 export interface OcSwitchPaths {
   openclawPath: string;
@@ -23,6 +28,7 @@ export type PathCandidateSource =
 
 export interface PathCandidate {
   path: string;
+  candidateId?: string;
   source: PathCandidateSource;
   label: string;
   recommended: boolean;
@@ -32,26 +38,23 @@ export interface PathCandidate {
   parentWritable: boolean;
 }
 
-export interface RunningOpenClawInstance {
-  pid: number;
-  openclawPath?: string;
-  envPath?: string;
-}
-
 export interface PathCandidateResult {
   active: OcSwitchPaths;
   openclawPaths: PathCandidate[];
   envPaths: PathCandidate[];
+  runtimeDiscovery?: RuntimeDiscoveryResult;
+  runtimeCandidateGroups: RuntimePathCandidateGroup[];
 }
 
 export interface ActivePathOptions {
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   stateDir?: string;
-  runningInstances?: RunningOpenClawInstance[];
+  runtimeDiscovery?: RuntimeDiscoveryResult;
+  /** @deprecated 仅供旧调用方兼容；生产调用必须传入 runtimeDiscovery */
+  runningInstances?: LegacyRunningOpenClawInstance[];
 }
 
 export interface CandidateOptions extends ActivePathOptions {
-  runningInstances?: RunningOpenClawInstance[];
   manualOpenClawPaths?: string[];
   manualEnvPaths?: string[];
 }
@@ -142,21 +145,57 @@ export function getActivePaths(options: ActivePathOptions = {}): OcSwitchPaths {
   const defaults = defaultPaths(env as NodeJS.ProcessEnv);
   const stateDir = options.stateDir ?? defaults.stateDir;
   const settings = readOcSwitchSettings(stateDir);
-  const running = options.runningInstances?.find((instance) => instance.openclawPath || instance.envPath);
+  const runtimeGroup = uniqueAutomaticRuntimeGroup(options.runtimeDiscovery);
+  // 一旦传入完整 discovery，旧 runningInstances 不得绕过置信度/唯一性门禁。
+  const legacyRunning = options.runtimeDiscovery
+    ? undefined
+    : options.runningInstances?.find((instance) => instance.openclawPath || instance.envPath);
   const openclawPath = env.OPENCLAW_CONFIG_PATH?.trim()
     ? resolveUserPath(env.OPENCLAW_CONFIG_PATH, env)
-    : settings.openclawPath ?? running?.openclawPath ?? defaults.openclawPath;
+    : settings.openclawPath ??
+      runtimeGroup?.openclawPath ??
+      legacyRunning?.openclawPath ??
+      defaults.openclawPath;
   return {
     openclawPath,
-    envPath: settings.envPath ?? running?.envPath ?? defaults.envPath,
+    envPath: settings.envPath ??
+      runtimeGroup?.envPath ??
+      legacyRunning?.envPath ??
+      defaults.envPath,
     stateDir
   };
 }
 
-function candidate(path: string, source: PathCandidateSource, label: string, recommended: boolean): PathCandidate {
+function uniqueAutomaticRuntimeGroup(
+  discovery: RuntimeDiscoveryResult | undefined
+): RuntimePathCandidateGroup | undefined {
+  if (discovery?.status !== "resolved" || discovery.candidateGroups.length !== 1) {
+    return undefined;
+  }
+  const [group] = discovery.candidateGroups;
+  if (
+    !group ||
+    group.conflicted ||
+    (group.confidence !== "confirmed" && group.confidence !== "strong") ||
+    !group.openclawPath ||
+    !group.envPath
+  ) {
+    return undefined;
+  }
+  return group;
+}
+
+function candidate(
+  path: string,
+  source: PathCandidateSource,
+  label: string,
+  recommended: boolean,
+  candidateId?: string
+): PathCandidate {
   const exists = existsSync(path);
   return {
     path,
+    ...(candidateId ? { candidateId } : {}),
     source,
     label,
     recommended,
@@ -177,6 +216,17 @@ function addCandidate(list: PathCandidate[], next: PathCandidate): void {
   if (existing.source !== "running-instance" && next.source === "running-instance") {
     existing.source = next.source;
     existing.label = next.label;
+    if (next.candidateId) existing.candidateId = next.candidateId;
+  } else if (!existing.candidateId && next.candidateId) {
+    existing.candidateId = next.candidateId;
+  } else if (
+    existing.candidateId &&
+    next.candidateId &&
+    existing.candidateId !== next.candidateId
+  ) {
+    // 同路径对应多个候选组时，扁平列表不再挂单一 candidateId；以 runtimeCandidateGroups 为准。
+    delete existing.candidateId;
+    existing.recommended = false;
   }
 }
 
@@ -187,11 +237,40 @@ export function resolveOpenClawPathCandidates(options: CandidateOptions = {}): P
   const active = getActivePaths({
     env,
     stateDir,
+    ...(options.runtimeDiscovery
+      ? { runtimeDiscovery: options.runtimeDiscovery }
+      : {}),
     ...(options.runningInstances ? { runningInstances: options.runningInstances } : {})
   });
   const openclawPaths: PathCandidate[] = [];
   const envPaths: PathCandidate[] = [];
 
+  for (const group of options.runtimeDiscovery?.candidateGroups ?? []) {
+    const recommended = !group.conflicted && group.confidence !== undefined;
+    const label = `运行中 OpenClaw 实例 ${group.instanceId}`;
+    addCandidate(
+      openclawPaths,
+      candidate(
+        group.openclawPath,
+        "running-instance",
+        label,
+        recommended,
+        group.candidateId
+      )
+    );
+    addCandidate(
+      envPaths,
+      candidate(
+        group.envPath,
+        "running-instance",
+        label,
+        recommended,
+        group.candidateId
+      )
+    );
+  }
+
+  // 旧轻量结果只保留兼容展示，不参与新的候选组校验。
   for (const instance of options.runningInstances ?? []) {
     if (instance.openclawPath) addCandidate(openclawPaths, candidate(instance.openclawPath, "running-instance", `运行中 OpenClaw 进程 ${instance.pid}`, true));
     if (instance.envPath) addCandidate(envPaths, candidate(instance.envPath, "running-instance", `运行中 OpenClaw 进程 ${instance.pid}`, true));
@@ -214,7 +293,15 @@ export function resolveOpenClawPathCandidates(options: CandidateOptions = {}): P
   for (const path of options.manualOpenClawPaths ?? []) addCandidate(openclawPaths, candidate(path, "manual", "手动指定", false));
   for (const path of options.manualEnvPaths ?? []) addCandidate(envPaths, candidate(path, "manual", "手动指定", false));
 
-  return { active, openclawPaths, envPaths };
+  return {
+    active,
+    openclawPaths,
+    envPaths,
+    ...(options.runtimeDiscovery
+      ? { runtimeDiscovery: options.runtimeDiscovery }
+      : {}),
+    runtimeCandidateGroups: options.runtimeDiscovery?.candidateGroups ?? []
+  };
 }
 
 /** 切换 active openclaw.json 路径前的校验 */
@@ -252,4 +339,43 @@ export function validateEnvPathForSwitch(envPath: string): void {
   if (!parentWritable(envPath)) {
     throw new Error(`.env 不存在且父目录不可写: ${envPath}`);
   }
+}
+
+export interface ValidateRuntimePathSelectionInput {
+  openclawPath: string;
+  envPath: string;
+  candidateId?: string;
+  discovery: RuntimeDiscoveryResult;
+}
+
+/** 校验运行实例候选组关联；无 candidateId 时按明确手动模式处理 */
+export function validateRuntimePathSelection(
+  input: ValidateRuntimePathSelectionInput
+): void {
+  const serviceEnvPaths = new Set(
+    input.discovery.candidateGroups.flatMap((group) =>
+      group.serviceEnvPath ? [group.serviceEnvPath] : []
+    )
+  );
+  if (serviceEnvPaths.has(input.envPath)) {
+    throw new Error("不能将 Gateway service env 运行时快照设为 active envPath");
+  }
+
+  if (input.candidateId) {
+    const group = input.discovery.candidateGroups.find(
+      (candidateGroup) => candidateGroup.candidateId === input.candidateId
+    );
+    if (!group) {
+      throw new Error(`candidateId 已过期或不存在: ${input.candidateId}`);
+    }
+    if (
+      group.openclawPath !== input.openclawPath ||
+      group.envPath !== input.envPath
+    ) {
+      throw new Error("运行实例候选的路径配对不匹配");
+    }
+  }
+
+  validateOpenClawPathForSwitch(input.openclawPath);
+  validateEnvPathForSwitch(input.envPath);
 }

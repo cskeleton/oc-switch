@@ -1,4 +1,16 @@
-import { defaultPresetDirs, getActivePaths, isProviderDisabled, providerEnvVar as coreProviderEnvVar, type FetchImpl, type OpenClawConfig } from "@oc-switch/core";
+import {
+  defaultPresetDirs,
+  discoverOpenClawRuntime,
+  getActivePaths,
+  isProviderDisabled,
+  providerEnvVar as coreProviderEnvVar,
+  type FetchImpl,
+  type OcSwitchPaths,
+  type OpenClawConfig,
+  type PresetDirs,
+  type RuntimeDiscoveryProvider,
+  type RuntimeDiscoveryResult
+} from "@oc-switch/core";
 import JSON5 from "json5";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -6,34 +18,8 @@ import { dirname, join } from "node:path";
 /** monorepo 根目录（自 packages/cli/src 上溯三级） */
 export const repoRoot = join(dirname(import.meta.path), "../../..");
 
-function activePaths() {
-  return getActivePaths();
-}
-
-function readConfig(): OpenClawConfig {
-  const paths = activePaths();
-  return JSON5.parse(readFileSync(paths.openclawPath, "utf8")) as OpenClawConfig;
-}
-
-function readEnvContent(): string | undefined {
-  const paths = activePaths();
-  return existsSync(paths.envPath) ? readFileSync(paths.envPath, "utf8") : undefined;
-}
-
-function assertProviderCanEnable(providerId: string): void {
-  const paths = activePaths();
-  if (isProviderDisabled(paths.stateDir, providerId)) {
-    throw new Error(`Provider ${providerId} is disabled. Restore the provider before enabling models.`);
-  }
-}
-
 function providerEnvVar(config: OpenClawConfig, providerId: string): string | undefined {
   return coreProviderEnvVar(config.models?.providers?.[providerId]);
-}
-
-function presetDirs() {
-  const paths = activePaths();
-  return defaultPresetDirs(paths.stateDir);
 }
 
 function mockSyncFetch(): FetchImpl | undefined {
@@ -66,24 +52,71 @@ function parseAliasMap(value: string | undefined): Map<string, string> {
 }
 
 export interface CommandContext {
-  activePaths: typeof activePaths;
-  readConfig: typeof readConfig;
-  readEnvContent: typeof readEnvContent;
-  assertProviderCanEnable: typeof assertProviderCanEnable;
+  activePaths(): OcSwitchPaths;
+  readConfig(): OpenClawConfig;
+  readEnvContent(): string | undefined;
+  assertProviderCanEnable(providerId: string): void;
+  /** 同一命令进程内复用一次探测快照（读路径用） */
+  runtimeDiscovery(): RuntimeDiscoveryResult;
+  /** 未缓存 provider；写入事务须注入以便写后重新 discovery */
+  runtimeDiscoveryProvider: RuntimeDiscoveryProvider;
   providerEnvVar: typeof providerEnvVar;
-  presetDirs: typeof presetDirs;
+  presetDirs(): PresetDirs;
   mockSyncFetch: typeof mockSyncFetch;
   defaultEnvName: typeof defaultEnvName;
   parseModelIds: typeof parseModelIds;
   parseAliasMap: typeof parseAliasMap;
 }
 
-export function createCommandContext(): CommandContext {
+export interface CreateCommandContextOptions {
+  env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
+  stateDir?: string;
+  runtimeDiscoveryProvider?: RuntimeDiscoveryProvider;
+}
+
+/** 创建命令级上下文，并在同一命令内复用一次运行实例探测快照 */
+export function createCommandContext(
+  options: CreateCommandContextOptions = {}
+): CommandContext {
+  const discoveryProvider =
+    options.runtimeDiscoveryProvider ?? discoverOpenClawRuntime;
+  let cachedDiscovery: RuntimeDiscoveryResult | undefined;
+  const runtimeDiscovery = (): RuntimeDiscoveryResult => {
+    cachedDiscovery ??= discoveryProvider();
+    return cachedDiscovery;
+  };
+  const activePaths = (): OcSwitchPaths => getActivePaths({
+    ...(options.env ? { env: options.env } : {}),
+    ...(options.stateDir ? { stateDir: options.stateDir } : {}),
+    runtimeDiscovery: runtimeDiscovery()
+  });
+  const readConfig = (): OpenClawConfig => {
+    const paths = activePaths();
+    return JSON5.parse(readFileSync(paths.openclawPath, "utf8")) as OpenClawConfig;
+  };
+  const readEnvContent = (): string | undefined => {
+    const paths = activePaths();
+    return existsSync(paths.envPath)
+      ? readFileSync(paths.envPath, "utf8")
+      : undefined;
+  };
+  const assertProviderCanEnable = (providerId: string): void => {
+    const paths = activePaths();
+    if (isProviderDisabled(paths.stateDir, providerId)) {
+      throw new Error(
+        `Provider ${providerId} is disabled. Restore the provider before enabling models.`
+      );
+    }
+  };
+  const presetDirs = (): PresetDirs => defaultPresetDirs(activePaths().stateDir);
+
   return {
     activePaths,
     readConfig,
     readEnvContent,
     assertProviderCanEnable,
+    runtimeDiscovery,
+    runtimeDiscoveryProvider: discoveryProvider,
     providerEnvVar,
     presetDirs,
     mockSyncFetch,

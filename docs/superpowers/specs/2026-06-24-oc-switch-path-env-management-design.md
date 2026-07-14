@@ -1,7 +1,7 @@
 # oc-switch Path and Env Management Design
 
 > 日期：2026-06-24  
-> 状态：待评审  
+> 状态：2026-07-14 路径探测增补待评审
 > 目标：为 oc-switch 增加 OpenClaw 配置路径管理与分层 `.env` 管理，支持即时切换目标文件，同时保持密钥明文不经 API/UI 暴露。
 
 ## 1. 背景
@@ -21,7 +21,7 @@ oc-switch 当前默认读取：
 
 ## 2. 目标
 
-- 设置页能展示并切换 `openclaw.json` 与当前 OpenClaw runtime `.env` 路径。
+- 设置页能展示并切换 `openclaw.json` 与当前 OpenClaw **管理源 `.env`** 路径，并将 Gateway 实际加载的 service env 作为只读运行时信息展示。
 - 路径候选需要标注来源，默认选中运行中 OpenClaw 实例对应路径，但切换必须由用户确认。
 - 用户确认切换后，当前 Web/CLI 后续操作立即使用新路径，并持久化到 `~/.oc-switch/settings.json`。
 - `.env` 页面管理当前选中 OpenClaw 实例关联的 `.env` 文件。
@@ -64,8 +64,11 @@ oc-switch 当前默认读取：
 
 说明：
 
+- `active` 表示当前实际读写路径，`recommended` 只表示建议切换的候选；已有 settings 时运行实例候选不得静默覆盖 active。
+- 首次没有 settings 时，可按上述优先级把唯一且无冲突的 `confirmed` / `strong` 运行实例作为 active；`inferred` 只作为推荐候选，必须由用户确认。
 - `OPENCLAW_CONFIG_PATH` 只覆盖 `openclaw.json`，不自动决定 `.env`。
-- `.env` 优先从运行实例或 state/config dir 推导。
+- 管理源 `.env` 必须从运行实例的 state dir 推导；不得仅因 `openclaw.json` 位于某目录，就把同目录 `.env` 当作管理源。
+- Gateway service env（Linux 的 `gateway.systemd.env`、macOS 的 `service-env/*.env`）是运行时快照，不得成为 active `envPath`。
 - 若用户切换路径，Server 进程内的 active paths 立即更新；CLI 后续命令读取持久化 settings。
 
 ### 4.2 路径候选
@@ -76,7 +79,7 @@ oc-switch 当前默认读取：
 
 | 来源 | openclaw.json | .env | 说明 |
 | --- | --- | --- | --- |
-| 运行中 OpenClaw 实例 | 进程参数、进程环境、service metadata 或状态探测 | 运行实例 state/config dir 推导 | 能确定时默认选中 |
+| 运行中 OpenClaw 实例 | 进程参数、进程环境、service metadata 或状态探测 | 运行实例 state dir 推导 | 能确定时默认选中；附带置信度与证据 |
 | OpenClaw 默认路径 | `~/.openclaw/openclaw.json` | `~/.openclaw/.env` | 标注为默认路径 |
 | `OPENCLAW_STATE_DIR` | `$OPENCLAW_STATE_DIR/openclaw.json` | `$OPENCLAW_STATE_DIR/.env` | 仅当可发现该环境时出现 |
 | oc-switch 当前设置 | `settings.json.openclawPath` | `settings.json.envPath` | 标注为当前配置 |
@@ -89,18 +92,172 @@ oc-switch 当前默认读取：
 - `/custom/.env`（oc-switch 当前配置）
 - `/other/.env`（手动指定）
 
-如果候选无法确定运行中实例，设置页显示：
+运行实例探测结果按置信度和失败阶段映射为以下 UI 状态：
 
-> 未能确认运行中 OpenClaw 使用的 env 文件。请选择候选路径，或向当前 OpenClaw 实例确认实际 runtime env 文件。
+| 状态 | UI 行为 |
+| --- | --- |
+| `confirmed` / `strong` | 显示“已确认管理源”，不显示警告 |
+| `inferred` | 中性提示“由运行中 Gateway 与默认 state dir 推断”，不显示误导性警告 |
+| `gateway-detected-path-unresolved` | 显示琥珀警告：检测到 Gateway，但无法确认其管理源 `.env` |
+| `gateway-not-detected` | 显示中性提示“未检测到运行中的 Gateway”；不得暗示当前路径配置错误 |
+| `probe-failed` | 显示“运行实例探测失败，当前路径未改变”；不得把失败等同于未运行 |
 
-### 4.3 切换校验
+Gateway service env 路径若可发现，应作为只读信息展示：
+
+> Gateway 进程加载：`gateway.systemd.env` / `service-env/*.env`。该文件由 oc-switch sync 维护，不作为 active `envPath` 直接编辑。
+
+### 4.3 运行实例探测与置信度
+
+运行实例探测采用跨平台证据流水线。各 probe 独立 best-effort；单个 probe 失败不得清空其他有效结果。
+
+证据优先级从强到弱：
+
+1. 显式 `OPENCLAW_CONFIG_PATH` / `OPENCLAW_STATE_DIR`。
+2. macOS LaunchAgent 或 Linux systemd service metadata，并与运行 PID 关联。
+3. 经过严格过滤的 Gateway 进程命令行与进程环境。
+4. `openclaw gateway status --json`，仅在路径仍有歧义时作限时补充确认，不作为唯一依赖。
+5. 已确认 Gateway 进程存在后，从默认 state dir 推断。
+
+探测结果至少包含：
+
+```ts
+type RuntimeDiscoveryConfidence = "confirmed" | "strong" | "inferred";
+type RuntimeDiscoveryStatus =
+  | "resolved"
+  | "gateway-detected-path-unresolved"
+  | "gateway-not-detected"
+  | "probe-failed";
+type RuntimeDiscoveryEvidence =
+  | "process-cmdline"
+  | "process-environ"
+  | "systemd-unit"
+  | "launchd-plist"
+  | "cli-status"
+  | "default-state-dir";
+
+interface RunningOpenClawInstance {
+  instanceId: string;
+  pid: number;
+  openclawPath?: string;
+  envPath?: string;
+  stateDir?: string;
+  serviceEnvPath?: string;
+  serviceManager?: "systemd" | "launchd";
+  serviceId?: string;
+  confidence?: RuntimeDiscoveryConfidence;
+  evidence: RuntimeDiscoveryEvidence[];
+}
+
+interface RuntimePathCandidateGroup {
+  candidateId: string;
+  instanceId: string;
+  stateDir: string;
+  openclawPath: string;
+  envPath: string;
+  serviceEnvPath?: string;
+  serviceManager?: "systemd" | "launchd";
+  serviceId?: string;
+  pid: number;
+  confidence?: RuntimeDiscoveryConfidence;
+  evidence: RuntimeDiscoveryEvidence[];
+}
+
+interface RuntimeDiscoveryResult {
+  status: RuntimeDiscoveryStatus;
+  instances: RunningOpenClawInstance[];
+  candidateGroups: RuntimePathCandidateGroup[];
+  diagnostics: RuntimeDiscoveryDiagnosticCode[];
+}
+```
+
+`status === "resolved"` 时 `instances` 至少包含一个路径已解析实例，且至少一个可推荐候选组必须携带符合下表最低证据的 `confidence`；其他状态的 unresolved / conflict metadata 不得携带 `confidence`。`instanceId` 优先由 `serviceManager + serviceId` 构成；无 service manager 的手动进程才退化为 `pid:<pid>`。
+
+运行实例路径必须作为候选组返回（见上 `candidateGroups`），禁止只靠两个独立列表表达关联。
+
+现有 `openclawPaths` / `envPaths` 与 `source: "running-instance"` 继续保留以兼容 API，但每项增加可选 `candidateId`。Web 选择运行实例候选时必须按组同时设置 config 与管理源 `.env`；手动模式仍可提交完整路径对，但不获得运行实例推荐标记。新增 runtime discovery 摘要用于 UI 展示置信度、证据与 service env。API 不返回 service env 内容、进程环境值或完整原始命令行。
+
+置信度计算规则：
+
+| 置信度 | 最低证据 |
+| --- | --- |
+| `confirmed` | `cli-status` 返回 daemon config 与 runtime PID，且与 PID 关联的 service metadata 一致；或 Gateway 进程环境中的显式 state/config 与 service ID、PID 一致 |
+| `strong` | PID 关联的 systemd/launchd metadata 能确定 service env，并由显式路径变量或受支持的生成目录布局推导 state dir |
+| `inferred` | 严格确认 Gateway command 后，仅由该用户默认 state dir 且可读的 `openclaw.json` 推导 |
+
+任意同级或更强证据发生路径冲突时，不提升置信度；该实例进入 `gateway-detected-path-unresolved`，冲突路径只作非推荐候选展示。oc-switch 进程自身的 `OPENCLAW_*` 只属于 active path 覆盖，不得冒充 Gateway 进程证据。
+
+#### 4.3.1 进程过滤
+
+`pgrep -fl openclaw` 只负责提供候选 PID，不足以证明进程是 Gateway。仅接受命令参数 token 同时满足：
+
+- 可执行入口指向 OpenClaw CLI（例如 `openclaw/dist/index.js`）；并且
+- 子命令 token 为 `gateway`。
+
+Codex app-server、embedding worker、路径中偶然包含 `openclaw` 的进程，以及探测命令自身必须排除。不得仅用命令行字符串包含关系触发默认路径推荐。
+
+#### 4.3.2 Linux / systemd
+
+Linux probe 按以下顺序合并证据：
+
+1. 从 `/proc/<pid>/environ` 只提取路径与服务标识白名单：`HOME`、`OPENCLAW_HOME`、`OPENCLAW_STATE_DIR`、`OPENCLAW_CONFIG_PATH`、`OPENCLAW_PROFILE`、`OPENCLAW_SERVICE_MARKER`、`OPENCLAW_SERVICE_KIND`、`OPENCLAW_SYSTEMD_UNIT`。
+2. 关联 systemd user unit 与 `MainPID`，解析 unit / service metadata 中的 `EnvironmentFile=`。
+3. 若 service env 为 `<stateDir>/gateway.systemd.env`，可由其父目录推导 state dir。
+4. `/proc` 无权限或 unit metadata 不完整时，保留其他 probe 结果；已严格确认 Gateway 且默认配置存在时，允许以 `inferred` 使用默认 state dir。
+
+由 state dir 推导管理源 `<stateDir>/.env`；service env 仅记录为 `serviceEnvPath`。
+
+#### 4.3.3 macOS / LaunchAgent
+
+macOS probe 扫描当前用户 `~/Library/LaunchAgents/ai.openclaw.*.plist`，并通过 launchd runtime PID 与 Gateway 进程关联。默认 label 为 `ai.openclaw.gateway`，profile 可使用 `ai.openclaw.<profile>`。
+
+LaunchAgent `ProgramArguments` 必须兼容 OpenClaw 已出现的两种生成布局：
+
+```text
+# 当前布局
+/bin/sh, <stateDir>/service-env/*-env-wrapper.sh, <stateDir>/service-env/*.env, node, .../openclaw/dist/index.js, gateway, ...
+
+# 旧布局
+<stateDir>/service-env/*-env-wrapper.sh, <stateDir>/service-env/*.env, node, .../openclaw/dist/index.js, gateway, ...
+```
+
+解析器返回 wrapper、service env 与解包后的 Gateway command，并正确处理 plist XML entity。探测与 Gateway service env 同步必须复用同一解析器，禁止维护两套参数位置假设。
+
+解析器必须拒绝：
+
+- 参数不足；
+- wrapper 不位于 `service-env` 或文件名不以 `-env-wrapper.sh` 结尾；
+- env 不位于同一 `service-env` 目录或不以 `.env` 结尾；
+- 解包后 command 不是 OpenClaw `gateway`；
+- 同一 label 出现多个互相冲突的 wrapper/env 配对。
+
+未加载或没有 runtime PID 的 plist 可生成普通非推荐路径候选，但不得标记为 `running-instance`。多个已加载 plist 必须分别形成候选组。
+
+路径推导规则：
+
+1. 只从 service env 内提取与 Linux 相同的路径/服务标识白名单，不向 API 暴露值。
+2. 显式 `OPENCLAW_STATE_DIR` / `OPENCLAW_CONFIG_PATH` 优先。
+3. 若 service env 位于 `<stateDir>/service-env/*.env`，由 `dirname(dirname(serviceEnvPath))` 推导 state dir。
+4. 由 state dir 推导管理源 `<stateDir>/.env`；配置默认为 `<stateDir>/openclaw.json`。
+5. `openclaw gateway status --json` 可补充验证 daemon config、PID 与 plist source path，但必须设置超时、输出上限并允许旧版本不支持。
+
+#### 4.3.4 路径解析不变量
+
+- `openclawPath` 与 state dir 独立解析；`dirname(openclawPath)/.env` 不是通用规则。
+- `envPath` 始终表示 oc-switch 管理源，不表示 Gateway 直接加载的快照。
+- `serviceEnvPath` 只读展示并用于 sync / drift；不得自动写入 settings 的 `envPath`。
+- 多条证据指向同一路径时合并去重并提升置信度；证据冲突时保留多个候选，不静默覆盖用户 settings。
+- 外部命令设置短超时与输出上限；返回结构化诊断枚举，不返回原始 stderr。
+- 稳定诊断码至少包括：`process-probe-failed`、`process-environ-denied`、`service-metadata-missing`、`service-pid-mismatch`、`service-args-invalid`、`cli-status-timeout`、`cli-status-invalid`、`path-evidence-conflict`。
+
+### 4.4 切换校验
 
 切换前校验：
 
 - `openclaw.json` 必须存在、是普通文件、可读取、可 JSON5 解析。
 - `.env` 可不存在；若不存在，父目录必须存在且可写，或明确提示写入时无法创建。
 - `.env` 存在时必须是普通文件，可读取；写入操作前还要确认可写。
-- symlink 或权限异常需显示警告，首版可拒绝写入。
+- symlink 候选可只读展示，但拒绝切换为 active 和拒绝写入；权限异常显示明确错误。
+- 若用户提交的 `envPath` 等于当前 discovery 中任一 `serviceEnvPath`，拒绝切换并说明应选择对应候选组的管理源 `.env`。
 
 切换动作只更新 `~/.oc-switch/settings.json` 和 Server active paths，不改 OpenClaw 文件。
 
@@ -108,7 +265,7 @@ oc-switch 当前默认读取：
 
 `.env` 页面只管理当前 active `envPath` 文件。页面顶部明确说明：
 
-> 这里管理的是当前 OpenClaw 实例关联的 runtime `.env` 文件。想由 oc-switch 管理的 OpenClaw 相关 Key 可以放入这里；不想被 oc-switch 索引或管理的 Key 不应放入这个文件。
+> 这里管理的是当前 OpenClaw 实例关联的管理源 `.env` 文件。想由 oc-switch 管理的 OpenClaw 相关 Key 可以放入这里；不想被 oc-switch 索引或管理的 Key 不应放入这个文件。Gateway 运行时使用的 service env 快照由 sync 维护，不在这里直接编辑。
 
 ### 5.1 常规区：Provider 密钥
 
@@ -342,6 +499,8 @@ Provider and Settings env writes perform server-side write-after-read verificati
     "openclawPath": "running-instance",
     "envPath": "openclaw-default"
   },
+  "runtimeInstanceId": "launchd:ai.openclaw.gateway",
+  "serviceEnvPath": "/Users/gc/.openclaw/service-env/ai.openclaw.gateway.env",
   "beforeHash": "...",
   "sourceFiles": ["openclaw.json", ".env"]
 }
@@ -362,6 +521,7 @@ Provider and Settings env writes perform server-side write-after-read verificati
   - 恢复到备份原路径
   - 明确恢复到当前选中路径
 - 恢复前仍创建 safety backup，且记录当前路径。
+- `runtimeInstanceId` / `serviceEnvPath` 只记录路径关联，不保证恢复时目标仍有效；恢复同步前必须按当前 discovery 重新验证 PID、service ID 与候选组。
 - Web API 不提供下载或预览备份 `.env` 内容。
 
 ## 9. Core 设计
@@ -373,6 +533,14 @@ Provider and Settings env writes perform server-side write-after-read verificati
   - `getActivePaths()`
   - `readOcSwitchSettings()`
   - `writeOcSwitchSettings()`
+- `path-discovery.ts`
+  - 仅负责跨平台 probe 编排、证据合并、去重与置信度计算
+- `path-discovery-linux.ts`
+  - 严格 Gateway 进程识别、`/proc` 白名单环境读取、systemd unit/PID/EnvironmentFile 关联
+- `path-discovery-macos.ts`
+  - LaunchAgent 枚举、launchd PID 关联、state dir 与 service env 推导
+- `gateway-launchd-metadata.ts`
+  - 统一解析新旧 `ProgramArguments` wrapper 布局，供路径探测与 service env sync 复用
 - `env-inspector.ts`
   - `inspectEnvFile(content, refs, manifest)`
   - 返回不含 value 的索引
@@ -385,8 +553,19 @@ Provider and Settings env writes perform server-side write-after-read verificati
 - `transaction-writer.ts`
   - 使用 active paths
   - env-only 写入也走事务与备份
+  - 接受可选 `runtimeDiscoveryProvider`；未传入时回退默认 `discoverOpenClawRuntime()`（仅供测试缺省与极端兜底，产品入口不得依赖此回退）
+- `env-operations.ts` / `backup-manager.ts`
+  - `applyEnvOperation`、`restoreBackupSafely` 同样接受并向下透传 `runtimeDiscoveryProvider`
 
 Core 是唯一文件读写层。Server/Web 不直接读写本地文件。
+
+**Discovery provider 透传（产品入口必须）**：`AppRuntime.runtimeDiscoveryProvider`（Server）与 `CommandContext.runtimeDiscovery` / 等价字段（CLI）须注入**所有**会触发自动 gateway sync 的写入路径，包括但不限于：
+
+- `writeOpenClawTransaction`：providers / models / health repair 等路由与 CLI 命令
+- `writeEnvTransaction` / `applyEnvOperation`：Settings env upsert/delete/rename
+- `restoreBackupSafely`：备份恢复
+
+禁止产品入口省略该参数、每次写入静默 fork 真实探测。测试可通过注入固定 `RuntimeDiscoveryResult` 快照验证 sync 关联，而不依赖本机 Gateway。
 
 ## 10. Server API
 
@@ -503,6 +682,13 @@ Core 是唯一文件读写层。Server/Web 不直接读写本地文件。
 | 场景 | 行为 |
 | --- | --- |
 | 找不到 `openclaw.json` | 候选可展示，但不可切换为 active；提示初始化或手动指定 |
+| 检测到 Gateway 但无法推导 state dir | 保留当前 active paths；显示 `gateway-detected-path-unresolved`，不得把 service env 当作管理源 |
+| 未检测到 Gateway | 展示默认/settings 候选与中性说明，不显示“路径错误”式警告 |
+| 所有必要 probe 均执行失败 | 保留当前 active paths；显示 `probe-failed` 与稳定诊断码 |
+| `/proc`、launchctl 或 systemd probe 无权限/失败 | 继续其他 probe；记录结构化 best-effort 诊断，不返回原始环境或 stderr |
+| 多条证据路径冲突 | 展示多个候选及各自证据，不静默切换 active paths |
+| config 与 env 来自不同运行实例候选组 | 禁止作为推荐切换；要求选择同一候选组或进入明确的手动路径模式 |
+| `envPath` 指向已发现的 service env | 拒绝切换；提示该文件是运行时快照 |
 | JSON5 解析失败 | 禁止切换和写入 |
 | `.env` 不存在 | 允许选择；写入前确认创建 |
 | `.env` 父目录不可写 | 禁止写入 |
@@ -518,6 +704,16 @@ Core 是唯一文件读写层。Server/Web 不直接读写本地文件。
 ### Core
 
 - 路径候选发现覆盖默认、settings、`OPENCLAW_CONFIG_PATH`、`OPENCLAW_STATE_DIR`。
+- `OPENCLAW_CONFIG_PATH` 位于 state dir 外时，管理源仍为 `<stateDir>/.env`。
+- 严格 Gateway token 过滤排除 Codex app-server、embedding worker、探测命令自身和普通路径命中。
+- Linux 覆盖：无 `--config` 的 systemd Gateway、显式 state/config、`EnvironmentFile=`、profile unit、`/proc` 不可读与 PID 不匹配。
+- Linux 自定义 `EnvironmentFile` 与 `<stateDir>/gateway.systemd.env` 不同时，只允许写 unit 实际关联目标。
+- macOS 覆盖：`/bin/sh + wrapper + service-env` 当前布局、旧 wrapper 布局、默认/profile label、自定义 state dir、XML entity、service 未加载与 PID 不匹配。
+- service env 与管理源 `.env` 分离；service env 不会进入 active `envPath`。
+- 多证据合并、冲突候选、`confirmed` / `strong` / `inferred` 置信度正确。
+- `resolved`、`gateway-detected-path-unresolved`、`gateway-not-detected`、`probe-failed` 判别状态及必填字段正确。
+- 多实例候选保持 config/env/service-env 配对；不得跨实例组合或自动同步。
+- 外部 CLI 补充 probe 超时、输出过大、无效 JSON、旧版本不支持时安全降级。
 - active paths 优先级正确。
 - settings 持久化为 `0600`。
 - `inspectEnvFile` 不返回 value。
@@ -530,16 +726,25 @@ Core 是唯一文件读写层。Server/Web 不直接读写本地文件。
 ### Server
 
 - `GET /api/settings/paths` 不返回文件内容。
+- `GET /api/settings/paths` 可返回不含密钥的 runtime discovery 摘要，并区分 `resolved`、`gateway-detected-path-unresolved`、`gateway-not-detected`、`probe-failed`；resolved 实例再携带 confidence。
+- `GET /api/settings/paths` 覆盖 `strong` 与 `probe-failed`，运行实例候选项带同一 `candidateId`。
+- `PUT /api/settings/paths` 对运行实例候选按组校验；拒绝把已发现的 service env 设为 active `envPath`。
+- 响应不包含 service env 内容、进程环境值、完整原始命令行或 probe stderr。
 - `PUT /api/settings/paths` 切换后立即影响后续 `GET /api/providers`。
 - `GET /api/env` 不返回明文。
 - `POST /api/env/preview` 不接收明文。
 - `POST /api/env` 不回显明文。
 - 未确认复杂迁移返回 400。
 - 备份路径不一致时 restore 需要显式目标。
+- gateway sync/apply/restart 在多实例时缺少或传入过期 `candidateId` 会拒绝执行，并按当前 discovery 重新验证目标。
 
 ### Web
 
 - 候选路径展示来源标签和推荐项。
+- 已确认与推断成功时不显示“未能确认 runtime env”警告。
+- 推断路径显示中性证据文案；仅 unresolved 显示琥珀警告。
+- service env 作为只读运行时快照展示，明确提示不得将其选作 active `envPath`。
+- 选择运行实例时按候选组同时填充 config/env；手动模式明确标记为未验证配对。
 - 用户确认后切换路径。
 - Provider 密钥常规区显示引用状态。
 - 高级区默认折叠。
@@ -554,6 +759,9 @@ Core 是唯一文件读写层。Server/Web 不直接读写本地文件。
 - 路径切换后，Provider/Model 操作写入新 `openclaw.json`。
 - 更新非托管 env 后，变量迁移到 managed block。
 - 恢复备份时路径不一致会拦截。
+- 两个运行实例并存时，选择 A 只会同步 A 的 service env，不修改 B。
+- active 手动路径或恢复目标无法与当前候选组关联时，主写入/恢复成功但自动 sync 明确跳过。
+- 已发现的 service env 不能被设置为 active `envPath`。
 - 响应 JSON、页面文本、测试日志不包含测试密钥值。
 
 ## 14. 验收标准
@@ -561,6 +769,12 @@ Core 是唯一文件读写层。Server/Web 不直接读写本地文件。
 - 用户能看到当前 `openclaw.json` 与 `.env` 路径。
 - 用户能从候选路径中选择并即时切换。
 - 运行中实例路径与默认路径不一致时，页面能标注来源。
+- Linux systemd 与 macOS LaunchAgent 在没有 `--config` 参数时仍可正确发现管理源 `.env`。
+- macOS 新旧 LaunchAgent wrapper 布局均可用于路径发现和 service env 同步。
+- 自定义 `OPENCLAW_CONFIG_PATH` 不会错误改变管理源 `.env`。
+- UI 能区分“已确认”“由默认 state dir 推断”“检测到 Gateway 但路径未解析”“未检测到 Gateway”。
+- 多实例场景不会把一个实例的管理源同步到另一个实例的 service env。
+- 自定义 systemd `EnvironmentFile` 不会被 canonical 路径猜测覆盖。
 - 用户能更新 Provider API Key，但不能查看旧值。
 - 从 Providers 页更新 API Key 时，非托管变量与 Settings 环境变量页行为一致（提示 + 确认 + 迁移），不再出现未解释的 `Refusing to overwrite unmanaged env var`。
 - 用户能在高级区新增、重填、删除 OpenClaw `.env` 文件内的额外托管变量。
@@ -576,17 +790,27 @@ OpenClaw Gateway 作为系统服务运行时，**不会**直接读取 `.env` 全
 
 oc-switch 必须自动识别运行平台并选择同步目标：
 
-- Linux / systemd user service：同步到 `dirname(envPath)/gateway.systemd.env`。
-- macOS / LaunchAgent：解析 `~/Library/LaunchAgents/ai.openclaw.gateway.plist` 的 `ProgramArguments`，同步到 OpenClaw wrapper 实际加载的 `service-env/*.env` 文件。
+- Linux / systemd user service：同步到与 active 候选组、运行 PID 和 unit 明确关联的 `EnvironmentFile=`；不得仅按 `dirname(envPath)/gateway.systemd.env` 猜测目标。
+- macOS / LaunchAgent：解析已发现并与运行实例关联的 `~/Library/LaunchAgents/ai.openclaw.*.plist`，同步到 OpenClaw wrapper 实际加载的 `service-env/*.env` 文件。
 - 其他平台或无法发现服务环境文件：不创建猜测路径；手动 sync / apply 返回明确失败；自动 sync / restore 不阻断主写入，返回 `gatewayEnvSync.ok=false` 与 warning，引导用户检查 `openclaw gateway status` / `openclaw gateway install --force`。
+
+自动 sync 前必须证明 active `envPath` 与目标 `serviceEnvPath` 属于同一 `RuntimePathCandidateGroup`。settings/手动路径、备份恢复目标或多实例候选无法建立唯一关联时，不执行自动 sync，不创建推测文件，并返回 `gatewayEnvSync.ok=false`。手动 sync/apply 必须要求用户选择或确认具体候选组。
+
+**automatic 关联（事务 / 恢复后自动 sync）**：`resolveGatewayRuntimeTarget({ mode: "automatic" })` 按 active `openclawPath` + `envPath` 过滤候选组后，在**带非空 `serviceEnvPath` 的子集**中要求恰好一组：
+
+- 0 个可同步组 → 不 sync（`no-matching-group` / `no-service-env`），主写入仍成功；
+- 恰好 1 个可同步组 → 使用该组（即使另有仅路径匹配、无 `serviceEnvPath` 的组，也不视为歧义）；
+- ≥2 个可同步组 → `ambiguous-match`，不 sync。
+
+「唯一关联」指**唯一可同步目标**，不是「路径匹配组数必须为 1」。explicit 模式（手动 sync/restart/apply）仍按 `candidateId` 选定，多实例缺 id 时拒绝。
 
 ### 15.1 同步源与目标
 
 | 项目 | 规则 |
 | --- | --- |
 | 同步源 | **仅** `.env` 中 oc-switch 托管块内的 `KEY=VALUE` |
-| Linux 同步目标 | `dirname(envPath)/gateway.systemd.env` |
-| macOS 同步目标 | LaunchAgent `ProgramArguments[1]` 指向的 `service-env/*.env` |
+| Linux 同步目标 | PID 关联 systemd unit 实际声明的 `EnvironmentFile=` |
+| macOS 同步目标 | 由共享 LaunchAgent metadata 解析器识别的 `service-env/*.env`；当前布局为 `ProgramArguments[2]`，旧布局为 `[1]` |
 | 合并策略 | 只替换目标服务 env 文件中的 oc-switch 托管块；目标文件块外内容（如 `HTTP_PROXY`、OpenClaw 生成的服务元变量）**原样保留** |
 | 块外同名 Key | 不自动删除或改写；返回 warning，提示用户手动清理或迁移 |
 | 删除/重命名 | 通过整体替换目标托管块移除旧 Key；块外同名 Key 仍保留并告警 |
@@ -597,6 +821,7 @@ oc-switch 必须自动识别运行平台并选择同步目标：
 
 - 原子写：`gateway.systemd.env.tmp` → `rename`，mode `0600`。
 - macOS 原子写：`service-env/<label>.env.tmp` → `rename`，mode `0600`；托管块使用 `export KEY='value'` 形式，value 按 POSIX 单引号规则转义，保证 wrapper 可 `source`。
+- macOS 同步目标解析必须兼容 `/bin/sh + wrapper + service-env` 与旧 `wrapper + service-env` 两种布局，并与路径探测复用同一解析器。
 - 每个 value 不得含 `\r`/`\n`；空值拒绝同步并报错。
 - 若托管块 Key 不在 unit 内 `OPENCLAW_SERVICE_MANAGED_ENV_KEYS` 列表中，返回 **warning**（不阻断）；提示用户日后可 `openclaw gateway install` 更新列表。
 - 若目标文件块外存在同名 Key，返回 **warning**（不阻断）；oc-switch 不越权改写块外内容。
@@ -604,18 +829,18 @@ oc-switch 必须自动识别运行平台并选择同步目标：
 
 ### 15.3 触发时机
 
-1. **自动 sync（无重启）**：`transaction-writer` 在 `envWrite.verified === true` 且其他写入钩子成功之后调用平台中性的 `syncManagedBlockToGatewayServiceEnv`（含 Provider Key 保存、Settings env upsert/delete/rename）；若服务 env 目标不可发现或平台不支持，主事务仍成功，响应附带 `gatewayEnvSync.ok=false` 与 warning。
-2. **手动补救**：CLI `oc-switch gateway sync-env`、Web 设置页「同步并重启 Gateway」、REST `POST /api/gateway/*`；用户显式请求同步时，目标不可发现或平台不支持必须返回失败。
-3. **备份恢复**：恢复 `openclaw.json` / `.env` 后立即将恢复后的 `.env` 托管块同步到当前平台服务 env，响应标记 `gatewayRestartRequired: true`；若仅服务 env 目标不可发现或平台不支持，恢复结果仍成功并附带 `gatewayEnvSync.ok=false` 与 warning。
+1. **自动 sync（无重启）**：`transaction-writer` 在 `envWrite.verified === true` 且其他写入钩子成功之后，使用调用方注入的 `runtimeDiscoveryProvider`（写后重新 discovery，避免陈旧候选）解析唯一可同步目标，再调用 `syncManagedBlockToGatewayServiceEnv`（含 Provider Key 保存、Settings env upsert/delete/rename）；目标不可发现、关联不唯一或平台不支持时，主事务仍成功，响应附带 `gatewayEnvSync.ok=false` 与 warning。
+2. **手动补救**：CLI `oc-switch gateway sync-env`、Web 设置页「同步并重启 Gateway」、REST `POST /api/gateway/*`；多实例时必须提供 `candidateId`，目标不可发现或平台不支持必须返回失败。
+3. **备份恢复**：恢复 `openclaw.json` / `.env` 后，经注入的 `runtimeDiscoveryProvider` 重新验证；仅当恢复路径能与唯一可同步候选组关联时同步该组 service env，并返回 `gatewayRestartRequired: true`；无法关联时恢复结果仍成功，但不执行 sync，附带 `gatewayEnvSync.ok=false` 与 warning。
 4. **重启**：`openclaw gateway restart`；**不默认静默自动重启**（会打断会话），由用户点「同步并重启」或单独「重启」。
 
 ### 15.4 API / CLI
 
 | 方法 | 路径 / 命令 | 行为 |
 | --- | --- | --- |
-| `POST` | `/api/gateway/sync-env` | 手动 merge 托管块 → 当前平台服务 env |
-| `POST` | `/api/gateway/restart` | 执行 `openclaw gateway restart` |
-| `POST` | `/api/gateway/apply` | sync-env + restart 串联 |
+| `POST` | `/api/gateway/sync-env` | 手动 merge 托管块 → `candidateId` 关联的 service env |
+| `POST` | `/api/gateway/restart` | 重启 `candidateId` 关联的 Gateway；单实例时可省略 |
+| `POST` | `/api/gateway/apply` | 对同一 `candidateId` 执行 sync-env + restart |
 | CLI | `oc-switch gateway sync-env` | 同 sync-env |
 | CLI | `oc-switch gateway restart` | 同 restart |
 | CLI | `oc-switch gateway apply` | 同 apply |
@@ -625,7 +850,7 @@ oc-switch 必须自动识别运行平台并选择同步目标：
 ### 15.5 Web UI
 
 - `envWrite.verified` 成功后展示 `GatewayApplyBanner`：说明 Gateway 使用平台服务环境文件；若已自动 sync 则提示「已同步，待重启」，主按钮为「重启 Gateway」或「同步并重启 Gateway」。
-- `formatEnvWriteSuccess` 成功后缀：「下一步：同步并重启 Gateway」。
+- `formatEnvWriteSuccess` 按结果分支：自动 sync 成功时只提示“下一步：重启 Gateway”；sync 未执行或失败时提示“下一步：确认目标并同步/重启 Gateway”。
 - 设置 / 通用 Tab 提供手动 `apply` 入口。
 
 ### 15.6 明确不做（本阶段）
@@ -640,5 +865,5 @@ oc-switch 必须自动识别运行平台并选择同步目标：
 
 - 备份加密。
 - 更完整地识别 OpenClaw config `env` block 与非 Provider SecretRef。
-- 支持 service manager 深度探测 launchd/systemd 环境（含 `GET /api/gateway/env-drift`）。
+- 增加 `GET /api/gateway/env-drift`，比较管理源托管块与已发现的 service env；路径深度探测已纳入 §4.3。
 - 支持旧备份批量清理和敏感备份风险审计。

@@ -3,8 +3,9 @@ import type { ConfigHealthReport } from "./config-health";
 import { inspectConfigHealth } from "./config-health";
 import { inspectEnvFile, listProviderEnvRefs } from "./env-inspector";
 import { listOrphanEnvKeys, readManifest } from "./manifest-manager";
-import type { OcSwitchPaths, RunningOpenClawInstance } from "./paths";
+import type { OcSwitchPaths } from "./paths";
 import { readProviderStates } from "./provider-states";
+import type { LegacyRunningOpenClawInstance } from "./runtime-discovery-types";
 import type { OpenClawConfig } from "./types";
 
 /** 去重后的单条可行动问题 */
@@ -57,7 +58,7 @@ export interface InspectConfigStatusInput {
   configReadError?: string;
   paths: OcSwitchPaths;
   envContent: string;
-  runningInstances?: RunningOpenClawInstance[];
+  runningInstances?: LegacyRunningOpenClawInstance[];
 }
 
 function emptyConfigHealthReport(): ConfigHealthReport {

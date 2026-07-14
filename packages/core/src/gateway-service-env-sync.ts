@@ -1,17 +1,17 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { homedir, platform as nodePlatform } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { basename, dirname } from "node:path";
 import { readOpenClawServiceManagedEnvKeys } from "./gateway-systemd-unit";
 
 const START = "# oc-switch:start";
 const END = "# oc-switch:end";
-const DEFAULT_LAUNCHD_LABEL = "ai.openclaw.gateway";
 
 export type GatewayServiceEnvTargetKind = "systemd" | "launchd";
 
 export interface GatewayServiceEnvTarget {
   targetKind: GatewayServiceEnvTargetKind;
   targetPath: string;
+  /** 关联的 runtime 候选组；由 resolveGatewayRuntimeTarget 填充 */
+  candidateId?: string;
 }
 
 export interface GatewayServiceEnvSyncResult {
@@ -21,6 +21,7 @@ export interface GatewayServiceEnvSyncResult {
   syncedKeys: string[];
   removedKeys: string[];
   warnings: string[];
+  candidateId?: string;
 }
 
 export class GatewayServiceEnvTargetError extends Error {
@@ -129,94 +130,6 @@ function assertServiceFriendlyValue(key: string, value: string): void {
   }
 }
 
-function resolvePlatform(platform?: NodeJS.Platform): NodeJS.Platform {
-  return platform ?? nodePlatform();
-}
-
-function resolveHomeDir(homeDir?: string): string {
-  if (homeDir) return homeDir;
-  const fromEnv = process.env.HOME?.trim();
-  if (fromEnv) return fromEnv;
-  return homedir();
-}
-
-function resolveLaunchdLabel(): string {
-  return process.env.OPENCLAW_LAUNCHD_LABEL?.trim() || DEFAULT_LAUNCHD_LABEL;
-}
-
-/** 从 LaunchAgent plist 解析 ProgramArguments */
-export function parseLaunchAgentProgramArguments(plistContent: string): string[] {
-  const match = plistContent.match(/<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/);
-  if (!match?.[1]) {
-    throw new GatewayServiceEnvTargetError("LaunchAgent plist missing ProgramArguments array", "launchd");
-  }
-  const args: string[] = [];
-  const stringRegex = /<string>([^<]*)<\/string>/g;
-  let item: RegExpExecArray | null;
-  while ((item = stringRegex.exec(match[1])) !== null) {
-    if (item[1] !== undefined) args.push(item[1]);
-  }
-  if (args.length < 2) {
-    throw new GatewayServiceEnvTargetError(
-      "LaunchAgent plist ProgramArguments must include wrapper and service env path",
-      "launchd"
-    );
-  }
-  return args;
-}
-
-function resolveLaunchdServiceEnvPath(homeDir: string): string {
-  const label = resolveLaunchdLabel();
-  const plistPath = join(homeDir, "Library/LaunchAgents", `${label}.plist`);
-  if (!existsSync(plistPath)) {
-    throw new GatewayServiceEnvTargetError(
-      `Cannot resolve LaunchAgent service env path (${plistPath} not found); run openclaw gateway install --force`,
-      "launchd"
-    );
-  }
-  const args = parseLaunchAgentProgramArguments(readFileSync(plistPath, "utf8"));
-  const wrapper = args[0] ?? "";
-  const envPath = args[1] ?? "";
-  if (!wrapper.endsWith("-env-wrapper.sh")) {
-    throw new GatewayServiceEnvTargetError(
-      `LaunchAgent ProgramArguments[0] must be *-env-wrapper.sh (got ${wrapper || "<empty>"})`,
-      "launchd"
-    );
-  }
-  if (!envPath.includes("service-env") || !envPath.endsWith(".env")) {
-    throw new GatewayServiceEnvTargetError(
-      `LaunchAgent ProgramArguments[1] must point to service-env/*.env (got ${envPath || "<empty>"})`,
-      "launchd",
-      envPath
-    );
-  }
-  return envPath;
-}
-
-/** 自动识别平台并解析 Gateway 服务环境文件路径 */
-export function resolveGatewayServiceEnvTarget(input: {
-  envPath: string;
-  platform?: NodeJS.Platform;
-  homeDir?: string;
-}): GatewayServiceEnvTarget {
-  const platform = resolvePlatform(input.platform);
-  if (platform === "linux") {
-    return {
-      targetKind: "systemd",
-      targetPath: join(dirname(input.envPath), "gateway.systemd.env")
-    };
-  }
-  if (platform === "darwin") {
-    return {
-      targetKind: "launchd",
-      targetPath: resolveLaunchdServiceEnvPath(resolveHomeDir(input.homeDir))
-    };
-  }
-  throw new GatewayServiceEnvTargetError(
-    `Unsupported platform "${platform}" for gateway service env sync; check openclaw gateway status`
-  );
-}
-
 function managedSystemdBlockLines(managed: Record<string, string>): string[] {
   const result: string[] = [];
   for (const [key, value] of Object.entries(managed)) {
@@ -286,25 +199,32 @@ function collectManagedKeyWarnings(syncedKeys: string[]): string[] {
     .map((key) => `${key} is not listed in OPENCLAW_SERVICE_MANAGED_ENV_KEYS; run openclaw gateway install to refresh the unit`);
 }
 
-/** 将托管块 merge 写入当前平台 Gateway 服务环境文件 */
+function assertTargetParentExists(target: GatewayServiceEnvTarget): void {
+  const parentDir = dirname(target.targetPath);
+  if (!existsSync(parentDir)) {
+    throw new GatewayServiceEnvTargetError(
+      `Gateway service env parent directory does not exist: ${parentDir}`,
+      target.targetKind,
+      target.targetPath
+    );
+  }
+}
+
+/** 将托管块 merge 写入已校验的 Gateway 服务环境文件（禁止平台猜测） */
 export function syncManagedBlockToGatewayServiceEnv(input: {
   envPath: string;
-  gatewayServiceEnvPath?: string;
+  target: GatewayServiceEnvTarget;
   removedKeys?: string[];
-  platform?: NodeJS.Platform;
-  homeDir?: string;
 }): GatewayServiceEnvSyncResult {
-  const platform = resolvePlatform(input.platform);
-  const target = input.gatewayServiceEnvPath
-    ? {
-        targetKind: platform === "darwin" ? ("launchd" as const) : ("systemd" as const),
-        targetPath: input.gatewayServiceEnvPath
-      }
-    : resolveGatewayServiceEnvTarget({
-        envPath: input.envPath,
-        platform,
-        ...(input.homeDir ? { homeDir: input.homeDir } : {})
-      });
+  const target = input.target;
+  if (!target.targetPath?.trim()) {
+    throw new GatewayServiceEnvTargetError(
+      "Gateway service env target path is required",
+      target.targetKind
+    );
+  }
+  assertTargetParentExists(target);
+
   const removedKeys = input.removedKeys ?? [];
   const envContent = existsSync(input.envPath) ? readFileSync(input.envPath, "utf8") : "";
   const managed = readManagedBlockEntries(envContent);
@@ -317,7 +237,6 @@ export function syncManagedBlockToGatewayServiceEnv(input: {
   const existingManaged = readManagedBlockEntries(existingContent);
   const merged = mergeServiceEnvContent(existingContent, managed, target.targetKind);
 
-  mkdirSync(dirname(target.targetPath), { recursive: true });
   const tmpPath = `${target.targetPath}.tmp`;
   writeFileSync(tmpPath, merged, { mode: 0o600 });
   renameSync(tmpPath, target.targetPath);
@@ -336,6 +255,7 @@ export function syncManagedBlockToGatewayServiceEnv(input: {
     warnings: [
       ...collectOutsideKeyConflicts(existingContent, syncedKeys, target.targetPath),
       ...collectManagedKeyWarnings(syncedKeys)
-    ]
+    ],
+    ...(target.candidateId ? { candidateId: target.candidateId } : {})
   };
 }

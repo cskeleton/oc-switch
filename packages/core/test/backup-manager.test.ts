@@ -3,7 +3,41 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBackup, listBackups, readBackupMetadata, restoreBackup, restoreBackupSafely } from "../src/backup-manager";
+import type { RuntimeDiscoveryResult, RuntimePathCandidateGroup } from "../src/runtime-discovery-types";
 import { prepareGatewayEnvTarget, withTestHome } from "./gateway-sync-fixture";
+
+function discoveryGroup(
+  partial: Partial<RuntimePathCandidateGroup> & Pick<
+    RuntimePathCandidateGroup,
+    "candidateId" | "instanceId" | "stateDir" | "openclawPath" | "envPath"
+  >
+): RuntimePathCandidateGroup {
+  return {
+    pid: 42,
+    evidence: ["systemd-unit"],
+    serviceManager: "systemd",
+    ...partial
+  };
+}
+
+function discoveryResult(groups: RuntimePathCandidateGroup[]): RuntimeDiscoveryResult {
+  return {
+    status: groups.length ? "resolved" : "gateway-not-detected",
+    instances: groups.map((g) => ({
+      instanceId: g.instanceId,
+      pid: g.pid,
+      openclawPath: g.openclawPath,
+      envPath: g.envPath,
+      stateDir: g.stateDir,
+      ...(g.serviceEnvPath ? { serviceEnvPath: g.serviceEnvPath } : {}),
+      ...(g.serviceManager ? { serviceManager: g.serviceManager } : {}),
+      ...(g.serviceId ? { serviceId: g.serviceId } : {}),
+      evidence: g.evidence
+    })),
+    candidateGroups: groups,
+    diagnostics: []
+  };
+}
 
 const tempDirs: string[] = [];
 
@@ -94,11 +128,23 @@ describe("backup manager", () => {
       "# oc-switch:end"
     ].join("\n") + "\n");
 
+    const provider = () => discoveryResult([
+      discoveryGroup({
+        candidateId: "systemd:gw:restore",
+        instanceId: "systemd:gw",
+        stateDir: ws.dir,
+        openclawPath: ws.openclawPath,
+        envPath: ws.envPath,
+        serviceEnvPath: gatewayPath
+      })
+    ]);
+
     const result = withTestHome(homeDir, () => restoreBackupSafely({
       stateDir: ws.stateDir,
       backupDir: restoreTarget,
       openclawPath: ws.openclawPath,
-      envPath: ws.envPath
+      envPath: ws.envPath,
+      runtimeDiscoveryProvider: provider
     }));
 
     expect(result.gatewayEnvSync?.syncedKeys).toEqual(["RESTORED_KEY"]);
@@ -123,19 +169,261 @@ describe("backup manager", () => {
       stateDir: ws.stateDir,
       backupDir: restoreTarget,
       openclawPath: ws.openclawPath,
-      envPath: ws.envPath
+      envPath: ws.envPath,
+      runtimeDiscoveryProvider: () => discoveryResult([])
     }));
 
     expect(readFileSync(ws.openclawPath, "utf8")).toBe("{\"before\":true}\n");
     expect(readFileSync(ws.envPath, "utf8")).toContain("RESTORED_KEY=restored-secret");
     expect(result.gatewayEnvSync).toMatchObject({
       ok: false,
-      targetKind: "launchd",
       targetPath: "",
       syncedKeys: [],
       removedKeys: []
     });
-    expect(result.gatewayEnvSync?.warnings.join("\n")).toContain("openclaw gateway install --force");
+    expect(result.gatewayEnvSync?.warnings.join("\n").length).toBeGreaterThan(0);
+  });
+
+  test("records optional runtimeInstanceId and serviceEnvPath in backup metadata", () => {
+    const ws = workspace();
+    const serviceEnvPath = join(ws.dir, "svc", "gateway.env");
+    mkdirSync(join(ws.dir, "svc"), { recursive: true });
+    const backupDir = createBackup({
+      ...ws,
+      reason: "runtime meta",
+      beforeHash: "hash",
+      runtimeInstanceId: "systemd:gw",
+      serviceEnvPath
+    });
+
+    const metadata = readBackupMetadata(backupDir);
+    expect(metadata.runtimeInstanceId).toBe("systemd:gw");
+    expect(metadata.serviceEnvPath).toBe(serviceEnvPath);
+  });
+
+  test("restore revalidates discovery and ignores stale metadata serviceEnvPath", () => {
+    const ws = workspace();
+    const staleServiceEnv = join(ws.dir, "stale", "gateway.env");
+    const liveServiceEnv = join(ws.dir, "live", "gateway.env");
+    mkdirSync(join(ws.dir, "stale"), { recursive: true });
+    mkdirSync(join(ws.dir, "live"), { recursive: true });
+    writeFileSync(staleServiceEnv, "STALE=1\n");
+    writeFileSync(liveServiceEnv, "LIVE=1\n");
+    writeFileSync(ws.envPath, "# oc-switch:start\nRESTORED_KEY=restored-secret\n# oc-switch:end\n");
+    const restoreTarget = createBackup({
+      ...ws,
+      reason: "stale meta",
+      beforeHash: "hash",
+      runtimeInstanceId: "stale:old",
+      serviceEnvPath: staleServiceEnv
+    });
+    writeFileSync(ws.envPath, "# oc-switch:start\nCURRENT_KEY=current\n# oc-switch:end\n");
+
+    const result = restoreBackupSafely({
+      stateDir: ws.stateDir,
+      backupDir: restoreTarget,
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath,
+      runtimeDiscoveryProvider: () => discoveryResult([
+        discoveryGroup({
+          candidateId: "systemd:live:now",
+          instanceId: "systemd:live",
+          stateDir: ws.dir,
+          openclawPath: ws.openclawPath,
+          envPath: ws.envPath,
+          serviceEnvPath: liveServiceEnv
+        })
+      ])
+    });
+
+    expect(result.gatewayEnvSync?.ok).toBe(true);
+    expect(result.gatewayEnvSync?.targetPath).toBe(liveServiceEnv);
+    expect(readFileSync(liveServiceEnv, "utf8")).toContain("RESTORED_KEY=restored-secret");
+    expect(readFileSync(staleServiceEnv, "utf8")).toBe("STALE=1\n");
+  });
+
+  test("restore without current match succeeds and skips sync", () => {
+    const ws = workspace();
+    writeFileSync(ws.envPath, "# oc-switch:start\nRESTORED_KEY=restored-secret\n# oc-switch:end\n");
+    const restoreTarget = createBackup({
+      ...ws,
+      reason: "no match",
+      beforeHash: "hash",
+      serviceEnvPath: join(ws.dir, "ghost.env")
+    });
+    writeFileSync(ws.openclawPath, "{\"current\":true}\n");
+    writeFileSync(ws.envPath, "# oc-switch:start\nCURRENT_KEY=current\n# oc-switch:end\n");
+
+    const result = restoreBackupSafely({
+      stateDir: ws.stateDir,
+      backupDir: restoreTarget,
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath,
+      runtimeDiscoveryProvider: () => discoveryResult([])
+    });
+
+    expect(readFileSync(ws.openclawPath, "utf8")).toBe("{\"before\":true}\n");
+    expect(readFileSync(ws.envPath, "utf8")).toContain("RESTORED_KEY=restored-secret");
+    expect(result.gatewayEnvSync?.ok).toBe(false);
+  });
+
+  test("restoring A cannot modify B service env", () => {
+    const ws = workspace();
+    const serviceEnvA = join(ws.dir, "a", "gateway.env");
+    const serviceEnvB = join(ws.dir, "b", "gateway.env");
+    const openclawB = join(ws.dir, "b", "openclaw.json");
+    const envB = join(ws.dir, "b", ".env");
+    mkdirSync(join(ws.dir, "a"), { recursive: true });
+    mkdirSync(join(ws.dir, "b"), { recursive: true });
+    writeFileSync(serviceEnvA, "KEEP_A=1\n");
+    writeFileSync(serviceEnvB, "KEEP_B=1\n");
+    writeFileSync(openclawB, "{}\n");
+    writeFileSync(envB, "");
+    writeFileSync(ws.envPath, "# oc-switch:start\nRESTORED_KEY=restored-secret\n# oc-switch:end\n");
+    const restoreTarget = createBackup({ ...ws, reason: "A restore", beforeHash: "hash" });
+    writeFileSync(ws.envPath, "# oc-switch:start\nCURRENT_KEY=current\n# oc-switch:end\n");
+
+    restoreBackupSafely({
+      stateDir: ws.stateDir,
+      backupDir: restoreTarget,
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath,
+      runtimeDiscoveryProvider: () => discoveryResult([
+        discoveryGroup({
+          candidateId: "systemd:a:aaa",
+          instanceId: "systemd:a",
+          stateDir: ws.dir,
+          openclawPath: ws.openclawPath,
+          envPath: ws.envPath,
+          serviceEnvPath: serviceEnvA
+        }),
+        discoveryGroup({
+          candidateId: "systemd:b:bbb",
+          instanceId: "systemd:b",
+          stateDir: join(ws.dir, "b"),
+          openclawPath: openclawB,
+          envPath: envB,
+          serviceEnvPath: serviceEnvB
+        })
+      ])
+    });
+
+    expect(readFileSync(serviceEnvA, "utf8")).toContain("RESTORED_KEY=restored-secret");
+    expect(readFileSync(serviceEnvB, "utf8")).toBe("KEEP_B=1\n");
+  });
+
+  test("safety backup records current association independently of restore target metadata", () => {
+    const ws = workspace();
+    const currentServiceEnv = join(ws.dir, "current-svc", "gateway.env");
+    mkdirSync(join(ws.dir, "current-svc"), { recursive: true });
+    writeFileSync(currentServiceEnv, "");
+    writeFileSync(ws.envPath, "# oc-switch:start\nRESTORED_KEY=restored\n# oc-switch:end\n");
+    const restoreTarget = createBackup({
+      ...ws,
+      reason: "old association",
+      beforeHash: "hash",
+      runtimeInstanceId: "old:instance",
+      serviceEnvPath: join(ws.dir, "old.env")
+    });
+    writeFileSync(ws.envPath, "# oc-switch:start\nCURRENT_KEY=current\n# oc-switch:end\n");
+
+    const result = restoreBackupSafely({
+      stateDir: ws.stateDir,
+      backupDir: restoreTarget,
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath,
+      runtimeDiscoveryProvider: () => discoveryResult([
+        discoveryGroup({
+          candidateId: "systemd:current:now",
+          instanceId: "systemd:current",
+          stateDir: ws.dir,
+          openclawPath: ws.openclawPath,
+          envPath: ws.envPath,
+          serviceEnvPath: currentServiceEnv
+        })
+      ])
+    });
+
+    const safetyMeta = readBackupMetadata(result.safetyBackupDir);
+    expect(safetyMeta.runtimeInstanceId).toBe("systemd:current");
+    expect(safetyMeta.serviceEnvPath).toBe(currentServiceEnv);
+    expect(safetyMeta.runtimeInstanceId).not.toBe("old:instance");
+  });
+
+  test("restore soft-fails when associated sync throws GatewayServiceEnvTargetError", () => {
+    const ws = workspace();
+    const missingParentTarget = join(ws.dir, "missing-parent", "gateway.env");
+    writeFileSync(ws.envPath, "# oc-switch:start\nRESTORED_KEY=restored-secret\n# oc-switch:end\n");
+    const restoreTarget = createBackup({ ...ws, reason: "assoc write fail", beforeHash: "hash" });
+    writeFileSync(ws.openclawPath, "{\"current\":true}\n");
+    writeFileSync(ws.envPath, "# oc-switch:start\nCURRENT_KEY=current\n# oc-switch:end\n");
+
+    const result = restoreBackupSafely({
+      stateDir: ws.stateDir,
+      backupDir: restoreTarget,
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath,
+      runtimeDiscoveryProvider: () => discoveryResult([
+        discoveryGroup({
+          candidateId: "systemd:gw:missing-parent",
+          instanceId: "systemd:gw",
+          stateDir: ws.dir,
+          openclawPath: ws.openclawPath,
+          envPath: ws.envPath,
+          serviceEnvPath: missingParentTarget
+        })
+      ])
+    });
+
+    expect(readFileSync(ws.openclawPath, "utf8")).toBe("{\"before\":true}\n");
+    expect(readFileSync(ws.envPath, "utf8")).toContain("RESTORED_KEY=restored-secret");
+    expect(result.gatewayEnvSync).toMatchObject({
+      ok: false,
+      syncedKeys: [],
+      removedKeys: []
+    });
+    expect(result.gatewayEnvSync?.warnings.join("\n")).toMatch(/parent directory does not exist|Gateway service env/);
+  });
+
+  test("second discovery empty skips sync and does not write first-resolved service env", () => {
+    const ws = workspace();
+    const serviceEnvPath = join(ws.dir, "svc", "gateway.env");
+    mkdirSync(join(ws.dir, "svc"), { recursive: true });
+    writeFileSync(serviceEnvPath, "KEEP_FIRST=1\n");
+    writeFileSync(ws.envPath, "# oc-switch:start\nRESTORED_KEY=restored-secret\n# oc-switch:end\n");
+    const restoreTarget = createBackup({ ...ws, reason: "stale second discovery", beforeHash: "hash" });
+    writeFileSync(ws.envPath, "# oc-switch:start\nCURRENT_KEY=current\n# oc-switch:end\n");
+
+    const uniqueGroup = discoveryGroup({
+      candidateId: "systemd:gw:once",
+      instanceId: "systemd:gw",
+      stateDir: ws.dir,
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath,
+      serviceEnvPath
+    });
+    let discoveryCalls = 0;
+    const provider = () => {
+      discoveryCalls += 1;
+      // 第1次：safety backup 关联；第2次：sync 重校验为空
+      return discoveryCalls === 1 ? discoveryResult([uniqueGroup]) : discoveryResult([]);
+    };
+
+    const result = restoreBackupSafely({
+      stateDir: ws.stateDir,
+      backupDir: restoreTarget,
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath,
+      runtimeDiscoveryProvider: provider
+    });
+
+    expect(discoveryCalls).toBeGreaterThanOrEqual(2);
+    expect(readFileSync(ws.envPath, "utf8")).toContain("RESTORED_KEY=restored-secret");
+    expect(result.gatewayEnvSync?.ok).toBe(false);
+    expect(readFileSync(serviceEnvPath, "utf8")).toBe("KEEP_FIRST=1\n");
+
+    const safetyMeta = readBackupMetadata(result.safetyBackupDir);
+    expect(safetyMeta.serviceEnvPath).toBe(serviceEnvPath);
   });
 
   test("rejects restore when backup paths do not match active paths", () => {
