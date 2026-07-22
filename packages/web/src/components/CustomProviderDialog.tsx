@@ -306,18 +306,26 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
                 OpenAI-compatible 通常使用 `/v1` 结尾；Anthropic/Gemini 兼容端点按服务商说明填写。
               </p>
             </div>
-            <div className="flex items-center space-x-2 mt-8 md:mt-10 md:ml-4">
-              <input
-                id="is-full-url"
-                type="checkbox"
-                className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
-                checked={isFullUrl}
-                onChange={(event) => setIsFullUrl(event.target.checked)}
-                aria-label="完整 URL"
-              />
-              <Label htmlFor="is-full-url">
-                完整 URL
-              </Label>
+            <div className="grid gap-2 mt-2 content-start">
+              <Label>API 类型</Label>
+              <select aria-label="API 类型" value={api} onChange={(event) => setApi(event.target.value as ApiType)} className={selectClassName}>
+                <option value="openai-completions">openai-completions</option>
+                <option value="anthropic-messages">anthropic-messages</option>
+                <option value="google-generative-ai">google-generative-ai</option>
+              </select>
+              <div className="flex items-center space-x-2 mt-1">
+                <input
+                  id="is-full-url"
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                  checked={isFullUrl}
+                  onChange={(event) => setIsFullUrl(event.target.checked)}
+                  aria-label="完整 URL"
+                />
+                <Label htmlFor="is-full-url">
+                  完整 URL
+                </Label>
+              </div>
             </div>
 
             <div className="grid gap-2 md:col-span-2 mt-2">
@@ -386,17 +394,9 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
               </div>
             </div>
 
-            <details className="md:col-span-2 mt-2 rounded border p-3 group">
+            <details open className="md:col-span-2 mt-2 rounded border p-3 group">
               <summary className="cursor-pointer text-sm font-medium text-foreground">高级选项</summary>
               <div className="mt-3 grid gap-3 md:grid-cols-2">
-                <div className="grid gap-2">
-                  <Label>API 类型</Label>
-                  <select aria-label="API 类型" value={api} onChange={(event) => setApi(event.target.value as ApiType)} className={selectClassName}>
-                    <option value="openai-completions">openai-completions</option>
-                    <option value="anthropic-messages">anthropic-messages</option>
-                    <option value="google-generative-ai">google-generative-ai</option>
-                  </select>
-                </div>
                 <div className="grid gap-2">
                   <Label>API Key env 名</Label>
                   <Input aria-label="API Key env 名" value={apiKeyEnv} onChange={(event) => { setApiKeyEnvTouched(true); setApiKeyEnv(event.target.value); }} />
