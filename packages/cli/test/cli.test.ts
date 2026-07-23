@@ -349,12 +349,16 @@ describe("cli provider crud", () => {
     expect(config.agents.defaults.models["testprov/vendor/model"]).toEqual({ alias: "vm" });
   });
 
-  test("edits provider base url", async () => {
+  test("edits provider base url and api", async () => {
     const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
     const configPath = join(dir, "openclaw.json");
     writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
 
-    const result = await runCli(["provider", "edit", "nvidia", "--base-url", "https://new-nvidia.example/v1"], {
+    const result = await runCli([
+      "provider", "edit", "nvidia",
+      "--base-url", "https://new-nvidia.example/v1",
+      "--api", "anthropic-messages"
+    ], {
       OPENCLAW_CONFIG_PATH: configPath,
       HOME: dir
     });
@@ -362,6 +366,7 @@ describe("cli provider crud", () => {
     expect(result.code).toBe(0);
     const config = JSON.parse(readFileSync(configPath, "utf8"));
     expect(config.models.providers.nvidia.baseUrl).toBe("https://new-nvidia.example/v1");
+    expect(config.models.providers.nvidia.api).toBe("anthropic-messages");
     expect(config.models.providers.nvidia.models[0].id).toBe("deepseek-ai/deepseek-v4-flash");
   });
 

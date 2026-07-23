@@ -17,6 +17,7 @@ import {
   upsertDisabledProviderState,
   writeOpenClawTransaction
 } from "@oc-switch/core";
+import type { ApiType } from "@oc-switch/core";
 import type { Command } from "commander";
 import type { CommandContext } from "../command-context";
 
@@ -168,10 +169,11 @@ export function registerProviderCommands(program: Command, context: CommandConte
   provider.command("edit")
     .argument("<name>")
     .option("--base-url <url>")
+    .option("--api <api-type>")
     .option("--key <api-key>", "API key value")
     .option("--confirm-migration", "确认将块外同名 env 变量迁入 oc-switch 托管块")
     .option("--confirm-complex", "确认将重复或复杂 env 语法改写成标准 KEY=<new value>")
-    .action(async (name: string, options: { baseUrl?: string; key?: string; confirmMigration?: boolean; confirmComplex?: boolean }) => {
+    .action(async (name: string, options: { baseUrl?: string; api?: ApiType; key?: string; confirmMigration?: boolean; confirmComplex?: boolean }) => {
       const paths = context.activePaths();
       const envUpdates: Record<string, string> = {};
       if (options.key) {
@@ -199,8 +201,9 @@ export function registerProviderCommands(program: Command, context: CommandConte
             }
           : {}),
         mutate(config) {
-          const changes: { baseUrl?: string } = {};
+          const changes: { baseUrl?: string; api?: ApiType } = {};
           if (options.baseUrl !== undefined) changes.baseUrl = options.baseUrl;
+          if (options.api !== undefined) changes.api = options.api;
           return editProvider(config, name, changes).config;
         }
       });

@@ -468,12 +468,12 @@ export function createApiClient(options: ApiClientOptions) {
         method: "POST",
         body: JSON.stringify({ ...input, apiKey, ...flags })
       }),
-    previewUpdateProvider: (id: string, changes: { baseUrl?: string; includeApiKeyEnv?: boolean }) =>
+    previewUpdateProvider: (id: string, changes: { baseUrl?: string; api?: ApiType; includeApiKeyEnv?: boolean }) =>
       request<ConfigDiffSummary & { envPreview?: EnvPreview }>(`/api/providers/${id}/preview`, {
         method: "POST",
         body: JSON.stringify(changes)
       }),
-    updateProvider: (id: string, changes: { baseUrl?: string; apiKey?: string; confirmMigration?: boolean; confirmComplex?: boolean }) =>
+    updateProvider: (id: string, changes: { baseUrl?: string; api?: ApiType; apiKey?: string; confirmMigration?: boolean; confirmComplex?: boolean }) =>
       request<{ ok: boolean; backupId?: string; envWrite?: EnvWriteVerification; gatewayEnvSync?: GatewayEnvSyncResult }>(`/api/providers/${id}`, {
         method: "PUT",
         body: JSON.stringify(changes)

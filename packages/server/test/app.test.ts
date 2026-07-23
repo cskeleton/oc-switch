@@ -482,17 +482,33 @@ describe("server write endpoints", () => {
     expect(String(json.error)).toContain("Provider ID must not contain /");
   });
 
-  test("PUT /api/providers/:id updates baseUrl", async () => {
+  test("PUT /api/providers/:id updates baseUrl and api", async () => {
     const ws = workspace();
     const app = createTestApp(ws);
     const { response } = await jsonRequest(app, "/api/providers/nvidia", {
       method: "PUT",
-      body: JSON.stringify({ baseUrl: "https://new-nvidia.example/v1" })
+      body: JSON.stringify({
+        baseUrl: "https://new-nvidia.example/v1",
+        api: "anthropic-messages"
+      })
     });
 
     expect(response.status).toBe(200);
     const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
     expect(config.models.providers.nvidia.baseUrl).toBe("https://new-nvidia.example/v1");
+    expect(config.models.providers.nvidia.api).toBe("anthropic-messages");
+  });
+
+  test("PUT /api/providers/:id rejects unsupported api", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+    const { response, json } = await jsonRequest(app, "/api/providers/nvidia", {
+      method: "PUT",
+      body: JSON.stringify({ api: "unsupported-api" })
+    });
+
+    expect(response.status).toBe(400);
+    expect(String(json.error)).toContain("api must be a supported API type");
   });
 
   test("POST /api/providers/preview includes envPreview for preset key", async () => {

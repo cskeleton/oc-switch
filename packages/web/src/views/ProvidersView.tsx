@@ -9,7 +9,17 @@ import { MergeCaseDuplicateDialog } from "../components/MergeCaseDuplicateDialog
 import { ProviderDiscoverDialog } from "../components/ProviderDiscoverDialog";
 import { ProviderModelsDialog } from "../components/ProviderModelsDialog";
 import { formatEnvWriteSuccess } from "../env-feedback";
-import type { ApiClient, CaseDuplicateGroup, EnvWriteVerification, GatewayEnvSyncResult, ModelSummary, ProviderSummary } from "../api";
+import type { ApiClient, ApiType, CaseDuplicateGroup, EnvWriteVerification, GatewayEnvSyncResult, ModelSummary, ProviderSummary } from "../api";
+
+const EDITABLE_API_TYPES: ApiType[] = [
+  "openai-completions",
+  "anthropic-messages",
+  "google-generative-ai"
+];
+
+function isEditableApiType(value: string): value is ApiType {
+  return EDITABLE_API_TYPES.includes(value as ApiType);
+}
 
 interface ProvidersViewProps {
   client: ApiClient;
@@ -26,6 +36,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
   const [deleteTarget, setDeleteTarget] = useState<ProviderSummary | null>(null);
   const [editTarget, setEditTarget] = useState<ProviderSummary | null>(null);
   const [editBaseUrl, setEditBaseUrl] = useState("");
+  const [editApi, setEditApi] = useState("");
   const [editApiKey, setEditApiKey] = useState("");
   const [newPrimaryCandidates, setNewPrimaryCandidates] = useState<ModelSummary[]>([]);
   const [selectedNewPrimary, setSelectedNewPrimary] = useState("");
@@ -39,7 +50,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
   const [stateTarget, setStateTarget] = useState<ProviderSummary | null>(null);
   const [pendingEnvConfirm, setPendingEnvConfirm] = useState<{
     providerId: string;
-    changes: { baseUrl?: string; apiKey?: string };
+    changes: { baseUrl?: string; api?: ApiType; apiKey?: string };
     warnings: string[];
     confirmMigration?: boolean;
     confirmComplex?: boolean;
@@ -112,6 +123,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
     setSuccessMessage(null);
     setEditTarget(row);
     setEditBaseUrl(row.baseUrl ?? "");
+    setEditApi(row.api ?? "openai-completions");
     setEditApiKey("");
   }
 
@@ -126,9 +138,10 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
     });
   }
 
-  async function submitProviderUpdate(providerId: string, changes: { baseUrl?: string; apiKey?: string; confirmMigration?: boolean; confirmComplex?: boolean }) {
+  async function submitProviderUpdate(providerId: string, changes: { baseUrl?: string; api?: ApiType; apiKey?: string; confirmMigration?: boolean; confirmComplex?: boolean }) {
     const result = await client.updateProvider(providerId, changes);
     setEditTarget(null);
+    setEditApi("");
     setEditApiKey("");
     setPendingEnvConfirm(null);
     if (changes.apiKey) {
@@ -153,12 +166,20 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
 
   async function confirmEdit() {
     if (!editTarget) return;
-    const changes: { baseUrl?: string; apiKey?: string } = {};
+    const changes: { baseUrl?: string; api?: ApiType; apiKey?: string } = {};
     const nextBaseUrl = editBaseUrl.trim();
     if (nextBaseUrl) changes.baseUrl = nextBaseUrl;
+    const currentApi = editTarget.api ?? "openai-completions";
+    if (editApi !== currentApi) {
+      if (!isEditableApiType(editApi)) {
+        setError("请选择支持的 API 类型");
+        return;
+      }
+      changes.api = editApi;
+    }
     if (editApiKey) changes.apiKey = editApiKey;
-    if (!changes.baseUrl && !changes.apiKey) {
-      setError("请输入 baseUrl 或 API Key 新值");
+    if (!changes.baseUrl && !changes.api && !changes.apiKey) {
+      setError("请输入 baseUrl、API 类型或 API Key 新值");
       return;
     }
     setError(null);
@@ -167,6 +188,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
       if (changes.apiKey) {
         const preview = await client.previewUpdateProvider(editTarget.id, {
           ...(changes.baseUrl ? { baseUrl: changes.baseUrl } : {}),
+          ...(changes.api ? { api: changes.api } : {}),
           includeApiKeyEnv: true
         });
         const envPreview = preview.envPreview;
@@ -466,6 +488,20 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
                 />
               </label>
               <label className="block text-sm">
+                <span className="mb-1 block text-muted-foreground">API 类型</span>
+                <select
+                  aria-label="Provider API 类型"
+                  value={editApi}
+                  onChange={(event) => setEditApi(event.target.value)}
+                  className="w-full rounded border border-input bg-background px-3 py-2 text-foreground"
+                >
+                  {editTarget.api && !isEditableApiType(editTarget.api) ? (
+                    <option value={editTarget.api}>{editTarget.api}（当前值）</option>
+                  ) : null}
+                  {EDITABLE_API_TYPES.map((api) => <option key={api} value={api}>{api}</option>)}
+                </select>
+              </label>
+              <label className="block text-sm">
                 <span className="mb-1 block text-muted-foreground">API Key 新值</span>
                 <input
                   type="password"
@@ -487,6 +523,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
                 type="button"
                 onClick={() => {
                   setEditTarget(null);
+                  setEditApi("");
                   setEditApiKey("");
                 }}
                 className="rounded-md border border-input px-3 py-1.5 text-sm text-foreground hover:bg-accent"

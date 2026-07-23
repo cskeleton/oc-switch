@@ -22,6 +22,7 @@ import {
   summarizeConfigDiff,
   upsertDisabledProviderState,
   writeOpenClawTransaction,
+  type ApiType,
   type EnvVariableSummary,
   type OcSwitchPaths
 } from "@oc-switch/core";
@@ -39,6 +40,7 @@ import {
   optionalEnvUpdateOptions,
   requireBatchAddProviderModelsInput,
   requireBatchRemoveProviderModelsInput,
+  requireApiType,
   requireBoolean,
   requireCustomProviderInput,
   requireProviderDiscoverPreviewInput,
@@ -364,8 +366,9 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       const body = await c.req.json() as Record<string, unknown>;
       const paths = runtime.currentPaths();
       const config = readConfig(paths);
-      const changes: { baseUrl?: string } = {};
+      const changes: { baseUrl?: string; api?: ApiType } = {};
       if (body.baseUrl !== undefined) changes.baseUrl = requireString(body.baseUrl, "baseUrl");
+      if (body.api !== undefined) changes.api = requireApiType(body.api, "api");
       const after = editProvider(structuredClone(config), providerId, changes).config;
       const diff = summarizeConfigDiff(config, after);
       if (body.includeApiKeyEnv === true) {
@@ -406,8 +409,9 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
             }
           : {}),
         mutate(config) {
-          const changes: { baseUrl?: string } = {};
+          const changes: { baseUrl?: string; api?: ApiType } = {};
           if (body.baseUrl !== undefined) changes.baseUrl = requireString(body.baseUrl, "baseUrl");
+          if (body.api !== undefined) changes.api = requireApiType(body.api, "api");
           return editProvider(config, providerId, changes).config;
         }
       });

@@ -3,7 +3,13 @@ import { setPrimaryModel } from "./model-operations";
 import { formatEnvRefForOpenClaw, ensureModelName } from "./openclaw-compat";
 import { ensureDefaults, type OperationResult } from "./operation-common";
 import { assertProviderModelCapacity } from "./provider-model-limits";
-import type { CustomProviderInput, OpenClawConfig, OpenClawModel, ProviderPreset } from "./types";
+import type { ApiType, CustomProviderInput, OpenClawConfig, OpenClawModel, ProviderPreset } from "./types";
+
+const PROVIDER_API_TYPES = new Set<ApiType>([
+  "openai-completions",
+  "anthropic-messages",
+  "google-generative-ai"
+]);
 
 function removeLegacyAuthHeaderRef<T extends { authHeader?: unknown }>(provider: T): T {
   if (typeof provider.authHeader === "object" && provider.authHeader !== null) {
@@ -59,13 +65,17 @@ export function removeProvider(
 export function editProvider(
   config: OpenClawConfig,
   providerId: string,
-  changes: { baseUrl?: string; apiKeyEnv?: string }
+  changes: { baseUrl?: string; api?: ApiType; apiKeyEnv?: string }
 ): OperationResult {
   ensureDefaults(config);
   const provider = config.models!.providers![providerId];
   if (!provider) throw new Error(`Provider ${providerId} not found`);
 
   if (changes.baseUrl !== undefined) provider.baseUrl = changes.baseUrl;
+  if (changes.api !== undefined) {
+    if (!PROVIDER_API_TYPES.has(changes.api)) throw new Error("api must be a supported API type");
+    provider.api = changes.api;
+  }
   if (changes.apiKeyEnv !== undefined) {
     provider.apiKey = formatEnvRefForOpenClaw(changes.apiKeyEnv);
     removeLegacyAuthHeaderRef(provider);
@@ -120,12 +130,6 @@ export function addProviderFromPreset(
 }
 
 const ENV_VAR_PATTERN = /^[A-Z][A-Z0-9_]{0,127}$/;
-const CUSTOM_PROVIDER_API_TYPES = new Set<CustomProviderInput["api"]>([
-  "openai-completions",
-  "anthropic-messages",
-  "google-generative-ai"
-]);
-
 function normalizeCustomProviderBaseUrl(api: CustomProviderInput["api"], baseUrl: string, isFullUrl: boolean): string {
   const trimmed = baseUrl.trim();
   let parsed: URL;
@@ -152,7 +156,7 @@ function assertCustomProviderInput(config: OpenClawConfig, input: CustomProvider
   const lower = input.providerId.toLowerCase();
   const caseClash = Object.keys(config.models?.providers ?? {}).find((id) => id.toLowerCase() === lower);
   if (caseClash) throw new Error(`Provider ${caseClash} already exists (case-insensitive match)`);
-  if (!CUSTOM_PROVIDER_API_TYPES.has(input.api)) throw new Error("api must be a supported API type");
+  if (!PROVIDER_API_TYPES.has(input.api)) throw new Error("api must be a supported API type");
   if (!ENV_VAR_PATTERN.test(input.apiKeyEnv)) throw new Error("apiKeyEnv must be a valid env var name");
   if (input.models.length === 0) throw new Error("models must contain at least one model");
 

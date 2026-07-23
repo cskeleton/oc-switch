@@ -217,20 +217,29 @@ describe("provider add from preset", () => {
 });
 
 describe("editProvider", () => {
-  test("updates baseUrl and env ref without dropping unknown fields", () => {
+  test("updates baseUrl, api, and env ref without dropping unknown fields", () => {
     const config = cloneSample();
     config.models!.providers!.nvidia!.timeoutSeconds = 42;
 
     const result = editProvider(config, "nvidia", {
       baseUrl: "https://updated.example/v1",
+      api: "anthropic-messages",
       apiKeyEnv: "NEW_NVIDIA_KEY"
     });
 
     const provider = result.config.models?.providers?.nvidia;
     expect(provider?.baseUrl).toBe("https://updated.example/v1");
+    expect(provider?.api).toBe("anthropic-messages");
     expect(provider?.apiKey).toBe("${NEW_NVIDIA_KEY}");
     expect(provider?.timeoutSeconds).toBe(42);
     expect(provider?.models?.[0]?.id).toBe("deepseek-ai/deepseek-v4-flash");
+  });
+
+  test("rejects unsupported api types", () => {
+    const config = cloneSample();
+    expect(() => editProvider(config, "nvidia", {
+      api: "unsupported-api" as never
+    })).toThrow("api must be a supported API type");
   });
 
   test("removes legacy authHeader env ref when editing api key env", () => {

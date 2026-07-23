@@ -976,15 +976,50 @@ describe("ProvidersView", () => {
     const baseUrlInput = await findByLabelText("Provider baseUrl");
     await userEvent.clear(baseUrlInput);
     await userEvent.type(baseUrlInput, "https://new-nvidia.example/v1");
+    await userEvent.selectOptions(await findByLabelText("Provider API 类型"), "anthropic-messages");
     await userEvent.type(await findByLabelText("Provider API Key 新值"), "sk-abcdefghijklmnopqrstuvwxyz123456");
     await userEvent.click(getByText("保存 Provider"));
 
+    expect(previewUpdateProvider).toHaveBeenCalledWith("nvidia", {
+      baseUrl: "https://new-nvidia.example/v1",
+      api: "anthropic-messages",
+      includeApiKeyEnv: true
+    });
     expect(updateProvider).toHaveBeenCalledWith("nvidia", {
       baseUrl: "https://new-nvidia.example/v1",
+      api: "anthropic-messages",
       apiKey: "sk-abcdefghijklmnopqrstuvwxyz123456"
     });
     expect(await findByText(`Provider nvidia 的 API Key 已写入托管块：NVIDIA_API_KEY = sk-abc********123456 ${GATEWAY_CONFIRM_SYNC_NEXT_STEP_HINT}`)).toBeTruthy();
     expect(queryByText("sk-abcdefghijklmnopqrstuvwxyz123456")).toBeNull();
+  });
+
+  test("preserves an unknown provider api when editing only the base URL", async () => {
+    const updateProvider = mock(async () => ({ ok: true }));
+    const getProviders = mock(async () => ({
+      providers: [
+        providerSummary({
+          id: "future-api",
+          api: "openai-responses",
+          baseUrl: "https://future.example/v1"
+        })
+      ]
+    }));
+
+    const { findByLabelText, getByText } = render(
+      <ProvidersView client={mockClient({ getProviders, updateProvider })} />
+    );
+
+    await userEvent.click(await findByLabelText("编辑 future-api"));
+    expect((await findByLabelText("Provider API 类型") as HTMLSelectElement).value).toBe("openai-responses");
+    const baseUrlInput = await findByLabelText("Provider baseUrl");
+    await userEvent.clear(baseUrlInput);
+    await userEvent.type(baseUrlInput, "https://future-new.example/v1");
+    await userEvent.click(getByText("保存 Provider"));
+
+    expect(updateProvider).toHaveBeenCalledWith("future-api", {
+      baseUrl: "https://future-new.example/v1"
+    });
   });
 
   test("shows gateway apply banner after provider key save", async () => {
