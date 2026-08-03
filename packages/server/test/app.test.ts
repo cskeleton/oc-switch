@@ -3,6 +3,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sample from "../../core/test/fixtures/openclaw.sample.json";
+import modelsDevApiFixture from "../../core/test/fixtures/model-metadata/api.json";
+import modelsDevModelsFixture from "../../core/test/fixtures/model-metadata/models.json";
 import { createApp } from "../src/app";
 import type {
   FetchImpl,
@@ -11,7 +13,13 @@ import type {
   RuntimeDiscoveryProvider,
   RuntimeDiscoveryResult
 } from "@oc-switch/core";
-import { createBackup, upsertDisabledProviderState, MAX_PROVIDER_MODELS } from "@oc-switch/core";
+import {
+  createBackup,
+  upsertDisabledProviderState,
+  MAX_PROVIDER_MODELS,
+  MODELS_DEV_API_URL,
+  MODELS_DEV_MODELS_URL
+} from "@oc-switch/core";
 import { prepareGatewayEnvTarget, expectedGatewayEnvPath } from "../../core/test/gateway-sync-fixture";
 
 const tempDirs: string[] = [];
@@ -281,6 +289,64 @@ describe("server write endpoints", () => {
       alias: "ds-pro",
       agentRuntime: { id: "codex" }
     });
+  });
+
+  test("POST/PUT /api/models round-trip contextTokens into provider models, not allowlist", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+    const { response } = await jsonRequest(app, "/api/models", {
+      method: "POST",
+      body: JSON.stringify({
+        providerId: "nvidia",
+        model: {
+          id: "vendor/budget-model",
+          name: "Budget Model",
+          alias: "budget",
+          enabled: true,
+          contextWindow: 200000,
+          contextTokens: 128000,
+          maxTokens: 16384
+        }
+      })
+    });
+
+    expect(response.status).toBe(200);
+    let config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    const written = config.models.providers.nvidia.models.find((model: { id: string }) => model.id === "vendor/budget-model");
+    expect(written).toMatchObject({ contextWindow: 200000, contextTokens: 128000, maxTokens: 16384 });
+    // contextTokens 只落在 provider.models[]，不进入 allowlist entry
+    expect(config.agents.defaults.models["nvidia/vendor/budget-model"]).toEqual({ alias: "budget" });
+
+    // PUT 修改 contextTokens
+    const putResponse = await jsonRequest(app, "/api/models", {
+      method: "PUT",
+      body: JSON.stringify({
+        ref: "nvidia/vendor/budget-model",
+        model: { id: "vendor/budget-model", enabled: true, contextTokens: 96000 }
+      })
+    });
+    expect(putResponse.response.status).toBe(200);
+    config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(config.models.providers.nvidia.models.find((model: { id: string }) => model.id === "vendor/budget-model").contextTokens).toBe(96000);
+  });
+
+  test("POST /api/models rejects contextTokens greater than contextWindow", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+    const { response, json } = await jsonRequest(app, "/api/models", {
+      method: "POST",
+      body: JSON.stringify({
+        providerId: "nvidia",
+        model: {
+          id: "vendor/over-budget",
+          enabled: false,
+          contextWindow: 100000,
+          contextTokens: 200000
+        }
+      })
+    });
+    expect(response.status).toBe(400);
+    expect(String(json.error)).toMatch(/contextTokens|contextWindow/);
   });
 
   test("DELETE /api/models removes model through JSON body", async () => {
@@ -2140,5 +2206,280 @@ describe("server env APIs", () => {
     expect(seenCandidateId).toBe("test:single:candidate");
     expect(seenTargetPath).toBe(expectedGatewayEnvPath(ws.dir));
     expect(seenTargetPath).not.toContain("restart-placeholder");
+  });
+});
+
+interface MetadataFetchSpec {
+  status?: number;
+  body?: string;
+  etag?: string;
+}
+
+interface MetadataFetchCall {
+  url: string;
+  headers: Record<string, string>;
+  body?: unknown;
+}
+
+function metadataFetch(byUrl: Record<string, MetadataFetchSpec>) {
+  const calls: MetadataFetchCall[] = [];
+  const fetchImpl: FetchImpl = async (input, init) => {
+    const url = String(input);
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    calls.push({ url, headers, ...(init?.body !== undefined ? { body: init.body } : {}) });
+    const spec = byUrl[url];
+    if (!spec) throw new Error(`unexpected url: ${url}`);
+    const responseHeaders: Record<string, string> = {};
+    if (spec.etag) responseHeaders["etag"] = spec.etag;
+    return new Response(spec.body ?? "", { status: spec.status ?? 200, headers: responseHeaders });
+  };
+  return { fetchImpl, calls };
+}
+
+function modelsDevSuccessSpecs(): Record<string, MetadataFetchSpec> {
+  return {
+    [MODELS_DEV_MODELS_URL]: { status: 200, body: JSON.stringify(modelsDevModelsFixture), etag: "etag-models" },
+    [MODELS_DEV_API_URL]: { status: 200, body: JSON.stringify(modelsDevApiFixture), etag: "etag-api" }
+  };
+}
+
+describe("server model-metadata suggestions", () => {
+  const SUGGESTIONS_URL = "/api/model-metadata/suggestions";
+
+  test("providerId/modelId 必填；modelId 中斜杠正确 URL decode", async () => {
+    const ws = workspace();
+    const { fetchImpl } = metadataFetch(modelsDevSuccessSpecs());
+    const app = createTestApp(ws, fetchImpl);
+
+    const missingProvider = await jsonRequest(app, `${SUGGESTIONS_URL}?modelId=gpt-5.2`);
+    expect(missingProvider.response.status).toBe(400);
+    expect(String(missingProvider.json.error)).toContain("providerId");
+
+    const missingModel = await jsonRequest(app, `${SUGGESTIONS_URL}?providerId=nvidia`);
+    expect(missingModel.response.status).toBe(400);
+    expect(String(missingModel.json.error)).toContain("modelId");
+
+    // 编码后的 %2F 必须被解码为 openai/gpt-5.2 才能命中 model-key-exact
+    const { response, json } = await jsonRequest(
+      app,
+      `${SUGGESTIONS_URL}?providerId=nvidia&modelId=${encodeURIComponent("openai/gpt-5.2")}`
+    );
+    expect(response.status).toBe(200);
+    const suggestions = json.suggestions as Array<{
+      matchKind: string;
+      confidence: string;
+      model: { catalogKey: string };
+    }>;
+    expect(suggestions[0]).toMatchObject({
+      matchKind: "model-key-exact",
+      confidence: "high",
+      model: { catalogKey: "openai/gpt-5.2" }
+    });
+  });
+
+  test("Provider 不存在返回 4xx 且不访问 Models.dev", async () => {
+    const ws = workspace();
+    const { fetchImpl, calls } = metadataFetch(modelsDevSuccessSpecs());
+    const app = createTestApp(ws, fetchImpl);
+
+    const { response, json } = await jsonRequest(
+      app,
+      `${SUGGESTIONS_URL}?providerId=does-not-exist&modelId=gpt-5.2`
+    );
+
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(response.status).toBeLessThan(500);
+    expect(String(json.error)).toContain("does-not-exist");
+    expect(calls).toHaveLength(0);
+  });
+
+  test("成功响应只包含归一化建议、逐源时间/stale 状态与 warnings", async () => {
+    const ws = workspace();
+    const { fetchImpl } = metadataFetch(modelsDevSuccessSpecs());
+    const app = createTestApp(ws, fetchImpl);
+
+    const { response, json } = await jsonRequest(
+      app,
+      `${SUGGESTIONS_URL}?providerId=nvidia&modelId=${encodeURIComponent("openai/gpt-5.2")}`
+    );
+
+    expect(response.status).toBe(200);
+    const suggestions = json.suggestions as Array<{
+      matchKind: string;
+      confidence: string;
+      model: Record<string, unknown>;
+    }>;
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0]?.matchKind).toBe("model-key-exact");
+    expect(suggestions[0]?.model).toMatchObject({
+      catalogKey: "openai/gpt-5.2",
+      contextWindow: 400000,
+      maxTokens: 128000
+    });
+    // 归一化字段白名单：不泄漏 raw 第三方 schema 字段
+    expect(Object.keys(suggestions[0]?.model ?? {}).sort()).toEqual([
+      "catalogKey",
+      "contextWindow",
+      "input",
+      "maxTokens",
+      "modelId",
+      "name",
+      "providerId",
+      "reasoning",
+      "sourceKind",
+      "sourceUrl",
+      "updatedAt"
+    ]);
+    expect(JSON.stringify(json)).not.toContain("last_updated");
+    expect(JSON.stringify(json)).not.toContain("sk-");
+
+    const sources = json.sources as Array<Record<string, unknown>>;
+    expect(sources).toHaveLength(2);
+    for (const source of sources) {
+      expect(Object.keys(source).sort()).toEqual(["checkedAt", "fetchedAt", "kind", "stale"]);
+      expect(source.stale).toBe(false);
+    }
+    // fixture 含 broken/* 非法 limit 条目，归一化 warning 允许存在但必须是纯字符串
+    expect(Array.isArray(json.warnings)).toBe(true);
+    expect((json.warnings as string[]).every((warning) => typeof warning === "string")).toBe(true);
+  });
+
+  test("refresh=1 绕过 fresh TTL 但仍使用 ETag", async () => {
+    const ws = workspace();
+    const url = `${SUGGESTIONS_URL}?providerId=nvidia&modelId=${encodeURIComponent("openai/gpt-5.2")}`;
+
+    // 首次查询：下载并落盘缓存
+    const first = metadataFetch(modelsDevSuccessSpecs());
+    const app = createTestApp(ws, first.fetchImpl);
+    const { response } = await jsonRequest(app, url);
+    expect(response.status).toBe(200);
+    expect(first.calls).toHaveLength(2);
+
+    // TTL 内不刷新：即使 fetch 会失败也不联网
+    const second = metadataFetch({
+      [MODELS_DEV_MODELS_URL]: { status: 500 },
+      [MODELS_DEV_API_URL]: { status: 500 }
+    });
+    const cachedApp = createTestApp(ws, second.fetchImpl);
+    const cached = await jsonRequest(cachedApp, url);
+    expect(cached.response.status).toBe(200);
+    expect(second.calls).toHaveLength(0);
+    expect((cached.json.suggestions as unknown[]).length).toBeGreaterThan(0);
+
+    // refresh=1：绕过 TTL，带 If-None-Match；304 后数据保留
+    const third = metadataFetch({
+      [MODELS_DEV_MODELS_URL]: { status: 304 },
+      [MODELS_DEV_API_URL]: { status: 304 }
+    });
+    const refreshApp = createTestApp(ws, third.fetchImpl);
+    const refreshed = await jsonRequest(refreshApp, `${url}&refresh=1`);
+    expect(refreshed.response.status).toBe(200);
+    expect(third.calls).toHaveLength(2);
+    expect(third.calls.find((call) => call.url === MODELS_DEV_MODELS_URL)?.headers["If-None-Match"]).toBe(
+      "etag-models"
+    );
+    expect(third.calls.find((call) => call.url === MODELS_DEV_API_URL)?.headers["If-None-Match"]).toBe("etag-api");
+    expect((refreshed.json.suggestions as unknown[]).length).toBeGreaterThan(0);
+  });
+
+  test("目录错误返回空建议与 warning，不阻止其他模型 API", async () => {
+    const ws = workspace();
+    const { fetchImpl } = metadataFetch({
+      [MODELS_DEV_MODELS_URL]: { status: 500 },
+      [MODELS_DEV_API_URL]: { status: 500 }
+    });
+    const app = createTestApp(ws, fetchImpl);
+
+    const { response, json } = await jsonRequest(
+      app,
+      `${SUGGESTIONS_URL}?providerId=nvidia&modelId=deepseek-chat`
+    );
+
+    expect(response.status).toBe(200);
+    expect(json.suggestions).toEqual([]);
+    expect((json.warnings as string[]).length).toBeGreaterThan(0);
+
+    const models = await jsonRequest(app, "/api/models");
+    expect(models.response.status).toBe(200);
+  });
+
+  test("建议查询不修改 openclaw.json/.env，也不创建 backup", async () => {
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, "NVIDIA_API_KEY=sk-secret\n");
+    const { fetchImpl } = metadataFetch(modelsDevSuccessSpecs());
+    const app = createTestApp(ws, fetchImpl);
+    const beforeConfig = readFileSync(ws.paths.openclawPath, "utf8");
+    const beforeEnv = readFileSync(ws.paths.envPath, "utf8");
+
+    const { response } = await jsonRequest(
+      app,
+      `${SUGGESTIONS_URL}?providerId=nvidia&modelId=${encodeURIComponent("openai/gpt-5.2")}`
+    );
+    expect(response.status).toBe(200);
+
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(beforeConfig);
+    expect(readFileSync(ws.paths.envPath, "utf8")).toBe(beforeEnv);
+    const { json: backupsJson } = await jsonRequest(app, "/api/backups");
+    expect((backupsJson.backups as unknown[]).length).toBe(0);
+  });
+
+  test("外发请求只有固定 allowlist URL，URL/body/header 不含密钥与本地标识", async () => {
+    const ws = workspace();
+    const { fetchImpl, calls } = metadataFetch(modelsDevSuccessSpecs());
+    const app = createTestApp(ws, fetchImpl);
+
+    const { response } = await jsonRequest(
+      app,
+      `${SUGGESTIONS_URL}?providerId=nvidia&modelId=${encodeURIComponent("openai/gpt-5.2")}`
+    );
+    expect(response.status).toBe(200);
+
+    const allowlist = new Set([MODELS_DEV_MODELS_URL, MODELS_DEV_API_URL]);
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) {
+      expect(allowlist.has(call.url)).toBe(true);
+      expect(call.url).not.toContain("nvidia");
+      expect(call.url).not.toContain("gpt-5.2");
+      expect(call.url).not.toContain("integrate.api.nvidia.com");
+      expect(call.url).not.toContain("sk-");
+      expect(call.body).toBeUndefined();
+      for (const [header, value] of Object.entries(call.headers)) {
+        expect(header.toLowerCase()).toBe("if-none-match");
+        expect(String(value)).not.toContain("sk-");
+      }
+    }
+  });
+
+  test("endpoint-exact 使用 config 中当前 Provider 的 baseUrl", async () => {
+    const ws = workspace();
+    // 追加一个 baseUrl 与 fixture 中 endpoint-provider.api 一致的 Provider
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as Record<string, unknown>;
+    const models = config.models as { providers: Record<string, unknown> };
+    models.providers["endpoint-user"] = {
+      baseUrl: "https://api.endpoint.example/v1",
+      apiKey: { source: "env", id: "ENDPOINT_USER_API_KEY" },
+      api: "openai-completions",
+      models: [{ id: "special-model", name: "Special Model" }]
+    };
+    writeFileSync(ws.paths.openclawPath, JSON.stringify(config, null, 2));
+
+    const { fetchImpl } = metadataFetch(modelsDevSuccessSpecs());
+    const app = createTestApp(ws, fetchImpl);
+    const { response, json } = await jsonRequest(
+      app,
+      `${SUGGESTIONS_URL}?providerId=endpoint-user&modelId=special-model`
+    );
+
+    expect(response.status).toBe(200);
+    const suggestions = json.suggestions as Array<{
+      matchKind: string;
+      confidence: string;
+      model: { catalogKey: string; contextWindow: number; maxTokens: number };
+    }>;
+    expect(suggestions[0]).toMatchObject({
+      matchKind: "endpoint-exact",
+      confidence: "high",
+      model: { catalogKey: "endpoint-provider/special-model", contextWindow: 64000, maxTokens: 8192 }
+    });
   });
 });

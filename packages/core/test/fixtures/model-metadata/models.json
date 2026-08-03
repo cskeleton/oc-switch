@@ -1,0 +1,80 @@
+{
+  "openai/gpt-5.2": {
+    "id": "openai/gpt-5.2",
+    "name": "GPT-5.2",
+    "reasoning": true,
+    "last_updated": "2026-07-01",
+    "modalities": { "input": ["text", "image"], "output": ["text"] },
+    "limit": { "context": 400000, "output": 128000 }
+  },
+  "openai/gpt-5.2-pro": {
+    "id": "openai/gpt-5.2-pro",
+    "name": "GPT-5.2 Pro",
+    "reasoning": true,
+    "last_updated": "2026-07-02",
+    "modalities": { "input": ["text"], "output": ["text"] },
+    "limit": { "context": 400000, "output": 256000 }
+  },
+  "anthropic/claude-sonnet-4.5": {
+    "id": "anthropic/claude-sonnet-4.5",
+    "name": "Claude Sonnet 4.5",
+    "reasoning": true,
+    "last_updated": "2026-06-15",
+    "modalities": { "input": ["text", "image"], "output": ["text"] },
+    "limit": { "context": 200000, "output": 64000 }
+  },
+  "zhipuai/glm-5": {
+    "id": "zhipuai/glm-5",
+    "name": "GLM 5",
+    "last_updated": "2026-05-20",
+    "modalities": { "input": ["text"], "output": ["text"] },
+    "limit": { "context": 200000, "output": 32768 }
+  },
+  "unique-vendor/unique-model": {
+    "id": "unique-vendor/unique-model",
+    "name": "Unique Model",
+    "last_updated": "2026-04-10",
+    "modalities": { "input": ["text"], "output": ["text"] },
+    "limit": { "context": 128000, "output": 16384 }
+  },
+  "aaa/shared": {
+    "id": "aaa/shared",
+    "name": "Shared A",
+    "limit": { "context": 1000, "output": 100 }
+  },
+  "bbb/shared": {
+    "id": "bbb/shared",
+    "name": "Shared B",
+    "limit": { "context": 2000, "output": 200 }
+  },
+  "ccc/shared": {
+    "id": "ccc/shared",
+    "name": "Shared C",
+    "limit": { "context": 3000, "output": 300 }
+  },
+  "ddd/shared": {
+    "id": "ddd/shared",
+    "name": "Shared D",
+    "limit": { "context": 4000, "output": 400 }
+  },
+  "eee/shared": {
+    "id": "eee/shared",
+    "name": "Shared E",
+    "limit": { "context": 5000, "output": 500 }
+  },
+  "fff/shared": {
+    "id": "fff/shared",
+    "name": "Shared F",
+    "limit": { "context": 6000, "output": 600 }
+  },
+  "broken/negative": {
+    "id": "broken/negative",
+    "name": "Broken Negative",
+    "limit": { "context": -5, "output": 99999 }
+  },
+  "broken/not-a-number": {
+    "id": "broken/not-a-number",
+    "name": "Broken NaN",
+    "limit": { "context": "lots", "output": 4096 }
+  }
+}

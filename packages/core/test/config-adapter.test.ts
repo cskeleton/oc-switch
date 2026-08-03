@@ -84,6 +84,22 @@ describe("ConfigAdapter", () => {
     });
   });
 
+  test("summary 透传 contextTokens", () => {
+    const config = structuredClone(sample);
+    Object.assign(config.models!.providers!.nvidia!.models![0]!, {
+      contextWindow: 128000,
+      contextTokens: 96000,
+      maxTokens: 8192
+    });
+
+    const model = createConfigAdapter(config).listModels().find((entry) => entry.ref === "nvidia/deepseek-ai/deepseek-v4-flash");
+    expect(model).toMatchObject({
+      contextWindow: 128000,
+      contextTokens: 96000,
+      maxTokens: 8192
+    });
+  });
+
   test("reports status", () => {
     const adapter = createConfigAdapter(sample);
     expect(adapter.getStatus()).toEqual({

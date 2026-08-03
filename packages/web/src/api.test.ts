@@ -165,6 +165,34 @@ test("discover 与 batch-add/remove 使用正确路径与 JSON body", async () =
   expect(JSON.parse(String(calls[5]!.init.body))).toEqual({ keepEnabledOnly: true });
 });
 
+test("getModelMetadataSuggestions 使用 URLSearchParams 编码斜杠/空格/大小写", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const client = createApiClient({
+    baseUrl: "http://localhost:7420",
+    token: "token",
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url: String(url), init });
+      return new Response(JSON.stringify({ suggestions: [], sources: [], warnings: [] }), { status: 200 });
+    }
+  });
+
+  await client.getModelMetadataSuggestions("OpenRouter", "openai/gpt-5.2");
+  await client.getModelMetadataSuggestions("custom proxy", "vendor/Model ID", { refresh: true });
+
+  // 不得手拼 query string：斜杠必须被编码为 %2F
+  expect(calls[0]!.url).toContain("modelId=openai%2Fgpt-5.2");
+  const first = new URL(calls[0]!.url);
+  expect(first.pathname).toBe("/api/model-metadata/suggestions");
+  expect(first.searchParams.get("providerId")).toBe("OpenRouter");
+  expect(first.searchParams.get("modelId")).toBe("openai/gpt-5.2");
+  expect(first.searchParams.has("refresh")).toBe(false);
+
+  const second = new URL(calls[1]!.url);
+  expect(second.searchParams.get("providerId")).toBe("custom proxy");
+  expect(second.searchParams.get("modelId")).toBe("vendor/Model ID");
+  expect(second.searchParams.get("refresh")).toBe("1");
+});
+
 test("getConfigStatus 请求 /api/config-status 并携带 Bearer auth", async () => {
   const calls: Request[] = [];
   const client = createApiClient({

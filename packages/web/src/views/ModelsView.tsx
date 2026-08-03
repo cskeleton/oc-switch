@@ -384,6 +384,7 @@ export function ModelsView({ client }: ModelsViewProps) {
         fixedProviderId={selectedProviderId || undefined}
         onCancel={() => setCreating(false)}
         onSave={handleCreate}
+        onLookupMetadata={client.getModelMetadataSuggestions}
       />
       <ModelDialog
         open={Boolean(editTarget)}
@@ -393,6 +394,7 @@ export function ModelsView({ client }: ModelsViewProps) {
         {...(editTarget ? { model: editTarget } : {})}
         onCancel={() => setEditTarget(null)}
         onSave={handleEdit}
+        onLookupMetadata={client.getModelMetadataSuggestions}
       />
       <ConfirmDialog
         open={Boolean(deleteTarget)}

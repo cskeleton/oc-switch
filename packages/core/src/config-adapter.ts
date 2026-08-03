@@ -51,6 +51,7 @@ export function createConfigAdapter(config: OpenClawConfig) {
         if (model?.api !== undefined) summary.api = model.api;
         if (model?.reasoning !== undefined) summary.reasoning = model.reasoning;
         if (model?.contextWindow !== undefined) summary.contextWindow = model.contextWindow;
+        if (model?.contextTokens !== undefined) summary.contextTokens = model.contextTokens;
         if (model?.maxTokens !== undefined) summary.maxTokens = model.maxTokens;
         if (model?.input !== undefined) summary.input = model.input;
         return summary;

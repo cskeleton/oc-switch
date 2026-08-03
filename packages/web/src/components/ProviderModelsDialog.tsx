@@ -245,8 +245,8 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
         </Dialog>
       )}
 
-      <ModelDialog open={creating} mode="create" providers={providers} fixedProviderId={provider?.id} onCancel={() => setCreating(false)} onSave={saveCreate} />
-      <ModelDialog open={Boolean(editing)} mode="edit" providers={providers} fixedProviderId={provider?.id} {...(editing ? { model: editing } : {})} onCancel={() => setEditing(null)} onSave={saveEdit} />
+      <ModelDialog open={creating} mode="create" providers={providers} fixedProviderId={provider?.id} onCancel={() => setCreating(false)} onSave={saveCreate} onLookupMetadata={client.getModelMetadataSuggestions} />
+      <ModelDialog open={Boolean(editing)} mode="edit" providers={providers} fixedProviderId={provider?.id} {...(editing ? { model: editing } : {})} onCancel={() => setEditing(null)} onSave={saveEdit} onLookupMetadata={client.getModelMetadataSuggestions} />
 
       <ConfirmDialog
         open={Boolean(deleteTarget)}

@@ -6,7 +6,15 @@ import { cleanup, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "./App";
 import { DiffSummary } from "./components/DiffSummary";
-import { createApiClient, type ApiClient, type CaseDuplicateKind, type ConfigHealthReport } from "./api";
+import { ModelDialog } from "./components/ModelDialog";
+import {
+  createApiClient,
+  type ApiClient,
+  type CaseDuplicateKind,
+  type ConfigHealthReport,
+  type ModelMetadataSuggestionsResponse,
+  type ProviderModelInput
+} from "./api";
 import { Dashboard } from "./views/Dashboard";
 import { ModelsView } from "./views/ModelsView";
 import { ProvidersView } from "./views/ProvidersView";
@@ -227,8 +235,8 @@ describe("ModelsView", () => {
     await userEvent.type(await findByLabelText("Alias"), "ds-pro");
     await userEvent.selectOptions(await findByLabelText("API"), "openai-completions");
     await userEvent.selectOptions(await findByLabelText("Reasoning"), "true");
-    await userEvent.type(await findByLabelText("Context Window"), "128000");
-    await userEvent.type(await findByLabelText("Max Tokens"), "8192");
+    await userEvent.type(await findByLabelText("原生上下文窗口"), "128000");
+    await userEvent.type(await findByLabelText("最大输出长度"), "8192");
     await userEvent.type(await findByLabelText("Input"), "text\nimage");
     await userEvent.click(getByText("保存模型"));
 
@@ -300,10 +308,10 @@ describe("ModelsView", () => {
 
     await userEvent.click(await findByText("添加模型"));
     await userEvent.type(await findByLabelText("Model ID"), "bad-window");
-    await userEvent.type(await findByLabelText("Context Window"), "abc");
+    await userEvent.type(await findByLabelText("原生上下文窗口"), "abc");
     await userEvent.click(getByText("保存模型"));
 
-    expect(await findByText("Context Window 必须是正整数")).toBeTruthy();
+    expect(await findByText("原生上下文窗口 必须是正整数")).toBeTruthy();
     expect(createModel).not.toHaveBeenCalled();
   });
 
@@ -2188,5 +2196,457 @@ describe("App shell", () => {
       // 恢复全局 fetch，避免污染同进程后续包测试（如 cli waitForHttp）
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+function singleSuggestionResponse(overrides: Partial<ModelMetadataSuggestionsResponse> = {}): ModelMetadataSuggestionsResponse {
+  return {
+    suggestions: [
+      {
+        matchKind: "model-key-exact",
+        confidence: "high",
+        model: {
+          catalogKey: "openai/gpt-5.2",
+          providerId: "openai",
+          modelId: "gpt-5.2",
+          name: "GPT-5.2",
+          contextWindow: 400000,
+          maxTokens: 128000,
+          updatedAt: "2026-07-01",
+          sourceKind: "models-dev-model",
+          sourceUrl: "https://models.dev/models.json"
+        }
+      }
+    ],
+    sources: [
+      {
+        kind: "models-dev-model",
+        fetchedAt: "2026-08-01T00:00:00.000Z",
+        checkedAt: "2026-08-01T00:00:00.000Z",
+        stale: false
+      }
+    ],
+    warnings: [],
+    ...overrides
+  };
+}
+
+function renderModelDialog(options: {
+  providers?: Parameters<typeof ModelDialog>[0]["providers"];
+  mode?: "create" | "edit";
+  model?: Parameters<typeof ModelDialog>[0]["model"];
+  onLookupMetadata?: Parameters<typeof ModelDialog>[0]["onLookupMetadata"];
+  onSave?: (providerId: string, model: ProviderModelInput) => Promise<void>;
+  onCancel?: () => void;
+} = {}) {
+  const onSave = options.onSave ?? (async () => {});
+  const onLookupMetadata = options.onLookupMetadata ?? (async () => singleSuggestionResponse());
+  const utils = render(
+    <ModelDialog
+      open
+      mode={options.mode ?? "create"}
+      providers={options.providers ?? [providerSummary({ id: "nvidia" })]}
+      {...(options.model ? { model: options.model } : {})}
+      onCancel={options.onCancel ?? (() => {})}
+      onSave={onSave}
+      onLookupMetadata={onLookupMetadata}
+    />
+  );
+  return { ...utils, onSave, onLookupMetadata };
+}
+
+async function queryAndMatch(utils: { getByLabelText: (label: string) => Promise<HTMLElement> | HTMLElement }) {
+  await userEvent.type(await utils.getByLabelText("Model ID"), "openai/gpt-5.2");
+  await userEvent.click(await utils.getByLabelText("查询参考参数"));
+}
+
+describe("ModelDialog 参考参数建议", () => {
+  test("三个数值字段标注可选并有关联帮助文本", () => {
+    const { getByText, getByLabelText } = renderModelDialog();
+
+    for (const label of ["原生上下文窗口（可选）", "运行上下文预算（可选）", "最大输出长度（可选）"]) {
+      expect(getByText(label)).toBeTruthy();
+    }
+    for (const field of ["原生上下文窗口", "运行上下文预算", "最大输出长度"]) {
+      const describedBy = getByLabelText(field).getAttribute("aria-describedby");
+      expect(describedBy).toBeTruthy();
+      expect(document.getElementById(describedBy!)?.textContent).toContain("可以留空");
+    }
+  });
+
+  test("查询按钮在 Provider 或 Model ID 缺失时禁用", async () => {
+    const { getByLabelText } = renderModelDialog();
+    const button = getByLabelText("查询参考参数") as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+
+    await userEvent.type(getByLabelText("Model ID"), "openai/gpt-5.2");
+    expect((getByLabelText("查询参考参数") as HTMLButtonElement).disabled).toBe(false);
+
+    // Provider 列表为空时同样禁用（先卸载，避免两个 Dialog portal 同时存在）
+    cleanup();
+    const noProviders = renderModelDialog({ providers: [] });
+    await userEvent.type(noProviders.getByLabelText("Model ID"), "openai/gpt-5.2");
+    expect((noProviders.getByLabelText("查询参考参数") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  test("loading 时禁用重复查询，但不禁用取消与手工输入", async () => {
+    const pending = new Promise<ModelMetadataSuggestionsResponse>(() => {
+      // 永不 resolve，保持 loading 状态
+    });
+    const { getByLabelText, getByText } = renderModelDialog({ onLookupMetadata: () => pending });
+
+    await userEvent.type(getByLabelText("Model ID"), "openai/gpt-5.2");
+    await userEvent.click(getByLabelText("查询参考参数"));
+
+    expect((getByLabelText("查询参考参数") as HTMLButtonElement).disabled).toBe(true);
+    expect((getByText("取消") as HTMLButtonElement).disabled).toBe(false);
+    expect((getByLabelText("Model ID") as HTMLInputElement).disabled).toBe(false);
+    expect((getByLabelText("原生上下文窗口") as HTMLInputElement).disabled).toBe(false);
+  });
+
+  test("单候选卡显示名称、来源、更新时间与精确数值", async () => {
+    const { getByLabelText, findByText, getByText } = renderModelDialog();
+    await queryAndMatch({ getByLabelText });
+
+    expect(await findByText("GPT-5.2")).toBeTruthy();
+    expect(getByText("400000")).toBeTruthy();
+    expect(getByText("128000")).toBeTruthy();
+    expect(getByText("Models.dev 模型事实")).toBeTruthy();
+    expect(getByText("模型 Key 精确匹配")).toBeTruthy();
+    expect(getByText(/2026-07-01/)).toBeTruthy();
+  });
+
+  test("查询成功不自动修改输入框", async () => {
+    const { getByLabelText, findByTestId } = renderModelDialog();
+    await queryAndMatch({ getByLabelText });
+    await findByTestId("model-metadata-suggestion-card");
+
+    expect((getByLabelText("原生上下文窗口") as HTMLInputElement).value).toBe("");
+    expect((getByLabelText("运行上下文预算") as HTMLInputElement).value).toBe("");
+    expect((getByLabelText("最大输出长度") as HTMLInputElement).value).toBe("");
+  });
+
+  test("分别应用上下文/最大输出；全部应用不修改运行上下文预算", async () => {
+    const { getByLabelText, findByTestId } = renderModelDialog();
+    await queryAndMatch({ getByLabelText });
+    await findByTestId("model-metadata-suggestion-card");
+
+    await userEvent.click(getByLabelText("应用建议的原生上下文 400000"));
+    expect((getByLabelText("原生上下文窗口") as HTMLInputElement).value).toBe("400000");
+
+    await userEvent.click(getByLabelText("应用建议的最大输出 128000"));
+    expect((getByLabelText("最大输出长度") as HTMLInputElement).value).toBe("128000");
+
+    await userEvent.type(getByLabelText("运行上下文预算"), "50000");
+    await userEvent.click(getByLabelText("全部应用建议值"));
+    expect((getByLabelText("运行上下文预算") as HTMLInputElement).value).toBe("50000");
+    expect((getByLabelText("原生上下文窗口") as HTMLInputElement).value).toBe("400000");
+    expect((getByLabelText("最大输出长度") as HTMLInputElement).value).toBe("128000");
+  });
+
+  test("已有非空值必须用户点击才替换，卡片显示当前值与建议值差异", async () => {
+    const { getByLabelText, findByTestId, findByText } = renderModelDialog({
+      mode: "edit",
+      model: modelSummary({ ref: "nvidia/custom-model", contextWindow: 100000 })
+    });
+
+    await userEvent.click(getByLabelText("查询参考参数"));
+    await findByTestId("model-metadata-suggestion-card");
+
+    expect(await findByText(/原生上下文当前值 100000，应用后将替换为 400000/)).toBeTruthy();
+    expect((getByLabelText("原生上下文窗口") as HTMLInputElement).value).toBe("100000");
+
+    await userEvent.click(getByLabelText("应用建议的原生上下文 400000"));
+    expect((getByLabelText("原生上下文窗口") as HTMLInputElement).value).toBe("400000");
+  });
+
+  test("目录全部不可用时显示目录错误，而不是未找到模型", async () => {
+    const { getByLabelText, findByRole } = renderModelDialog({
+      onLookupMetadata: async () => ({
+        suggestions: [],
+        sources: [],
+        warnings: ["models-dev-model 目录不可用：network down"]
+      })
+    });
+    await queryAndMatch({ getByLabelText });
+
+    const alert = await findByRole("alert");
+    expect(alert.textContent).toContain("模型目录加载失败");
+    expect(alert.textContent).not.toContain("未找到匹配的参考模型");
+  });
+
+  test("查询期间修改 Model ID，过期响应返回后恢复可查询状态", async () => {
+    let resolveLookup: ((value: ModelMetadataSuggestionsResponse) => void) | undefined;
+    const pending = new Promise<ModelMetadataSuggestionsResponse>((resolve) => {
+      resolveLookup = resolve;
+    });
+    const { getByLabelText, queryByTestId } = renderModelDialog({ onLookupMetadata: () => pending });
+
+    await userEvent.type(getByLabelText("Model ID"), "openai/gpt-5.2");
+    await userEvent.click(getByLabelText("查询参考参数"));
+    expect((getByLabelText("查询参考参数") as HTMLButtonElement).disabled).toBe(true);
+
+    // 用户在查询期间改了 Model ID；随后旧响应才返回
+    await userEvent.type(getByLabelText("Model ID"), "-suffix");
+    resolveLookup?.(singleSuggestionResponse());
+    await waitFor(() => expect((getByLabelText("查询参考参数") as HTMLButtonElement).disabled).toBe(false));
+    expect(queryByTestId("model-metadata-suggestion-card")).toBeNull();
+  });
+
+  test("逐源 stale 只标记来自 stale 来源的候选", async () => {
+    const response: ModelMetadataSuggestionsResponse = {
+      suggestions: [
+        {
+          matchKind: "provider-exact",
+          confidence: "high",
+          model: {
+            catalogKey: "openrouter/gpt-x",
+            providerId: "openrouter",
+            modelId: "gpt-x",
+            name: "GPT-X (Provider)",
+            contextWindow: 1000,
+            maxTokens: 100,
+            sourceKind: "models-dev-provider",
+            sourceUrl: "https://models.dev/api.json"
+          }
+        },
+        {
+          matchKind: "model-key-exact",
+          confidence: "high",
+          model: {
+            catalogKey: "vendor/gpt-x",
+            providerId: "vendor",
+            modelId: "gpt-x",
+            name: "GPT-X (Facts)",
+            contextWindow: 2000,
+            maxTokens: 200,
+            sourceKind: "models-dev-model",
+            sourceUrl: "https://models.dev/models.json"
+          }
+        }
+      ],
+      sources: [
+        { kind: "models-dev-provider", fetchedAt: "2026-07-01T00:00:00.000Z", checkedAt: "2026-07-01T00:00:00.000Z", stale: true },
+        { kind: "models-dev-model", fetchedAt: "2026-08-01T00:00:00.000Z", checkedAt: "2026-08-01T00:00:00.000Z", stale: false }
+      ],
+      warnings: []
+    };
+    const { getByLabelText, findByText, queryByText } = renderModelDialog({
+      onLookupMetadata: async () => response
+    });
+    await queryAndMatch({ getByLabelText });
+
+    // 选择来自 stale 来源的候选 → 显示缓存数据标记
+    await userEvent.click(getByLabelText("选择参考模型 openrouter/gpt-x"));
+    expect(await findByText(/该候选来自缓存快照/)).toBeTruthy();
+
+    // 切换到 fresh 来源候选 → 不得继续显示 stale 标记
+    await userEvent.click(getByLabelText("选择参考模型 vendor/gpt-x"));
+    await waitFor(() => expect(queryByText(/该候选来自缓存快照/)).toBeNull());
+  });
+
+  test("多候选必须先选择再应用；low confidence 有明确提示", async () => {
+    const response = singleSuggestionResponse({
+      suggestions: [
+        {
+          matchKind: "provider-exact",
+          confidence: "high",
+          model: {
+            catalogKey: "openrouter/openai/gpt-5.2",
+            providerId: "openrouter",
+            modelId: "openai/gpt-5.2",
+            name: "GPT-5.2 (OpenRouter)",
+            contextWindow: 400000,
+            maxTokens: 128000,
+            sourceKind: "models-dev-provider",
+            sourceUrl: "https://models.dev/api.json"
+          }
+        },
+        {
+          matchKind: "unique-model-id",
+          confidence: "low",
+          model: {
+            catalogKey: "zhipu/gpt-5.2",
+            providerId: "zhipu",
+            modelId: "gpt-5.2",
+            name: "GPT-5.2 (Zhipu)",
+            contextWindow: 200000,
+            maxTokens: 64000,
+            sourceKind: "models-dev-model",
+            sourceUrl: "https://models.dev/models.json"
+          }
+        }
+      ],
+      sources: [
+        { kind: "models-dev-provider", fetchedAt: "2026-08-01T00:00:00.000Z", checkedAt: "2026-08-01T00:00:00.000Z", stale: false },
+        { kind: "models-dev-model", fetchedAt: "2026-08-01T00:00:00.000Z", checkedAt: "2026-08-01T00:00:00.000Z", stale: false }
+      ]
+    });
+    const { getByLabelText, findByText } = renderModelDialog({ onLookupMetadata: async () => response });
+    await queryAndMatch({ getByLabelText });
+
+    expect(await findByText(/找到 2 个候选参考模型/)).toBeTruthy();
+    // 多候选不预选：两个 radio 都未选中
+    expect((getByLabelText("选择参考模型 openrouter/openai/gpt-5.2") as HTMLInputElement).checked).toBe(false);
+    expect((getByLabelText("选择参考模型 zhipu/gpt-5.2") as HTMLInputElement).checked).toBe(false);
+    // 未选择候选时应用按钮禁用
+    expect((getByLabelText("应用建议的原生上下文") as HTMLButtonElement).disabled).toBe(true);
+    expect((getByLabelText("全部应用建议值") as HTMLButtonElement).disabled).toBe(true);
+    expect(await findByText(/请先选择一个候选参考模型/)).toBeTruthy();
+
+    await userEvent.click(getByLabelText("选择参考模型 zhipu/gpt-5.2"));
+    expect(await findByText(/低置信匹配/)).toBeTruthy();
+
+    await userEvent.click(getByLabelText("应用建议的原生上下文 200000"));
+    expect((getByLabelText("原生上下文窗口") as HTMLInputElement).value).toBe("200000");
+  });
+
+  test("not-found/error/stale 文案可被 screen reader 读到", async () => {
+    // not-found：role=status
+    const notFound = renderModelDialog({
+      onLookupMetadata: async () => singleSuggestionResponse({ suggestions: [] })
+    });
+    await queryAndMatch({ getByLabelText: notFound.getByLabelText });
+    const statusEl = await notFound.findByRole("status");
+    expect(statusEl.textContent).toContain("未找到匹配的参考模型");
+    notFound.unmount();
+
+    // error：role=alert
+    const errored = renderModelDialog({
+      onLookupMetadata: async () => {
+        throw new Error("models.dev unavailable");
+      }
+    });
+    await queryAndMatch({ getByLabelText: errored.getByLabelText });
+    const alert = await errored.findByRole("alert");
+    expect(alert.textContent).toContain("查询参考参数失败");
+    expect(alert.textContent).toContain("models.dev unavailable");
+    errored.unmount();
+
+    // stale：role=status 且标注缓存数据
+    const stale = renderModelDialog({
+      onLookupMetadata: async () =>
+        singleSuggestionResponse({
+          suggestions: [],
+          sources: [
+            { kind: "models-dev-model", fetchedAt: "2026-07-01T00:00:00.000Z", checkedAt: "2026-07-01T00:00:00.000Z", stale: true }
+          ]
+        })
+    });
+    await queryAndMatch({ getByLabelText: stale.getByLabelText });
+    const staleEl = await stale.findByRole("status");
+    expect(staleEl.textContent).toContain("缓存数据");
+  });
+
+  test("快捷按钮填入完整整数，支持键盘 focus/activate", async () => {
+    const { getByLabelText } = renderModelDialog();
+
+    const oneMegabyte = getByLabelText("原生上下文快捷值 1M");
+    oneMegabyte.focus();
+    await userEvent.keyboard("{Enter}");
+    expect((getByLabelText("原生上下文窗口") as HTMLInputElement).value).toBe("1048576");
+
+    await userEvent.click(getByLabelText("运行预算快捷值 32K"));
+    expect((getByLabelText("运行上下文预算") as HTMLInputElement).value).toBe("32768");
+
+    await userEvent.click(getByLabelText("最大输出快捷值 4K"));
+    expect((getByLabelText("最大输出长度") as HTMLInputElement).value).toBe("4096");
+  });
+
+  test("保存 payload 含 contextTokens", async () => {
+    const onSave = mock(async () => {});
+    const { getByLabelText, getByText } = renderModelDialog({ onSave });
+
+    await userEvent.type(getByLabelText("Model ID"), "custom-model");
+    await userEvent.type(getByLabelText("原生上下文窗口"), "200000");
+    await userEvent.type(getByLabelText("运行上下文预算"), "128000");
+    await userEvent.type(getByLabelText("最大输出长度"), "8192");
+    await userEvent.click(getByText("保存模型"));
+
+    await waitFor(() =>
+      expect(onSave).toHaveBeenCalledWith("nvidia", {
+        id: "custom-model",
+        enabled: true,
+        contextWindow: 200000,
+        contextTokens: 128000,
+        maxTokens: 8192
+      })
+    );
+  });
+
+  test("contextTokens 大于 contextWindow 时前端阻止提交", async () => {
+    const onSave = mock(async () => {});
+    const { getByLabelText, getByText, findByText } = renderModelDialog({ onSave });
+
+    await userEvent.type(getByLabelText("Model ID"), "custom-model");
+    await userEvent.type(getByLabelText("原生上下文窗口"), "100000");
+    await userEvent.type(getByLabelText("运行上下文预算"), "200000");
+    await userEvent.click(getByText("保存模型"));
+
+    expect(await findByText(/运行上下文预算不能大于原生上下文窗口/)).toBeTruthy();
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  test("关闭再打开 dialog 不残留上次候选、error 或 loading", async () => {
+    const onLookupMetadata = mock(async () => singleSuggestionResponse());
+
+    function dialog(open: boolean) {
+      return (
+        <ModelDialog
+          open={open}
+          mode="create"
+          providers={[providerSummary({ id: "nvidia" })]}
+          onCancel={() => {}}
+          onSave={async () => {}}
+          onLookupMetadata={onLookupMetadata}
+        />
+      );
+    }
+
+    const { getByLabelText, findByTestId, queryByTestId, queryByRole, rerender } = render(dialog(true));
+    await queryAndMatch({ getByLabelText });
+    await findByTestId("model-metadata-suggestion-card");
+
+    rerender(dialog(false));
+    rerender(dialog(true));
+
+    expect(queryByTestId("model-metadata-suggestion-card")).toBeNull();
+    expect(queryByRole("status")).toBeNull();
+    expect(queryByRole("alert")).toBeNull();
+    expect(onLookupMetadata).toHaveBeenCalledTimes(1);
+  });
+
+  test("Models 页入口注入 client 查询方法", async () => {
+    const getModelMetadataSuggestions = mock(async () => singleSuggestionResponse());
+    const getProviders = mock(async () => ({ providers: [providerSummary({ id: "nvidia" })] }));
+    const getModels = mock(async () => ({ models: [] }));
+
+    const { findByLabelText, findByText } = render(
+      <ModelsView client={mockClient({ getModels, getProviders, getModelMetadataSuggestions })} />
+    );
+
+    await userEvent.click(await findByText("添加模型"));
+    await userEvent.type(await findByLabelText("Model ID"), "openai/gpt-5.2");
+    await userEvent.click(await findByLabelText("查询参考参数"));
+
+    await waitFor(() => expect(getModelMetadataSuggestions).toHaveBeenCalledWith("nvidia", "openai/gpt-5.2"));
+    expect(await findByText("GPT-5.2")).toBeTruthy();
+  });
+
+  test("Provider 模型弹窗入口注入同一个 client 查询方法", async () => {
+    const getModelMetadataSuggestions = mock(async () => singleSuggestionResponse());
+    const getProviders = mock(async () => ({ providers: [providerSummary({ id: "nvidia" })] }));
+    const getModels = mock(async () => ({ models: [] }));
+
+    const { findByLabelText, findByText } = render(
+      <ProvidersView client={mockClient({ getModels, getProviders, getModelMetadataSuggestions })} />
+    );
+
+    await userEvent.click(await findByLabelText("管理模型 nvidia"));
+    await userEvent.click(await findByText("添加模型"));
+    await userEvent.type(await findByLabelText("Model ID"), "openai/gpt-5.2");
+    await userEvent.click(await findByLabelText("查询参考参数"));
+
+    await waitFor(() => expect(getModelMetadataSuggestions).toHaveBeenCalledWith("nvidia", "openai/gpt-5.2"));
   });
 });

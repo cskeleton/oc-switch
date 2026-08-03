@@ -31,6 +31,8 @@ export * from "./gateway-runtime-target";
 export * from "./openclaw-compat";
 export * from "./provider-model-limits";
 export * from "./provider-model-batch";
+export * from "./model-metadata-catalog";
+export * from "./model-metadata-resolver";
 export type {
   RunningOpenClawInstance,
   RunningOpenClawInstance as DiscoveredRunningOpenClawInstance,

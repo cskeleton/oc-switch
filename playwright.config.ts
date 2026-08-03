@@ -4,6 +4,8 @@ export default defineConfig({
   testDir: "packages/web/test/e2e",
   testMatch: "**/*.e2e.ts",
   fullyParallel: false,
+  // desktop/mobile 两个 project 共用同一个带状态 fixture server，必须串行避免写冲突
+  workers: 1,
   retries: 0,
   use: {
     baseURL: "http://127.0.0.1:5173",

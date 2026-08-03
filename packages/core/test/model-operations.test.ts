@@ -183,6 +183,89 @@ describe("provider model editing", () => {
   });
 });
 
+describe("contextTokens 运行预算字段", () => {
+  test("create 写入 contextWindow/contextTokens/maxTokens", () => {
+    const config = cloneSample();
+    const result = addProviderModel(config, "nvidia", {
+      id: "vendor/budget-model",
+      enabled: false,
+      contextWindow: 200000,
+      contextTokens: 128000,
+      maxTokens: 16384
+    });
+    expect(result.config.models?.providers?.nvidia?.models?.find((m) => m.id === "vendor/budget-model")).toMatchObject({
+      contextWindow: 200000,
+      contextTokens: 128000,
+      maxTokens: 16384
+    });
+  });
+
+  test("edit 能修改或清空 contextTokens，未知字段不丢失", () => {
+    const config = cloneSample();
+    Object.assign(config.models!.providers!.nvidia!.models![0]!, {
+      contextTokens: 100000,
+      futureFlag: { nested: true }
+    });
+
+    const modified = updateProviderModel(config, "nvidia/deepseek-ai/deepseek-v4-flash", {
+      id: "deepseek-ai/deepseek-v4-flash",
+      enabled: true,
+      contextTokens: 90000
+    });
+    expect(modified.config.models?.providers?.nvidia?.models?.[0]?.contextTokens).toBe(90000);
+    expect(modified.config.models?.providers?.nvidia?.models?.[0]?.futureFlag).toEqual({ nested: true });
+
+    // 省略 contextTokens 视为清空（与 contextWindow/maxTokens 一致的“显式可编辑 key”语义）
+    const cleared = updateProviderModel(modified.config, "nvidia/deepseek-ai/deepseek-v4-flash", {
+      id: "deepseek-ai/deepseek-v4-flash",
+      enabled: true
+    });
+    expect(cleared.config.models?.providers?.nvidia?.models?.[0]?.contextTokens).toBeUndefined();
+    expect(cleared.config.models?.providers?.nvidia?.models?.[0]?.futureFlag).toEqual({ nested: true });
+  });
+
+  test("contextTokens 为 0、负数、非整数时报错", () => {
+    expect(() => addProviderModel(cloneSample(), "nvidia", {
+      id: "bad-0",
+      enabled: false,
+      contextTokens: 0
+    })).toThrow("contextTokens must be a positive integer");
+
+    expect(() => addProviderModel(cloneSample(), "nvidia", {
+      id: "bad-neg",
+      enabled: false,
+      contextTokens: -5
+    })).toThrow("contextTokens must be a positive integer");
+
+    expect(() => addProviderModel(cloneSample(), "nvidia", {
+      id: "bad-float",
+      enabled: false,
+      contextTokens: 1.5
+    })).toThrow("contextTokens must be a positive integer");
+  });
+
+  test("同时填写时 contextTokens > contextWindow 报错", () => {
+    expect(() => addProviderModel(cloneSample(), "nvidia", {
+      id: "over-budget",
+      enabled: false,
+      contextWindow: 100000,
+      contextTokens: 200000
+    })).toThrow(/contextTokens.*contextWindow|contextWindow.*contextTokens/);
+  });
+
+  test("contextWindow 未填写时允许单独设置 contextTokens", () => {
+    const config = cloneSample();
+    const result = addProviderModel(config, "nvidia", {
+      id: "budget-only",
+      enabled: false,
+      contextTokens: 64000
+    });
+    const model = result.config.models?.providers?.nvidia?.models?.find((m) => m.id === "budget-only");
+    expect(model?.contextTokens).toBe(64000);
+    expect(model?.contextWindow).toBeUndefined();
+  });
+});
+
 describe("removeProviderModel", () => {
   test("removes provider model and allowlist entry", () => {
     const config = cloneSample();

@@ -20,6 +20,7 @@ export interface OpenClawModel {
   api?: ApiType;
   reasoning?: boolean;
   contextWindow?: number;
+  contextTokens?: number;
   maxTokens?: number;
   input?: string[];
   cost?: Record<string, unknown>;
@@ -79,6 +80,7 @@ export interface ModelSummary {
   api?: ApiType;
   reasoning?: boolean;
   contextWindow?: number;
+  contextTokens?: number;
   maxTokens?: number;
   input?: string[];
 }
@@ -117,6 +119,7 @@ export interface ProviderModelInput {
   api?: ApiType;
   reasoning?: boolean;
   contextWindow?: number;
+  contextTokens?: number;
   maxTokens?: number;
   input?: string[];
 }

@@ -22,6 +22,23 @@
 
 ---
 
+## 模型参数建议与运行上下文（Models.dev）
+
+> 映射 `docs/superpowers/specs/2026-06-25-oc-switch-model-editing-design.md` §4.4 与 §10。
+
+| # | 验收项 | 验证方式 | 命令 / 测试 |
+|---|--------|----------|-------------|
+| S1 | 在线建议：固定两个 Models.dev URL 下载、归一化并按 5 级规则本地匹配 | 单元 | `packages/core/test/model-metadata-catalog.test.ts`；`packages/core/test/model-metadata-resolver.test.ts` |
+| S2 | 缓存建议：24h fresh TTL、ETag/304、30 天内 stale 回退并标注「缓存数据」 | 单元 | `packages/core/test/model-metadata-catalog.test.ts` |
+| S3 | 无匹配：返回空建议与提示，不猜测（latest/日期后缀/模糊相似度不命中） | 单元 | `packages/core/test/model-metadata-resolver.test.ts` |
+| S4 | 离线回退：目录失败时空建议 + warning，不阻止保存；前端 error 状态可手工填写 | Server + UI + e2e | `packages/server/test/app.test.ts`（目录错误）；`packages/web/src/views.test.tsx`（not-found/error/stale）；`bun run test:e2e`（500 手工保存） |
+| S5 | 手动覆盖：三字段可选、可留空；快捷按钮写入完整整数；建议仅在显式点击后应用 | UI + e2e | `packages/web/src/views.test.tsx`（快捷按钮/应用/全部应用）；`bun run test:e2e` |
+| S6 | 三字段 round-trip：`contextWindow` / `contextTokens` / `maxTokens` 写入、读取、清空；`contextTokens > contextWindow` 双层拦截 | 单元 + REST + UI | `packages/core/test/model-operations.test.ts`；`packages/server/test/app.test.ts`；`packages/web/src/views.test.tsx` |
+| S7 | 无 secret 外发：请求 URL/body/header 不含 API Key、baseUrl、Provider ID、Model ID | 单元 + REST | `packages/core/test/model-metadata-catalog.test.ts`（allowlist URL）；`packages/server/test/app.test.ts`（fetch mock 断言） |
+| S8 | 查询不改配置：建议查询前后 `openclaw.json`/`.env` 完全相同、不创建 backup；缓存只落 `stateDir` | REST + e2e | `packages/server/test/app.test.ts`；`bun run test:e2e`（fixture server） |
+
+---
+
 ## §10.1 Fixture 验收用例
 
 | Fixture | 说明 | 验证方式 | 命令 / 测试 |

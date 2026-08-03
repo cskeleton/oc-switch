@@ -4,8 +4,16 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBackup } from "../packages/core/src/backup-manager";
-import sample from "../packages/core/test/fixtures/openclaw.sample.json";
+import {
+  MODELS_DEV_API_URL,
+  MODELS_DEV_MODELS_URL,
+  type FetchImpl,
+  type RuntimeDiscoveryResult
+} from "../packages/core/src";
 import { createApp } from "../packages/server/src/app";
+import apiFixture from "../packages/core/test/fixtures/model-metadata/api.json";
+import modelsFixture from "../packages/core/test/fixtures/model-metadata/models.json";
+import sample from "../packages/core/test/fixtures/openclaw.sample.json";
 
 const TOKEN = "e2e-test-token";
 const PORT = 7420;
@@ -20,13 +28,35 @@ const customDir = join(stateDir, "presets", "custom");
 mkdirSync(customDir, { recursive: true });
 createBackup({ openclawPath, envPath, stateDir, reason: "e2e seed", beforeHash: "seed" });
 
+/** E2E 禁止访问真实 Models.dev 或任何外部网络：固定 URL 返回本地 fixture，其余直接失败 */
+const offlineFetch: FetchImpl = async (input) => {
+  const url = String(input);
+  if (url === MODELS_DEV_MODELS_URL) {
+    return new Response(JSON.stringify(modelsFixture), { status: 200, headers: { etag: "e2e-models" } });
+  }
+  if (url === MODELS_DEV_API_URL) {
+    return new Response(JSON.stringify(apiFixture), { status: 200, headers: { etag: "e2e-api" } });
+  }
+  throw new Error(`E2E must not access external network: ${url}`);
+};
+
+/** E2E 不做真实运行实例探测：固定返回“未检测到 Gateway”，保证写入快速且确定 */
+const e2eDiscovery: RuntimeDiscoveryResult = {
+  status: "gateway-not-detected",
+  instances: [],
+  candidateGroups: [],
+  diagnostics: []
+};
+
 const app = createApp({
   token: TOKEN,
   paths: { openclawPath, envPath, stateDir },
   presetDirs: {
     builtinDir: fixtureBuiltinDir,
     customDir
-  }
+  },
+  fetchImpl: offlineFetch,
+  runtimeDiscoveryProvider: () => e2eDiscovery
 });
 
 Bun.serve({

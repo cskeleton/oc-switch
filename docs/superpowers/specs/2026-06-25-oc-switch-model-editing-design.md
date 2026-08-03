@@ -91,11 +91,30 @@ Providers 页和 Models 页共用同一个模型表单组件，避免两边字�
 | Enabled | `agents.defaults.models[ref]` | 开启时写入 allowlist，关闭时删除 allowlist entry |
 | API | `provider.models[].api` | 可选；支持 `openai-completions`、`anthropic-messages`、`google-generative-ai` |
 | Reasoning | `provider.models[].reasoning` | 可选布尔字段；未设置时不写入 |
-| Context Window | `provider.models[].contextWindow` | 可选正整数 |
-| Max Tokens | `provider.models[].maxTokens` | 可选正整数 |
+| 原生上下文窗口（可选） | `provider.models[].contextWindow` | 模型/路由原生能力，可选正整数 |
+| 运行上下文预算（可选） | `provider.models[].contextTokens` | OpenClaw 实际使用上限，可选正整数，不得大于已填写的 `contextWindow` |
+| 最大输出长度（可选） | `provider.models[].maxTokens` | 单次输出上限，可选正整数 |
 | Input | `provider.models[].input` | 可选字符串数组；UI 用逗号或多行文本输入 |
 
 `cost` 与其他未知字段首版不提供结构化编辑，但编辑已有模型时必须原样保留。
+
+### 4.4 数值字段语义
+
+三个数值字段语义不同，必须明确区分，不得混用术语：
+
+| 字段 | 写入目标 | 语义 |
+|---|---|---|
+| 原生上下文窗口 | `provider.models[].contextWindow` | 模型/路由原生能力，可选正整数 |
+| 运行上下文预算 | `provider.models[].contextTokens` | OpenClaw 实际使用上限，可选正整数，不得大于已填写的 `contextWindow` |
+| 最大输出长度 | `provider.models[].maxTokens` | 单次输出上限，可选正整数 |
+
+规则：
+
+- 三个字段均为可选正整数；不确定时允许留空。
+- 同时填写时 `contextTokens` 不得大于 `contextWindow`；Core/Server 校验拒绝，Web 前端在提交前也须阻止。
+- `contextWindow` 未填写时允许单独设置 `contextTokens`。
+- `contextTokens` 是用户运行偏好，不从外部目录（Models.dev）自动推导，也不从 `contextWindow` 自动复制。
+- 三个字段都使用精确整数输入；UI 快捷值（如 `1M`）只是输入便利，点击后输入框必须显示完整整数（如 `1048576`），不使用滑杆表示模型事实。
 
 ## 5. 数据规则
 
@@ -164,10 +183,13 @@ export interface ProviderModelInput {
   api?: ApiType;
   reasoning?: boolean;
   contextWindow?: number;
+  contextTokens?: number;
   maxTokens?: number;
   input?: string[];
 }
 ```
+
+`contextTokens` 与 `contextWindow`、`maxTokens` 同为可选正整数，校验规则见 §4.4。
 
 Core 层新增或扩展操作：
 
@@ -301,12 +323,95 @@ Providers 页新增：
 | 新模型 ID 为空 | 拒绝写入并提示 |
 | 新模型 ID 与同 Provider 其他模型重复 | 拒绝写入并提示 |
 | 数字字段不是正整数 | 拒绝写入并提示 |
+| `contextTokens` 大于已填写的 `contextWindow` | 拒绝写入并说明二者语义 |
 | API 类型不支持 | 拒绝写入并提示 |
 | 删除 primary 模型但没有新 primary 或 force | 拒绝写入并提示选择新主模型 |
 
-## 10. 测试计划
+## 10. 模型参数建议（Models.dev）
 
-### 10.1 Core
+在添加/编辑模型的弹窗中，提供有来源、可选择应用的上下文窗口与最大输出建议值，并补齐 `contextTokens` 运行预算字段。外部目录不可用时仍可安全手动配置。
+
+### 10.1 架构边界
+
+- `packages/core` 负责 Models.dev 下载、校验、版本化缓存与本地匹配。
+- Server 仅暴露只读建议查询；不把 Provider/密钥数据发给第三方。
+- Web 在 `ModelDialog` 中把模型事实（`contextWindow` / `maxTokens`）与运行偏好（`contextTokens`）分开显示；任何建议值都必须由用户显式应用后，才随正常模型保存事务写入 `openclaw.json`。
+
+### 10.2 锁定产品决策
+
+1. **不使用滑杆表示模型事实。** `contextWindow` / `maxTokens` 保留精确整数输入；常用值仅作为快捷按钮。
+2. **模型事实与运行预算分开。** `contextTokens` 不从 Models.dev 的 `limit.input` 自动推导，也不从 `contextWindow` 自动复制。
+3. **建议值不是默认值。** 查询成功只展示建议卡；必须点击「应用上下文」「应用最大输出」或「全部应用」才修改表单。
+4. **不覆盖用户输入。** 非空字段与建议值不同必须显示当前值和建议值；只有用户主动应用才替换。
+5. **查不到或离线时允许留空。** 三个数字字段仍是可选字段；外部目录失败不得阻止保存模型。
+6. **不向目录服务发送本机配置。** 只下载固定、公开的 Models.dev JSON；Provider ID、Model ID、baseUrl、API Key 均只在本地匹配。
+7. **不把目录快照写入 OpenClaw 配置。** `openclaw.json` 只保存用户最终接受的字段；目录缓存放在 `~/.oc-switch/`（`OcSwitchPaths.stateDir`）。
+8. **第一版不引入 LiteLLM 双源合并。**
+9. **第一版不改远端 discover 契约。** Provider discover 仍以 `id/name` 为主。
+10. **保持旧配置兼容。** `contextTokens` 是可选字段；只有用户明确填写或修改时才写入，已有模型不会因为打开弹窗或查询建议而新增该字段。
+
+### 10.3 来源优先级与匹配规则
+
+第一版下载两份固定源并在本地归一化：
+
+1. `models.json`（`https://models.dev/models.json`）：provider-agnostic 模型事实，作为主要来源。
+2. `api.json`（`https://models.dev/api.json`）：当选中 Provider 可以**明确**映射到 Models.dev Provider 时，提供 provider-specific 覆盖。
+
+匹配顺序：
+
+1. `provider-exact`：oc-switch Provider ID（大小写折叠后）等于 Models.dev Provider ID，且 raw Model ID 精确命中该 Provider 的模型表。
+2. `endpoint-exact`：Models.dev Provider 声明了 `api`，其标准化 origin/path 与当前 baseUrl 精确匹配，且 raw Model ID 精确命中。
+3. `model-key-exact`：用户输入本身是完整模型 key（如 `openai/gpt-5.2`），精确命中 `models.json`。
+4. `provider-model-exact`：`${normalizedProviderId}/${rawModelId}` 精确命中 `models.json`。
+5. `unique-model-id`：raw Model ID 在模型事实表中只有一个候选；仅返回低置信候选，不自动应用。
+
+禁止：模糊字符串相似度、自动删日期后缀、自动把 `latest` 映射到某个版本、按名称猜厂商、从任意 baseUrl 域名关键词猜 Provider。
+
+Provider-specific 与 model-only 数值冲突时：
+
+- Provider-specific 值排在前面并标注路由来源。
+- 不静默合并不同候选；响应保留候选及其来源，由用户选择。
+- `limit.context` → `contextWindow`；`limit.output` → `maxTokens`；`limit.input` 仅作为参考信息返回，不映射到 `contextTokens`。
+
+### 10.4 缓存与失败契约
+
+- Cache path：`<stateDir>/model-metadata-cache.json`。
+- Cache schema version：`1`；未知版本视为不可用并重新获取。
+- Fresh TTL：24 小时；Stale fallback：最后成功快照最多使用 30 天，并标注「缓存数据」。
+- 使用 ETag：刷新请求带 `If-None-Match`；`304` 仅更新 `checkedAt`。
+- 单次请求超时 5 秒（测试可注入更短值）；响应大小上限 `models.json` 2 MiB、`api.json` 8 MiB；超限或 schema 异常拒绝替换 last-known-good。
+- 两个源分别记录 `fetchedAt`、`checkedAt`、ETag 与 stale 状态；任一源失败不得把另一失败源误标为 fresh。
+- 缓存写入使用现有原子 JSON state store；损坏缓存不可影响模型手工编辑。
+- 不在应用启动时联网；仅在用户查询建议或显式刷新时加载。
+- CI 单元测试只使用 fixture/mock fetch，不依赖公网。
+
+### 10.5 用户可见契约
+
+- `Context Window` 改名为「原生上下文窗口（可选）」；新增「运行上下文预算（可选）」写入 `contextTokens`；`Max Tokens` 改名为「最大输出长度（可选）」。
+- 三个字段下方显示简短说明；不确定时明确提示「可以留空」。
+- Model ID 与 Provider 已确定后，显示「查询参考参数」次要按钮。
+- 查询状态覆盖：idle、loading、matched、multiple、not-found、stale、error。
+- 建议卡至少显示：模型名称、原生上下文、最大输出、匹配方式、来源、数据更新时间/缓存检查时间。
+- 多候选时最多显示 5 项，用户先选候选再应用；不得自动采用低置信候选。
+- 快捷值：原生上下文 `32K/64K/128K/200K/256K/1M`；运行预算 `32K/64K/128K/200K/256K`；最大输出 `4K/8K/16K/32K/64K/128K`。点击快捷值后输入框显示完整整数。
+- `contextTokens > contextWindow` 时阻止保存并说明二者语义；其余可疑组合只告警，不擅自修正。
+
+### 10.6 Server 只读端点
+
+```text
+GET /api/model-metadata/suggestions?providerId=<id>&modelId=<raw-id>&refresh=0|1
+```
+
+- provider/model 必填；Provider 不存在返回 4xx 且不访问 Models.dev。
+- 成功响应只包含归一化建议、逐源时间/stale 状态与 warnings。
+- `refresh=1` 绕过 fresh TTL，但仍使用 ETag。
+- 目录错误时返回 `suggestions: []` + warning 或明确可恢复错误，不阻止其他模型 API。
+- 查询前后 `openclaw.json`、`.env` 内容完全相同，且不创建 backup。
+- 外发请求 URL/body/header 中不包含 API Key、baseUrl、Provider ID、Model ID。
+
+## 11. 测试计划
+
+### 11.1 Core
 
 覆盖：
 
@@ -318,8 +423,13 @@ Providers 页新增：
 - 禁用时只删除 allowlist，不删除 provider model
 - 删除 primary 模型要求新 primary 或 force
 - 重复模型 ID 被拒绝
+- create/edit 写入、修改与清空 `contextTokens`；未知字段不丢失
+- `contextTokens` 为 0、负数、非整数时报错；大于 `contextWindow` 时报错
+- config adapter summary 透传 `contextTokens`
+- Models.dev 目录下载/ETag/TTL/stale/大小限制/失败降级
+- 建议 resolver 确定性匹配与禁止猜测
 
-### 10.2 Server
+### 11.2 Server
 
 覆盖：
 
@@ -329,8 +439,10 @@ Providers 页新增：
 - 写入响应不泄漏密钥
 - 含斜杠 model ID 通过 JSON body 正确处理
 - 参数校验错误返回 400
+- `contextTokens` round-trip；`contextTokens > contextWindow` 被拒绝
+- `GET /api/model-metadata/suggestions` 建议查询、缓存与配置不变性、无 secret 外发
 
-### 10.3 Web
+### 11.3 Web
 
 覆盖：
 
@@ -340,8 +452,12 @@ Providers 页新增：
 - Models 页行内编辑模型
 - 编辑 ID 后列表显示新 ref
 - primary 模型删除时要求选择新 primary
+- 三字段可选标注与帮助文本；快捷按钮填入完整整数
+- 查询建议状态（loading/matched/multiple/not-found/stale/error）与不自动覆盖输入
+- 分别应用上下文/最大输出；「全部应用」不修改 `contextTokens`
+- `contextTokens > contextWindow` 前端阻止提交
 
-### 10.4 验证命令
+### 11.4 验证命令
 
 实现完成后至少运行：
 
@@ -356,14 +472,17 @@ bun run typecheck
 bun run test:e2e
 ```
 
-## 11. Sync Audit 检查点
+## 12. Sync Audit 检查点
 
 实现完成后对照本规格检查：
 
 - Providers 页与 Models 页是否都有入口
 - 两个入口是否共用同一套模型表单与 API
-- 高级字段是否覆盖 `api`、`reasoning`、`contextWindow`、`maxTokens`、`input`
+- 高级字段是否覆盖 `api`、`reasoning`、`contextWindow`、`contextTokens`、`maxTokens`、`input`
+- `contextWindow` / `contextTokens` / `maxTokens` 术语是否未混用；「自动填充」文案是否均改为「建议/显式应用」
 - 修改模型 ID 是否迁移 allowlist 与 primary
 - 未知字段是否保留
 - 写入是否仍经过备份与 diff guard
+- 建议值是否只修改表单状态、最终保存仍走现有 transaction writer
+- 建议查询是否不发送本地标识/secret、不修改配置、不创建备份
 - 是否没有引入计划外功能

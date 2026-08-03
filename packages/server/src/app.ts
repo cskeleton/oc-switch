@@ -4,6 +4,7 @@ import { registerBackupRoutes } from "./routes/backups";
 import { registerEnvRoutes } from "./routes/env";
 import { registerGatewayRoutes } from "./routes/gateway";
 import { registerHealthRoutes } from "./routes/health";
+import { registerModelMetadataRoutes } from "./routes/model-metadata";
 import { registerModelRoutes } from "./routes/models";
 import { registerPresetRoutes } from "./routes/presets";
 import { registerProviderRoutes } from "./routes/providers";
@@ -39,6 +40,7 @@ export function createApp(options: AppOptions) {
   registerHealthRoutes(app, runtime);
   registerProviderRoutes(app, runtime);
   registerModelRoutes(app, runtime);
+  registerModelMetadataRoutes(app, runtime);
   registerPresetRoutes(app, runtime);
   registerBackupRoutes(app, runtime);
   registerSettingsRoutes(app, runtime);

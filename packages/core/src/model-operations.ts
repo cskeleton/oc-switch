@@ -61,7 +61,12 @@ function assertProviderModelInput(input: ProviderModelInput): void {
   if (!input.id.trim()) throw new Error("model id must be a non-empty string");
   if (input.api !== undefined && !MODEL_API_TYPES.has(input.api)) throw new Error("api must be a supported API type");
   assertPositiveInteger(input.contextWindow, "contextWindow");
+  assertPositiveInteger(input.contextTokens, "contextTokens");
   assertPositiveInteger(input.maxTokens, "maxTokens");
+  // contextTokens 是运行预算，contextWindow 是模型原生能力；两者同时填写时预算不得超过能力
+  if (input.contextTokens !== undefined && input.contextWindow !== undefined && input.contextTokens > input.contextWindow) {
+    throw new Error("contextTokens must not be greater than contextWindow");
+  }
 }
 
 function applyProviderModelInput(existing: OpenClawModel | undefined, input: ProviderModelInput): OpenClawModel {
@@ -78,7 +83,7 @@ function applyProviderModelInput(existing: OpenClawModel | undefined, input: Pro
     next.name = defaultModelName(input.id);
   }
 
-  for (const key of ["api", "reasoning", "contextWindow", "maxTokens", "input"] as const) {
+  for (const key of ["api", "reasoning", "contextWindow", "contextTokens", "maxTokens", "input"] as const) {
     const value = input[key];
     if (value === undefined || (Array.isArray(value) && value.length === 0)) {
       delete next[key];

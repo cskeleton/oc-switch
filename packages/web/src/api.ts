@@ -72,6 +72,7 @@ export interface ModelSummary {
   api?: ApiType;
   reasoning?: boolean;
   contextWindow?: number;
+  contextTokens?: number;
   maxTokens?: number;
   input?: string[];
 }
@@ -358,6 +359,7 @@ export interface ProviderModelInput {
   api?: ApiType;
   reasoning?: boolean;
   contextWindow?: number;
+  contextTokens?: number;
   maxTokens?: number;
   input?: string[];
 }
@@ -373,6 +375,55 @@ export interface CustomProviderInput {
   apiKeyEnv: string;
   models: CustomProviderModelInput[];
   enableAllModels: boolean;
+}
+
+/** 建议匹配方式（与 core resolver 对齐） */
+export type ModelMetadataMatchKind =
+  | "provider-exact"
+  | "endpoint-exact"
+  | "model-key-exact"
+  | "provider-model-exact"
+  | "unique-model-id";
+
+export type ModelMetadataConfidence = "high" | "medium" | "low";
+
+export type ModelMetadataSourceKind = "models-dev-model" | "models-dev-provider";
+
+/** 归一化模型元数据条目（与 server 响应对齐，不含密钥） */
+export interface ModelMetadataSuggestionModel {
+  catalogKey: string;
+  providerId?: string;
+  modelId: string;
+  name?: string;
+  contextWindow?: number;
+  inputLimit?: number;
+  maxTokens?: number;
+  reasoning?: boolean;
+  input?: string[];
+  updatedAt?: string;
+  sourceKind: ModelMetadataSourceKind;
+  sourceUrl: string;
+}
+
+export interface ModelMetadataSuggestion {
+  matchKind: ModelMetadataMatchKind;
+  confidence: ModelMetadataConfidence;
+  model: ModelMetadataSuggestionModel;
+}
+
+/** 逐源时间/stale 状态 */
+export interface ModelMetadataSourceStatus {
+  kind: ModelMetadataSourceKind;
+  fetchedAt: string;
+  checkedAt: string;
+  stale: boolean;
+}
+
+/** GET /api/model-metadata/suggestions 响应 */
+export interface ModelMetadataSuggestionsResponse {
+  suggestions: ModelMetadataSuggestion[];
+  sources: ModelMetadataSourceStatus[];
+  warnings: string[];
 }
 
 export type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -435,6 +486,18 @@ export function createApiClient(options: ApiClientOptions) {
         method: "DELETE",
         body: JSON.stringify({ ref, ...body })
       }),
+    /** 查询 Models.dev 参考参数建议（只读；Provider/Model 仅在本地匹配） */
+    getModelMetadataSuggestions: (
+      providerId: string,
+      modelId: string,
+      options: { refresh?: boolean } = {}
+    ) => {
+      const params = new URLSearchParams();
+      params.set("providerId", providerId);
+      params.set("modelId", modelId);
+      if (options.refresh) params.set("refresh", "1");
+      return request<ModelMetadataSuggestionsResponse>(`/api/model-metadata/suggestions?${params.toString()}`);
+    },
     getPresets: () => request<{ presets: PresetEntry[] }>("/api/presets"),
     importPresets: () => request<{ ok: boolean; imported: string[] }>("/api/presets/import", { method: "POST" }),
     exportPreset: (providerId: string) =>

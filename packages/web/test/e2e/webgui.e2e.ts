@@ -451,3 +451,81 @@ test.describe("Runtime discovery (mocked API)", () => {
     await expect(page.locator("body")).not.toContainText(FIXTURE_SECRET);
   });
 });
+
+test.describe("Model metadata suggestions (offline fixtures)", () => {
+  test("query → apply → save round-trip; catalog failure still allows manual save", async ({ page }) => {
+    await connect(page);
+    await page.getByRole("button", { name: "模型" }).click();
+    await page.getByRole("button", { name: "nvidia" }).click();
+
+    // 1+2. 打开“添加模型”，输入含斜杠的 raw Model ID
+    await page.getByRole("button", { name: "添加模型" }).click();
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await page.getByLabel("Model ID").fill("openai/gpt-5.2");
+
+    // 3. 查询建议；成功后输入框保持为空（不自动填充）
+    await page.getByLabel("查询参考参数").click();
+    await expect(page.getByTestId("model-metadata-suggestion-card")).toBeVisible();
+    await expect(page.getByLabel("原生上下文窗口")).toHaveValue("");
+    await expect(page.getByLabel("运行上下文预算")).toHaveValue("");
+    await expect(page.getByLabel("最大输出长度")).toHaveValue("");
+
+    // 布局：建议卡不超出视口；保存主操作滚动后始终可达
+    const cardBox = await page.getByTestId("model-metadata-suggestion-card").boundingBox();
+    const viewport = page.viewportSize();
+    expect(cardBox).not.toBeNull();
+    if (cardBox && viewport) {
+      expect(cardBox.x + cardBox.width).toBeLessThanOrEqual(viewport.width + 1);
+    }
+    const saveButton = page.getByRole("button", { name: "保存模型" });
+    await saveButton.scrollIntoViewIfNeeded();
+    await expect(saveButton).toBeVisible();
+
+    // 4. 应用建议 → 完整整数
+    await page.getByLabel("应用建议的原生上下文 400000").click();
+    await expect(page.getByLabel("原生上下文窗口")).toHaveValue("400000");
+    await page.getByLabel("应用建议的最大输出 128000").click();
+    await expect(page.getByLabel("最大输出长度")).toHaveValue("128000");
+
+    // 5. 运行预算快捷值（完整整数）并保存
+    await page.getByLabel("运行预算快捷值 32K").click();
+    await expect(page.getByLabel("运行上下文预算")).toHaveValue("32768");
+    await saveButton.click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+
+    // 6. 重新打开编辑，三字段 round-trip 正确
+    await page.getByLabel("编辑模型 nvidia/openai/gpt-5.2").click();
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await expect(page.getByLabel("原生上下文窗口")).toHaveValue("400000");
+    await expect(page.getByLabel("运行上下文预算")).toHaveValue("32768");
+    await expect(page.getByLabel("最大输出长度")).toHaveValue("128000");
+    await page.getByRole("button", { name: "取消" }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+
+    // 7. 模拟目录端点 500：查询失败给出提示，手工保存不受阻
+    await page.route("**/api/model-metadata/suggestions*", (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "catalog unavailable" })
+      })
+    );
+    await page.getByRole("button", { name: "添加模型" }).click();
+    await page.getByLabel("Model ID").fill("manual-model");
+    await page.getByLabel("查询参考参数").click();
+    await expect(page.getByRole("alert")).toContainText("查询参考参数失败");
+    await expect(page.getByTestId("model-metadata-suggestion-card")).toHaveCount(0);
+    await page.getByLabel("原生上下文窗口").fill("12345");
+    await page.getByRole("button", { name: "保存模型" }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.getByLabel("编辑模型 nvidia/manual-model")).toBeVisible();
+
+    // 清理：删除测试模型，避免 desktop/mobile 两个 project 复用同一 server 时状态串扰
+    for (const ref of ["nvidia/manual-model", "nvidia/openai/gpt-5.2"]) {
+      await page.getByLabel(`删除模型 ${ref}`).click();
+      await expect(page.getByText(`确认删除 ${ref}？此操作将创建备份。`)).toBeVisible();
+      await page.getByRole("button", { name: "确认" }).click();
+      await expect(page.getByLabel(`编辑模型 ${ref}`)).toHaveCount(0);
+    }
+  });
+});

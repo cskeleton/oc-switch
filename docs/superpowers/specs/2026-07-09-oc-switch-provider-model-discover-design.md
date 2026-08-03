@@ -40,10 +40,21 @@
 
 - 不把「目录超过 20」做成 `config-status` 强制 issue（存量只拦新增）
 - 不做 `google-generative-ai` list adapter
-- 不把远端全量模型持久化到 oc-switch 本地缓存文件
+- 不把远端全量模型持久化到 oc-switch 本地缓存文件（见 §3.1：Models.dev 公开目录快照是独立能力，不属于本条所指的 Provider 远端目录）
 - 不自动静默删除用户已同步进目录的模型
 - 不改变 Gateway 重启 / env sync 语义
 - 不做跨 Provider 的全局模型数上限
+
+### 3.1 与模型参数建议（Models.dev）的边界
+
+第一版「模型参数建议」是独立只读能力（见 model editing 规格 §10），不改变本规格的 discover 写入契约：
+
+- discover 默认不写盘；本规格所有 discover/batch-add/batch-remove 语义保持不变。
+- batch-add 仍只写用户明确选择的模型；建议查询不替用户勾选。
+- 每 Provider 20 条上限（`MAX_PROVIDER_MODELS`）不变，且建议查询不影响该上限。
+- disabled Provider 的 add/enable 禁止、cleanup（batch-remove / 只保留已启用）允许的规则不变；disabled Provider 下仍可查询参数建议（只读）。
+- 建议来源是固定的 Models.dev 公开 JSON 快照（缓存于 `<stateDir>/model-metadata-cache.json`），不是 Provider 远端 `/v1/models`；两者不得混用。
+- 不改远端 discover 契约：discover 仍以 `id/name` 为主；OpenRouter 等富响应透传留作后续增量。
 
 ## 4. 核心概念
 

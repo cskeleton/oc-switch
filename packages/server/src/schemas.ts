@@ -191,6 +191,7 @@ export function requireProviderModelInput(value: unknown): ProviderModelInput {
     ? undefined
     : requireBoolean(body.reasoning, "model.reasoning");
   const contextWindow = optionalNumber(body.contextWindow, "model.contextWindow");
+  const contextTokens = optionalNumber(body.contextTokens, "model.contextTokens");
   const maxTokens = optionalNumber(body.maxTokens, "model.maxTokens");
   const inputModes = optionalStringArray(body.input, "model.input");
   if (name !== undefined) input.name = name;
@@ -198,6 +199,7 @@ export function requireProviderModelInput(value: unknown): ProviderModelInput {
   if (api !== undefined) input.api = api;
   if (reasoning !== undefined) input.reasoning = reasoning;
   if (contextWindow !== undefined) input.contextWindow = contextWindow;
+  if (contextTokens !== undefined) input.contextTokens = contextTokens;
   if (maxTokens !== undefined) input.maxTokens = maxTokens;
   if (inputModes !== undefined) input.input = inputModes;
   return input;
@@ -267,6 +269,44 @@ export function requireMergeCaseDuplicateInput(body: Record<string, unknown>): M
   const keepModelIds = optionalStringArray(body.keepModelIds, "keepModelIds");
   if (keepModelIds !== undefined) input.keepModelIds = keepModelIds;
   return input;
+}
+
+/** query 参数中 Provider/Model ID 的长度上限，防止异常输入进入日志或缓存 */
+const MAX_QUERY_ID_LENGTH = 256;
+
+export interface ModelMetadataSuggestionsQuery {
+  providerId: string;
+  modelId: string;
+  refresh: boolean;
+}
+
+function requireQueryId(value: unknown, name: string): string {
+  const parsed = requireString(value, name).trim();
+  if (!parsed) throw new Error(`${name} must be a non-empty string`);
+  if (parsed.length > MAX_QUERY_ID_LENGTH) {
+    throw new Error(`${name} must be at most ${MAX_QUERY_ID_LENGTH} characters`);
+  }
+  return parsed;
+}
+
+/** 解析 `refresh=0|1`（兼容 true/false 字面量）；缺省为 false */
+function parseRefreshFlag(value: unknown): boolean {
+  if (value === undefined || value === null || value === "" || value === "0" || value === "false") {
+    return false;
+  }
+  if (value === "1" || value === "true") return true;
+  throw new Error("refresh must be 0 or 1");
+}
+
+/** 建议查询 query 参数统一解析：trim、布尔解析与长度限制 */
+export function requireModelMetadataSuggestionsQuery(
+  query: Record<string, unknown>
+): ModelMetadataSuggestionsQuery {
+  return {
+    providerId: requireQueryId(query.providerId, "providerId"),
+    modelId: requireQueryId(query.modelId, "modelId"),
+    refresh: parseRefreshFlag(query.refresh)
+  };
 }
 
 /** discover-preview 请求体校验（仅临时 discover，不写盘） */
