@@ -1,5 +1,6 @@
 import { providerEnvVar } from "./openclaw-compat";
 import { parseModelRef } from "./model-ref";
+import { readPrimaryModelRef } from "./primary-model";
 import type { OpenClawConfig } from "./types";
 
 const MANAGED_START = "# oc-switch:start";
@@ -198,8 +199,9 @@ export function summarizeConfigDiff(
   const modelsEnabled = [...afterRefs].filter((ref) => !beforeRefs.has(ref)).sort();
   const modelsDisabled = [...beforeRefs].filter((ref) => !afterRefs.has(ref)).sort();
 
-  const beforePrimary = before.agents?.defaults?.model;
-  const afterPrimary = after.agents?.defaults?.model;
+  // 按归一 primary ref 比较：跨形态 ref 不变不报；仅 fallbacks 变化不报主模型变更
+  const beforePrimary = readPrimaryModelRef(before);
+  const afterPrimary = readPrimaryModelRef(after);
   const primaryChanged = beforePrimary === afterPrimary
     ? null
     : { before: beforePrimary, after: afterPrimary };

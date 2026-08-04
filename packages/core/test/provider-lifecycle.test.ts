@@ -55,3 +55,34 @@ describe("provider disable and restore", () => {
     })).toThrow("Snapshot ref DeepSeek/deepseek-chat does not belong to provider nvidia");
   });
 });
+
+describe("provider disable 对象形态主模型与 fallback 保护", () => {
+  function objectPrimarySample() {
+    const config = cloneSample();
+    config.agents!.defaults!.model = {
+      primary: "minimax-portal/MiniMax-M3",
+      fallbacks: ["nvidia/deepseek-ai/deepseek-v4-flash"]
+    } as never;
+    return config;
+  }
+
+  test("disableProvider：对象形态主模型属于该 provider 时拒绝", () => {
+    const config = objectPrimarySample();
+    expect(() => disableProvider(config, "minimax-portal")).toThrow(
+      "Provider minimax-portal contains the primary model. Switch primary model before disabling this provider."
+    );
+  });
+
+  test("disableProvider：fallback 引用该 provider 时拒绝，配置不变", () => {
+    const config = objectPrimarySample();
+    const before = structuredClone(config);
+    expect(() => disableProvider(config, "nvidia")).toThrow(/agents\.defaults\.model\.fallbacks/);
+    expect(config).toEqual(before);
+  });
+
+  test("disableProvider：primary 带首尾空白时仍正确拦截", () => {
+    const config = objectPrimarySample();
+    (config.agents!.defaults!.model as Record<string, unknown>).primary = "  minimax-portal/MiniMax-M3  ";
+    expect(() => disableProvider(config, "minimax-portal")).toThrow(/contains the primary model/);
+  });
+});

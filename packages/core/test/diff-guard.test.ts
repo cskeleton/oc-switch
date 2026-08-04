@@ -83,4 +83,15 @@ describe("assertAllowedSemanticChange", () => {
 
     expect(() => assertAllowedSemanticChange(before, after)).not.toThrow();
   });
+
+  test("allows agents.defaults.model 深层路径变更（pin：primary/fallbacks 子键放行）", () => {
+    const before = cloneSample();
+    const after = cloneSample();
+    after.agents!.defaults!.model = {
+      primary: "nvidia/deepseek-ai/deepseek-v4-flash",
+      fallbacks: ["DeepSeek/deepseek-chat"]
+    };
+
+    expect(() => assertAllowedSemanticChange(before, after)).not.toThrow();
+  });
 });

@@ -4,6 +4,7 @@ export * from "./json-state-store";
 export * from "./provider-states";
 export * from "./model-ref";
 export * from "./config-adapter";
+export * from "./primary-model";
 export * from "./env-manager";
 export * from "./operations";
 export * from "./config-health";

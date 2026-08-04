@@ -1038,3 +1038,33 @@ describe("cli gateway commands", () => {
     ).rejects.toThrow(/missing|stale|no longer/i);
   });
 });
+
+describe("对象形态主模型 CLI", () => {
+  function writeObjectPrimaryConfig(): { dir: string; configPath: string } {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    const configPath = join(dir, "openclaw.json");
+    const config = JSON.parse(JSON.stringify(sample)) as Record<string, unknown>;
+    (config.agents as { defaults: Record<string, unknown> }).defaults.model = {
+      primary: "  minimax-portal/MiniMax-M3  ",
+      fallbacks: ["nvidia/deepseek-ai/deepseek-v4-flash"]
+    };
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    return { dir, configPath };
+  }
+
+  test("status 输出 trim 后的归一 ref，不再出现 [object Object]", async () => {
+    const { configPath } = writeObjectPrimaryConfig();
+    const result = await runCli(["status"], { OPENCLAW_CONFIG_PATH: configPath });
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Primary: minimax-portal/MiniMax-M3");
+    expect(result.stdout).not.toContain("[object Object]");
+  });
+
+  test("providers list 对对象形态主模型不再崩溃", async () => {
+    const { dir, configPath } = writeObjectPrimaryConfig();
+    const result = await runCli(["providers", "list"], { OPENCLAW_CONFIG_PATH: configPath, HOME: dir });
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("minimax-portal");
+    expect(result.stdout).not.toContain("[object Object]");
+  });
+});

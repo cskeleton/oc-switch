@@ -236,6 +236,7 @@ export function mergeProviderCaseDuplicates(
    - 若主模型前缀为 `removeId`，更新为 `canonicalId`
    - 删除 `models.providers[removeId]`
 2. 不修改 `.env` 文件；删除侧 env 引用由 manifest 标 orphan（复用现有 `deleteProvider` 逻辑）
+3. **fallback 保护（fail closed）**：`agents.defaults.model` 对象形态 `fallbacks` 中的合法 ref 一律经 core 归一层读取；merge **不自动迁移** `fallbacks`。若任一合法 fallback ref 的 provider 前缀命中 `removeIds`，或 `keepModelIds` 会丢弃 fallback 引用的模型，整个 merge 必须拒绝，提示用户先在 OpenClaw 配置中调整回退链。
 
 必须通过 `diff-guard` 语义范围校验。
 

@@ -1,10 +1,11 @@
 import { formatModelRef, parseModelRef } from "./model-ref";
+import { readPrimaryModelRef } from "./primary-model";
 import type { ModelSummary, OpenClawConfig, ProviderSummary, StatusSummary } from "./types";
 
 export function createConfigAdapter(config: OpenClawConfig) {
   const providers = config.models?.providers ?? {};
   const allowlist = config.agents?.defaults?.models ?? {};
-  const primaryModel = config.agents?.defaults?.model;
+  const primaryModel = readPrimaryModelRef(config);
 
   const providerModelByRef = new Map(
     Object.entries(providers).flatMap(([providerId, provider]) =>

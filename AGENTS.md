@@ -37,7 +37,14 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 - **ModelRef**：仅在第一个 `/` 处拆分 provider 与 model，**保留大小写**。
 - **Allowlist**（已启用模型）：`agents.defaults.models`，key 为完整 ModelRef。
 - **Provider 模型目录**：`models.providers`；`listModels` 合并两者。
-- **主模型**：`agents.defaults.model`。
+- **主模型**：`agents.defaults.model`，双形态（见下节）。
+
+### 主模型双形态（agents.defaults.model）
+
+- 合法形态：字符串 ModelRef，或对象 `{ primary?, fallbacks? }`（OpenClaw 运行时回退链）。
+- **core 禁止直接读写该字段**，必须经 `packages/core/src/primary-model.ts` 归一层（`readPrimaryModelRef` / `readFallbackModelRefs` / `writePrimaryModelRef` / `isPrimaryModelRef`）；读取 trim + 校验、永不抛错，写入形状守恒、绝不丢 `fallbacks` 与未知键。
+- `fallbacks` 不可编辑、不展示，但破坏性操作（删除/关闭 Provider、删除/rename/批量清理模型、case-duplicate merge）命中合法 fallback ref 时必须 fail closed（`force` 也不可绕过），不自动改写 `fallbacks`。
+- 详见 `docs/superpowers/specs/2026-06-25-oc-switch-model-editing-design.md` §13。
 
 ### 文件与密钥
 

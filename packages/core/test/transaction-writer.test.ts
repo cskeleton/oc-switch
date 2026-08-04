@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sample from "./fixtures/openclaw.sample.json";
+import { writePrimaryModelRef } from "../src/primary-model";
 import { writeEnvTransaction, writeOpenClawTransaction } from "../src/transaction-writer";
 import type { RuntimeDiscoveryResult, RuntimePathCandidateGroup } from "../src/runtime-discovery-types";
 import { expectedGatewayEnvPath, prepareGatewayEnvTarget, withTestHome, withTestHomeAsync } from "./gateway-sync-fixture";
@@ -590,5 +591,63 @@ describe("writeOpenClawTransaction discovery-backed gateway sync", () => {
       serviceEnvPath?: string;
     };
     expect(metadata.serviceEnvPath).toBe(serviceEnvPath);
+  });
+});
+
+describe("writeOpenClawTransaction 对象形态主模型", () => {
+  test("对象形态事务写入落盘保留 primary/fallbacks/未知键结构", async () => {
+    const ws = makeWorkspace();
+    // 预置对象形态主模型
+    const seeded = JSON.parse(readFileSync(ws.openclawPath, "utf8")) as Record<string, unknown>;
+    (seeded.agents as { defaults: Record<string, unknown> }).defaults.model = {
+      primary: "minimax-portal/MiniMax-M3",
+      fallbacks: ["nvidia/deepseek-ai/deepseek-v4-flash"],
+      customFlag: true
+    };
+    writeFileSync(ws.openclawPath, `${JSON.stringify(seeded, null, 2)}\n`);
+
+    await writeOpenClawTransaction({
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath,
+      stateDir: ws.stateDir,
+      reason: "switch primary",
+      mutate(config) {
+        writePrimaryModelRef(config, "nvidia/deepseek-ai/deepseek-v4-flash");
+        return config;
+      }
+    });
+
+    const persisted = JSON.parse(readFileSync(ws.openclawPath, "utf8")) as {
+      agents: { defaults: { model: Record<string, unknown> } };
+    };
+    expect(persisted.agents.defaults.model).toEqual({
+      primary: "nvidia/deepseek-ai/deepseek-v4-flash",
+      fallbacks: ["nvidia/deepseek-ai/deepseek-v4-flash"],
+      customFlag: true
+    });
+  });
+
+  test("非 primary 写入不顺手修复畸形 agents.defaults.model", async () => {
+    const ws = makeWorkspace();
+    const seeded = JSON.parse(readFileSync(ws.openclawPath, "utf8")) as Record<string, unknown>;
+    (seeded.agents as { defaults: Record<string, unknown> }).defaults.model = { primary: 42 };
+    writeFileSync(ws.openclawPath, `${JSON.stringify(seeded, null, 2)}\n`);
+
+    await writeOpenClawTransaction({
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath,
+      stateDir: ws.stateDir,
+      reason: "allowlist alias",
+      mutate(config) {
+        config.agents!.defaults!.models!["minimax-portal/MiniMax-M3"] = { alias: "mm3-new" };
+        return config;
+      }
+    });
+
+    const persisted = JSON.parse(readFileSync(ws.openclawPath, "utf8")) as {
+      agents: { defaults: { model: unknown } };
+    };
+    // 畸形值原样穿透：oc-switch 不做后台自动修复
+    expect(persisted.agents.defaults.model).toEqual({ primary: 42 });
   });
 });

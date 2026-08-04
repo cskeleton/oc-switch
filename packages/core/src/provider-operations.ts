@@ -2,6 +2,7 @@ import { formatModelRef, parseModelRef } from "./model-ref";
 import { setPrimaryModel } from "./model-operations";
 import { formatEnvRefForOpenClaw, ensureModelName } from "./openclaw-compat";
 import { ensureDefaults, type OperationResult } from "./operation-common";
+import { readFallbackModelRefs, readPrimaryModelRef } from "./primary-model";
 import { assertProviderModelCapacity } from "./provider-model-limits";
 import type { ApiType, CustomProviderInput, OpenClawConfig, OpenClawModel, ProviderPreset } from "./types";
 
@@ -18,12 +19,21 @@ function removeLegacyAuthHeaderRef<T extends { authHeader?: unknown }>(provider:
   return provider;
 }
 
+function assertProviderFallbackRemovalAllowed(config: OpenClawConfig, providerId: string): void {
+  const fallbackRefs = readFallbackModelRefs(config);
+  if (fallbackRefs.some((ref) => parseModelRef(ref).providerId === providerId)) {
+    throw new Error(
+      `Provider ${providerId} is referenced by agents.defaults.model.fallbacks. Remove or migrate fallbacks in the OpenClaw config first.`
+    );
+  }
+}
+
 function assertProviderPrimaryRemovalAllowed(
   config: OpenClawConfig,
   providerId: string,
   options: { force: boolean; newPrimary?: string }
 ): void {
-  const primary = config.agents!.defaults!.model;
+  const primary = readPrimaryModelRef(config);
   if (!primary || parseModelRef(primary).providerId !== providerId) return;
   if (options.newPrimary) {
     setPrimaryModel(config, options.newPrimary);
@@ -44,7 +54,9 @@ export function removeProvider(
   options: { force: boolean; newPrimary?: string }
 ): OperationResult {
   ensureDefaults(config);
-  const primary = config.agents!.defaults!.model;
+  const primary = readPrimaryModelRef(config);
+  // fallback 依赖保护必须发生在任何 mutation 之前（force 也不可绕过）
+  assertProviderFallbackRemovalAllowed(config, providerId);
   assertProviderPrimaryRemovalAllowed(config, providerId, options);
 
   delete config.models!.providers![providerId];

@@ -128,7 +128,9 @@ oc-switch 现在已经支持：
 
 ## 5. 主模型规则
 
-如果当前主模型 `agents.defaults.model` 的 provider 前缀等于目标 Provider ID，关闭操作必须失败。
+`agents.defaults.model` 可能是字符串或对象形态（见 `2026-06-25-oc-switch-model-editing-design.md` §13），主模型与 fallback 引用一律经 core 归一层读取。
+
+如果当前主模型的 provider 前缀等于目标 Provider ID，关闭操作必须失败。
 
 错误提示：
 
@@ -143,6 +145,10 @@ Web 文案使用中文：
 ```
 
 理由：关闭 Provider 后该 Provider 的模型会从菜单中消失。如果保留主模型引用，会造成默认模型指向一个不可见模型。首版不自动切换主模型，避免隐式改变用户的默认模型选择。
+
+### 5.1 fallback 引用规则
+
+如果 `agents.defaults.model` 对象形态的 `fallbacks` 中存在任一合法 ref 属于目标 Provider，关闭操作同样必须失败（fail closed，不可绕过）。oc-switch 不自动移除或迁移 `fallbacks` 条目；提示用户先在 OpenClaw 配置中调整回退链，再关闭 Provider。
 
 ## 6. 状态文件设计
 

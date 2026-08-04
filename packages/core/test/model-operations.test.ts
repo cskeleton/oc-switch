@@ -322,3 +322,86 @@ describe("model name fallback", () => {
     expect(result.config.models?.providers?.nvidia?.models?.[0]?.name).toBe("DeepSeek Flash");
   });
 });
+
+describe("model operations 对象形态主模型与 fallback 保护", () => {
+  /** 对象形态：primary = minimax-portal/MiniMax-M3，fallback 指向 nvidia 目录模型 */
+  function objectPrimarySample() {
+    const config = cloneSample();
+    config.agents!.defaults!.model = {
+      primary: "minimax-portal/MiniMax-M3",
+      fallbacks: ["nvidia/deepseek-ai/deepseek-v4-flash"],
+      customFlag: true
+    } as never;
+    return config;
+  }
+
+  test("setPrimaryModel 对对象形态保留 fallbacks 与未知键，仅更新 primary", () => {
+    const config = objectPrimarySample();
+    setPrimaryModel(config, "nvidia/deepseek-ai/deepseek-v4-flash");
+    const model = config.agents!.defaults!.model as Record<string, unknown>;
+    expect(model.primary).toBe("nvidia/deepseek-ai/deepseek-v4-flash");
+    expect(model.fallbacks).toEqual(["nvidia/deepseek-ai/deepseek-v4-flash"]);
+    expect(model.customFlag).toBe(true);
+  });
+
+  test("对象形态主模型下删除主模型仍被拒绝", () => {
+    const config = objectPrimarySample();
+    expect(() =>
+      removeProviderModel(config, "minimax-portal/MiniMax-M3", { force: false })
+    ).toThrow("Model minimax-portal/MiniMax-M3 is the primary model");
+  });
+
+  test("带 newPrimary 删除主模型后新主模型保持对象形状", () => {
+    const config = objectPrimarySample();
+    removeProviderModel(config, "minimax-portal/MiniMax-M3", {
+      force: false,
+      newPrimary: "nvidia/deepseek-ai/deepseek-v4-flash"
+    });
+    const model = config.agents!.defaults!.model as Record<string, unknown>;
+    expect(model.primary).toBe("nvidia/deepseek-ai/deepseek-v4-flash");
+    expect(model.fallbacks).toEqual(["nvidia/deepseek-ai/deepseek-v4-flash"]);
+    expect(model.customFlag).toBe(true);
+  });
+
+  test("force 删除对象形态主模型产生可读 warning", () => {
+    const config = objectPrimarySample();
+    const result = removeProviderModel(config, "minimax-portal/MiniMax-M3", { force: true });
+    expect(result.warnings).toContain("Primary model minimax-portal/MiniMax-M3 was removed");
+    expect(JSON.stringify(result.warnings)).not.toContain("[object Object]");
+  });
+
+  test("rename 迁移对象形态主模型且不丢 fallbacks", () => {
+    const config = objectPrimarySample();
+    updateProviderModel(config, "minimax-portal/MiniMax-M3", {
+      id: "MiniMax-M3-renamed",
+      enabled: true
+    });
+    const model = config.agents!.defaults!.model as Record<string, unknown>;
+    expect(model.primary).toBe("minimax-portal/MiniMax-M3-renamed");
+    expect(model.fallbacks).toEqual(["nvidia/deepseek-ai/deepseek-v4-flash"]);
+    expect(model.customFlag).toBe(true);
+  });
+
+  test("删除命中 fallback 的模型被拒绝，force 也不可绕过，配置不变", () => {
+    for (const force of [false, true]) {
+      const config = objectPrimarySample();
+      const before = structuredClone(config);
+      expect(() => removeProviderModel(config, "nvidia/deepseek-ai/deepseek-v4-flash", { force })).toThrow(
+        /agents\.defaults\.model\.fallbacks/
+      );
+      expect(config).toEqual(before);
+    }
+  });
+
+  test("rename 命中 fallback 的模型被拒绝，配置不变", () => {
+    const config = objectPrimarySample();
+    const before = structuredClone(config);
+    expect(() =>
+      updateProviderModel(config, "nvidia/deepseek-ai/deepseek-v4-flash", {
+        id: "deepseek-ai/deepseek-v4-renamed",
+        enabled: true
+      })
+    ).toThrow(/agents\.defaults\.model\.fallbacks/);
+    expect(config).toEqual(before);
+  });
+});

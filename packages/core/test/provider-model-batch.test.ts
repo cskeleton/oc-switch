@@ -158,3 +158,69 @@ describe("batchRemoveProviderModels", () => {
     expect(result.config.agents?.defaults?.models?.["minimax-portal/MiniMax-M3"]).toBeUndefined();
   });
 });
+
+describe("batch operations 对象形态主模型与 fallback 保护", () => {
+  /** 对象形态：primary = minimax-portal/MiniMax-M3；fallback 指向 nvidia 的未启用模型 */
+  function objectPrimarySample() {
+    const config = cloneSample();
+    config.agents!.defaults!.model = {
+      primary: "minimax-portal/MiniMax-M3",
+      fallbacks: ["nvidia/z-ai/glm5.1"]
+    } as never;
+    // 移出 allowlist：z-ai/glm5.1 变为未启用目录项，keepEnabledOnly 断言才能证明是 fallback 保护生效
+    delete config.agents!.defaults!.models!["nvidia/z-ai/glm5.1"];
+    return config;
+  }
+
+  test("显式批量删除命中对象形态主模型时整单拒绝", () => {
+    const config = objectPrimarySample();
+    expect(() =>
+      batchRemoveProviderModels(config, "minimax-portal", { modelIds: ["MiniMax-M3"] })
+    ).toThrow("Cannot remove primary model minimax-portal/MiniMax-M3");
+  });
+
+  test("keepEnabledOnly 永远保留对象形态主模型目录项", () => {
+    const config = objectPrimarySample();
+    const result = batchRemoveProviderModels(config, "minimax-portal", { keepEnabledOnly: true });
+    expect(result.config.models?.providers?.["minimax-portal"]?.models?.map((m) => m.id)).toEqual(["MiniMax-M3"]);
+  });
+
+  test("显式批量删除命中 fallback 目录项时整单拒绝，force 语义不适用，配置不变", () => {
+    const config = objectPrimarySample();
+    const before = structuredClone(config);
+    expect(() =>
+      batchRemoveProviderModels(config, "nvidia", { modelIds: ["z-ai/glm5.1", "deepseek-ai/deepseek-v4-flash"] })
+    ).toThrow(/agents\.defaults\.model\.fallbacks/);
+    expect(config).toEqual(before);
+  });
+
+  test("keepEnabledOnly 会移除未启用的 fallback 目录项时整单拒绝，配置不变", () => {
+    const config = objectPrimarySample();
+    const before = structuredClone(config);
+    expect(() => batchRemoveProviderModels(config, "nvidia", { keepEnabledOnly: true })).toThrow(
+      /agents\.defaults\.model\.fallbacks/
+    );
+    expect(config).toEqual(before);
+  });
+
+  test("keepEnabledOnly：fallback 目录项已启用时正常清理其余未启用项", () => {
+    const config = objectPrimarySample();
+    // 把 fallback 模型放回 allowlist（已启用）→ 不在移除集，无需拒绝
+    config.agents!.defaults!.models!["nvidia/z-ai/glm5.1"] = {};
+    config.models!.providers!.nvidia!.models!.push({ id: "unused-model" });
+    const result = batchRemoveProviderModels(config, "nvidia", { keepEnabledOnly: true });
+    expect(result.config.models?.providers?.nvidia?.models?.map((m) => m.id)).toEqual([
+      "deepseek-ai/deepseek-v4-flash",
+      "z-ai/glm5.1"
+    ]);
+    expect(result.removedModelIds).toEqual(["unused-model"]);
+  });
+
+  test("keepEnabledOnly：对象形态主模型不在目录时拒绝并提示修复", () => {
+    const config = objectPrimarySample();
+    config.models!.providers!["minimax-portal"]!.models = [];
+    expect(() => batchRemoveProviderModels(config, "minimax-portal", { keepEnabledOnly: true })).toThrow(
+      /not in provider minimax-portal catalog/
+    );
+  });
+});

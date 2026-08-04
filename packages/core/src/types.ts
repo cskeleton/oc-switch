@@ -42,6 +42,18 @@ export interface AllowlistEntry {
   [key: string]: unknown;
 }
 
+/**
+ * OpenClaw 新版对象形态主模型：primary 与运行时回退链 fallbacks。
+ * oc-switch 只归一读写 primary；其余键原样穿透（前向兼容保留策略）。
+ */
+export interface OpenClawPrimaryModelObject {
+  primary?: string;
+  [key: string]: unknown;
+}
+
+/** `agents.defaults.model` 的两种合法形态：旧版字符串 ref / 新版对象 */
+export type OpenClawPrimaryModel = string | OpenClawPrimaryModelObject;
+
 export interface OpenClawConfig {
   models?: {
     mode?: string;
@@ -50,7 +62,7 @@ export interface OpenClawConfig {
   };
   agents?: {
     defaults?: {
-      model?: string;
+      model?: OpenClawPrimaryModel;
       models?: Record<string, AllowlistEntry>;
       [key: string]: unknown;
     };

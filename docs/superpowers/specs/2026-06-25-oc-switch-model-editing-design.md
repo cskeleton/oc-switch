@@ -485,4 +485,52 @@ bun run test:e2e
 - 写入是否仍经过备份与 diff guard
 - 建议值是否只修改表单状态、最终保存仍走现有 transaction writer
 - 建议查询是否不发送本地标识/secret、不修改配置、不创建备份
+- `agents.defaults.model` 双形态是否全部经归一层访问，`fallbacks` 是否原样保留且仅用于依赖保护
 - 是否没有引入计划外功能
+
+## 13. agents.defaults.model 双形态兼容
+
+OpenClaw 允许 `agents.defaults.model` 取两种合法形态：
+
+- 字符串 ModelRef：`"provider/model-id"`（无 fallback 语义）
+- 对象：`{ "primary"?: string, "fallbacks"?: string[] }`（primary 与运行时回退链）
+
+oc-switch 必须同时兼容两种形态，并遵循以下契约：
+
+### 13.1 归一层（唯一访问入口）
+
+core 内禁止直接读写 `config.agents.defaults.model`，必须经 `packages/core/src/primary-model.ts`：
+
+- `readPrimaryModelRef(config): string | undefined`：字符串与对象 `primary` 均先 trim，再按 oc-switch ModelRef 规则校验（第一个 `/` 前后均非空）；保留大小写与 model ID 内部斜杠。缺失、空白、非法 ref、对象缺 primary、数组、数字、null 一律返回 `undefined`。**读取路径永不抛错。**
+- `readFallbackModelRefs(config): string[]`：按相同规则归一 `fallbacks` 数组中的合法 ref，保持顺序；非法项不参与保护。非数组/缺失返回空数组。
+- `writePrimaryModelRef(config, ref)`：形状守恒写入。当前值为非 null、非数组 record → 仅更新其 `primary` 键，保留 `fallbacks` 与未知键；当前值为字符串、缺失或非 record 畸形值 → 写纯字符串。string↔object 永不互转。
+- `isPrimaryModelRef(config, ref)`：按归一 ref 等价比较。
+
+### 13.2 fallbacks 语义
+
+- `fallbacks` 是 OpenClaw 运行时回退链，**preserve-only**：oc-switch 不编辑、不展示、不在任何 UI/API 暗示可管理。
+- 但 preserve 不等于 ignore：`fallbacks` 中的合法 ref 参与破坏性操作的依赖保护（见 13.3）。
+- 原始数组与对象中的未知键始终原样穿透（round-trip / 前向兼容承诺）；未知键不被描述为当前 OpenClaw 的合法字段。
+
+### 13.3 破坏性操作 fail-closed 矩阵
+
+若操作会使任一合法 fallback ref 失去对应 Provider 或本地目录项，必须拒绝（**即使调用方传 `force`**），提示用户先在 OpenClaw 配置中移除或迁移 fallback；oc-switch 不自动改写 `fallbacks` 数组。
+
+| 操作 | 保护条件 |
+|---|---|
+| 删除 Provider 模型 / rename 模型 ID | 命中任一 fallback ref |
+| 批量删除模型 / 只保留已启用 | 会移除任一 fallback 目录项 |
+| 删除 Provider / 关闭 Provider | 任一 fallback ref 属于该 Provider |
+| case-duplicate merge | 需迁移或丢弃 fallback 所引用的 Provider/模型 |
+
+primary 的既有保护语义不变（删除主模型需新 primary 或 force；主模型所属 Provider 不可删除/关闭）。
+
+### 13.4 diff 与 diff-guard
+
+- `primaryChanged` 以归一 primary ref 比较；仅 `fallbacks` 变化不报主模型变更（backup diff 摘要同样适用；原始备份与恢复仍完整保留）。
+- diff-guard 已按前缀放行 `agents.defaults.model.*` 任意深度，无需变更。
+
+### 13.5 畸形配置策略
+
+- 只读路径对畸形值降级为「未设置主模型」，不崩溃。
+- 不后台自动修复畸形配置；非 primary 写入不得顺手改写 `agents.defaults.model`。仅显式切换/迁移 primary 时按 13.1 写入。

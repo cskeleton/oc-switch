@@ -1,6 +1,7 @@
 import { formatModelRef, parseModelRef } from "./model-ref";
 import { ensureModelName } from "./openclaw-compat";
 import { ensureDefaults, type OperationResult } from "./operation-common";
+import { readFallbackModelRefs, readPrimaryModelRef } from "./primary-model";
 import { assertProviderModelCapacity } from "./provider-model-limits";
 import type { OpenClawConfig, OpenClawModel } from "./types";
 
@@ -74,7 +75,7 @@ function assertNotRemovingPrimaryModel(
   providerId: string,
   modelIds: string[]
 ): void {
-  const primary = config.agents?.defaults?.model;
+  const primary = readPrimaryModelRef(config);
   if (!primary) return;
   const { providerId: primaryProviderId, modelId: primaryModelId } = parseModelRef(primary);
   if (primaryProviderId !== providerId) return;
@@ -83,12 +84,31 @@ function assertNotRemovingPrimaryModel(
   }
 }
 
+/** fallback 目录保护（fail closed）：显式批量删除不得移除被 fallbacks 引用的目录项 */
+function assertNotRemovingFallbackModel(
+  config: OpenClawConfig,
+  providerId: string,
+  modelIds: string[]
+): void {
+  const fallbackModelIds = readFallbackModelRefs(config)
+    .map((ref) => parseModelRef(ref))
+    .filter((parts) => parts.providerId === providerId)
+    .map((parts) => parts.modelId);
+  for (const modelId of modelIds) {
+    if (fallbackModelIds.includes(modelId)) {
+      throw new Error(
+        `Model ${formatModelRef(providerId, modelId)} is referenced by agents.defaults.model.fallbacks. Remove it from the OpenClaw fallback list first.`
+      );
+    }
+  }
+}
+
 function assertPrimaryCatalogPresentForKeepEnabledOnly(
   config: OpenClawConfig,
   providerId: string,
   providerModels: OpenClawModel[]
 ): void {
-  const primary = config.agents?.defaults?.model;
+  const primary = readPrimaryModelRef(config);
   if (!primary) return;
   const { providerId: primaryProviderId, modelId: primaryModelId } = parseModelRef(primary);
   if (primaryProviderId !== providerId) return;
@@ -125,13 +145,17 @@ export function batchRemoveProviderModels(
     assertPrimaryCatalogPresentForKeepEnabledOnly(config, providerId, models);
 
     const keepIds = collectAllowlistedModelIds(config, providerId);
-    const primary = config.agents?.defaults?.model;
+    const primary = readPrimaryModelRef(config);
     if (primary) {
       const { providerId: primaryProviderId, modelId: primaryModelId } = parseModelRef(primary);
       if (primaryProviderId === providerId) keepIds.add(primaryModelId);
     }
 
     const removedModelIds = models.filter((model) => !keepIds.has(model.id)).map((model) => model.id);
+    // fallback 依赖保护（fail closed）：将要移除的目录项命中 fallbacks 引用时整单拒绝，
+    // 不做静默保留例外；检查先于任何 mutation
+    assertNotRemovingFallbackModel(config, providerId, removedModelIds);
+
     provider.models = models.filter((model) => keepIds.has(model.id));
 
     for (const id of removedModelIds) {
@@ -147,6 +171,8 @@ export function batchRemoveProviderModels(
   }
 
   assertNotRemovingPrimaryModel(config, providerId, modelIds);
+  // fallback 依赖保护：先于任何 mutation
+  assertNotRemovingFallbackModel(config, providerId, modelIds);
 
   const removeSet = new Set(modelIds);
   const removedModelIds = models.filter((model) => removeSet.has(model.id)).map((model) => model.id);

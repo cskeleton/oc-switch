@@ -222,6 +222,7 @@
   - 其余目录项：仅保留当前在 allowlist 中的模型；未启用项从目录删除
   - 本操作不向 allowlist 新增条目
   - 若配置已损坏（主模型 ref 指向本 Provider，但主模型 **不在** `provider.models`）→ **整单拒绝**，提示先修复配置（例如手动添加主模型目录项或切换主模型），不进行部分清理
+- **fallback 目录保护（fail closed）**：`agents.defaults.model` 对象形态 `fallbacks` 中指向本 Provider 的合法 ref（经 core 归一层读取），其目录项与主模型同等保护——多选删除命中、或 `keepEnabledOnly` 会移除该目录项时整单拒绝；oc-switch 不自动改写 `fallbacks`
 - 空 `modelIds`（且非 `keepEnabledOnly`）：返回 400
 - 走事务 + 备份
 

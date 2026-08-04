@@ -2483,3 +2483,82 @@ describe("server model-metadata suggestions", () => {
     });
   });
 });
+
+describe("对象形态主模型配置（agents.defaults.model = { primary, fallbacks }）", () => {
+  function objectPrimaryWorkspace(): Workspace {
+    const ws = workspace();
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as Record<string, unknown>;
+    (config.agents as { defaults: Record<string, unknown> }).defaults.model = {
+      primary: "minimax-portal/MiniMax-M3",
+      fallbacks: ["nvidia/deepseek-ai/deepseek-v4-flash"]
+    };
+    writeFileSync(ws.paths.openclawPath, `${JSON.stringify(config, null, 2)}\n`);
+    return ws;
+  }
+
+  test("GET /api/providers 返回 200 且 containsPrimary 正确（对象形态崩溃回归点）", async () => {
+    const ws = objectPrimaryWorkspace();
+    const app = createTestApp(ws);
+    const { response, json } = await jsonRequest(app, "/api/providers");
+
+    expect(response.status).toBe(200);
+    const providers = json.providers as Array<{ id: string; containsPrimary: boolean }>;
+    expect(providers.find((entry) => entry.id === "minimax-portal")?.containsPrimary).toBe(true);
+    expect(providers.filter((entry) => entry.containsPrimary)).toHaveLength(1);
+  });
+
+  test("GET /api/status 返回归一 primaryModel 字符串", async () => {
+    const ws = objectPrimaryWorkspace();
+    const app = createTestApp(ws);
+    const { response, json } = await jsonRequest(app, "/api/status");
+
+    expect(response.status).toBe(200);
+    expect(json.primaryModel).toBe("minimax-portal/MiniMax-M3");
+  });
+
+  test("切换主模型保留对象形状与 fallbacks", async () => {
+    const ws = objectPrimaryWorkspace();
+    const app = createTestApp(ws);
+    const { response } = await jsonRequest(app, "/api/models/primary", {
+      method: "PUT",
+      body: JSON.stringify({ ref: "nvidia/z-ai/glm5.1" })
+    });
+
+    expect(response.status).toBe(200);
+    const persisted = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as {
+      agents: { defaults: { model: Record<string, unknown> } };
+    };
+    expect(persisted.agents.defaults.model).toEqual({
+      primary: "nvidia/z-ai/glm5.1",
+      fallbacks: ["nvidia/deepseek-ai/deepseek-v4-flash"]
+    });
+  });
+
+  test("删除 fallback 模型返回冲突错误且文件不变", async () => {
+    const ws = objectPrimaryWorkspace();
+    const app = createTestApp(ws);
+    const before = readFileSync(ws.paths.openclawPath, "utf8");
+    const { response, json } = await jsonRequest(app, "/api/models", {
+      method: "DELETE",
+      body: JSON.stringify({ ref: "nvidia/deepseek-ai/deepseek-v4-flash", force: true })
+    });
+
+    expect(response.status).toBe(400);
+    expect(String(json.error)).toContain("agents.defaults.model.fallbacks");
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+  });
+
+  test("删除 fallback 所属 Provider 返回冲突错误且文件不变", async () => {
+    const ws = objectPrimaryWorkspace();
+    const app = createTestApp(ws);
+    const before = readFileSync(ws.paths.openclawPath, "utf8");
+    const { response, json } = await jsonRequest(app, "/api/providers/nvidia", {
+      method: "DELETE",
+      body: JSON.stringify({ force: true })
+    });
+
+    expect(response.status).toBe(400);
+    expect(String(json.error)).toContain("agents.defaults.model.fallbacks");
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+  });
+});

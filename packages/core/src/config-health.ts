@@ -1,6 +1,7 @@
 import { formatModelRef } from "./model-ref";
 import { providerEnvVar } from "./openclaw-compat";
 import type { OperationResult } from "./operations";
+import { readFallbackModelRefs, readPrimaryModelRef, writePrimaryModelRef } from "./primary-model";
 import type { AllowlistEntry, OpenClawConfig, OpenClawModel, OpenClawProvider } from "./types";
 
 export type CaseDuplicateKind =
@@ -77,7 +78,7 @@ export function inspectConfigHealth(
 ): ConfigHealthReport {
   const providers = config.models?.providers ?? {};
   const allowlist = config.agents?.defaults?.models ?? {};
-  const primaryModel = config.agents?.defaults?.model;
+  const primaryModel = readPrimaryModelRef(config);
   const presetIds = new Set(options.presetIds ?? []);
 
   // 1. 收集 provider 块 ID 与 allowlist 前缀 ID，按 toLowerCase() 分组
@@ -275,7 +276,7 @@ export function mergeProviderCaseDuplicates(config: OpenClawConfig, input: Merge
   const warnings: string[] = [];
 
   // 0. 主模型若属本组，先算出迁移后的引用，用于「不能丢弃主模型」校验
-  const primary = config.agents.defaults.model;
+  const primary = readPrimaryModelRef(config);
   let migratedPrimary: string | undefined;
   if (primary) {
     const slashIndex = primary.indexOf("/");
@@ -288,6 +289,23 @@ export function mergeProviderCaseDuplicates(config: OpenClawConfig, input: Merge
           throw new Error(`Cannot drop the primary model ${primary}; keep it or set a new primary first`);
         }
       }
+    }
+  }
+
+  // 0b. fallback 依赖保护（fail closed）：merge 不自动迁移 fallbacks。
+  //     - fallback 前缀命中 removeIds → provider 将被删除，ref 悬空 → 拒绝
+  //     - fallback 前缀命中本组且模型会被 keepModelIds 丢弃 → 目录项消失 → 拒绝
+  for (const ref of readFallbackModelRefs(config)) {
+    const slashIndex = ref.indexOf("/");
+    if (slashIndex <= 0) continue;
+    const prefix = ref.slice(0, slashIndex);
+    const modelId = ref.slice(slashIndex + 1);
+    const providerRemoved = input.removeIds.includes(prefix);
+    const catalogDropped = allIds.includes(prefix) && !isKept(modelId);
+    if (providerRemoved || catalogDropped) {
+      throw new Error(
+        `Cannot merge: agents.defaults.model.fallbacks references ${ref}. Remove or migrate fallbacks in the OpenClaw config first.`
+      );
     }
   }
 
@@ -335,9 +353,9 @@ export function mergeProviderCaseDuplicates(config: OpenClawConfig, input: Merge
     }
   }
 
-  // 4. 落实主模型迁移
+  // 4. 落实主模型迁移（形状守恒：对象形态保留 fallbacks 与未知键）
   if (migratedPrimary && migratedPrimary !== primary) {
-    config.agents.defaults.model = migratedPrimary;
+    writePrimaryModelRef(config, migratedPrimary);
     warnings.push(`主模型已从 ${primary} 迁移到 ${migratedPrimary}`);
   }
 

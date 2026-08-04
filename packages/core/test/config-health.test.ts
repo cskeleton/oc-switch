@@ -212,3 +212,112 @@ describe("mergeProviderCaseDuplicates", () => {
       .toThrow("Cannot drop the primary model");
   });
 });
+
+describe("对象形态主模型与 fallback 保护", () => {
+  test("对象形态主模型落在重复组 → primary-split 且 details.primaryModel 为归一 ref 字符串", () => {
+    const report = inspectConfigHealth(cfg({
+      models: {
+        providers: {
+          "9r": { baseUrl: "http://h/v1", apiKey: { source: "env", id: "K" }, models: [{ id: "foo" }] },
+          "9R": { baseUrl: "http://h/v1", apiKey: { source: "env", id: "K" }, models: [{ id: "foo" }] }
+        }
+      },
+      agents: {
+        defaults: {
+          model: { primary: " 9R/foo ", fallbacks: [] },
+          models: { "9R/foo": {} }
+        }
+      }
+    }));
+    const group = report.caseDuplicateGroups[0]!;
+    expect(group.kinds).toContain("primary-split");
+    expect(group.canonicalId).toBe("9R");
+    expect(group.details.primaryModel).toBe("9R/foo");
+    expect(group.reasons.join(" ")).toContain("9R/foo");
+    expect(group.reasons.join(" ")).not.toContain("[object Object]");
+  });
+
+  test("merge 迁移对象形态主模型并保留 fallbacks 与未知键", () => {
+    const config = cfg({
+      models: { providers: { deepseek: { models: [{ id: "chat" }] }, DeepSeek: { models: [{ id: "chat" }] } } },
+      agents: {
+        defaults: {
+          model: { primary: "DeepSeek/chat", fallbacks: ["openai/gpt-x"], customFlag: true },
+          models: { "DeepSeek/chat": {} }
+        }
+      }
+    });
+    const result = mergeProviderCaseDuplicates(config, {
+      groupKey: "deepseek",
+      canonicalId: "deepseek",
+      removeIds: ["DeepSeek"]
+    });
+    const model = result.config.agents!.defaults!.model as Record<string, unknown>;
+    expect(model.primary).toBe("deepseek/chat");
+    expect(model.fallbacks).toEqual(["openai/gpt-x"]);
+    expect(model.customFlag).toBe(true);
+    expect(result.warnings.join(" ")).toContain("主模型已从 DeepSeek/chat 迁移到 deepseek/chat");
+  });
+
+  test("keepModelIds 丢弃对象形态主模型对应模型 → 抛错", () => {
+    const config = cfg({
+      models: { providers: { deepseek: { models: [{ id: "chat" }] }, DeepSeek: { models: [{ id: "chat" }] } } },
+      agents: {
+        defaults: {
+          model: { primary: "deepseek/chat" },
+          models: { "deepseek/chat": {} }
+        }
+      }
+    });
+    expect(() =>
+      mergeProviderCaseDuplicates(config, {
+        groupKey: "deepseek",
+        canonicalId: "deepseek",
+        removeIds: ["DeepSeek"],
+        keepModelIds: []
+      })
+    ).toThrow("Cannot drop the primary model");
+  });
+
+  test("merge 命中 fallback 所引用的 provider 时拒绝，且不改写 fallback", () => {
+    const config = cfg({
+      models: { providers: { deepseek: { models: [{ id: "chat" }] }, DeepSeek: { models: [{ id: "chat" }] } } },
+      agents: {
+        defaults: {
+          model: { primary: "openai/gpt-x", fallbacks: ["DeepSeek/chat"] },
+          models: {}
+        }
+      }
+    });
+    const before = structuredClone(config);
+    expect(() =>
+      mergeProviderCaseDuplicates(config, { groupKey: "deepseek", canonicalId: "deepseek", removeIds: ["DeepSeek"] })
+    ).toThrow(/agents\.defaults\.model\.fallbacks references DeepSeek\/chat/);
+    expect(config).toEqual(before);
+  });
+
+  test("keepModelIds 丢弃 fallback 引用的模型时拒绝", () => {
+    const config = cfg({
+      models: {
+        providers: {
+          deepseek: { models: [{ id: "chat" }, { id: "legacy" }] },
+          DeepSeek: { models: [{ id: "chat" }] }
+        }
+      },
+      agents: {
+        defaults: {
+          model: { primary: "openai/gpt-x", fallbacks: ["deepseek/legacy"] },
+          models: {}
+        }
+      }
+    });
+    expect(() =>
+      mergeProviderCaseDuplicates(config, {
+        groupKey: "deepseek",
+        canonicalId: "deepseek",
+        removeIds: ["DeepSeek"],
+        keepModelIds: ["chat"]
+      })
+    ).toThrow(/agents\.defaults\.model\.fallbacks references deepseek\/legacy/);
+  });
+});

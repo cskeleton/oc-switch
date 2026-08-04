@@ -1,16 +1,28 @@
 import { formatModelRef, parseModelRef } from "./model-ref";
 import { defaultModelName } from "./openclaw-compat";
 import { ensureDefaults, hasProviderModel, type OperationResult } from "./operation-common";
+import { isPrimaryModelRef, readFallbackModelRefs, readPrimaryModelRef, writePrimaryModelRef } from "./primary-model";
 import { assertProviderModelCapacity } from "./provider-model-limits";
 import type { AllowlistEntry, OpenClawConfig, OpenClawModel, ProviderModelInput } from "./types";
+
+/**
+ * fallback 依赖保护（fail closed）：被 agents.defaults.model.fallbacks 引用的模型
+ * 不得删除或改名，force 也不可绕过；oc-switch 不自动改写 fallbacks。
+ */
+function assertFallbackRemovalAllowed(config: OpenClawConfig, ref: string): void {
+  if (readFallbackModelRefs(config).includes(ref)) {
+    throw new Error(
+      `Model ${ref} is referenced by agents.defaults.model.fallbacks. Remove it from the OpenClaw fallback list first.`
+    );
+  }
+}
 
 function assertPrimaryRemovalAllowed(
   config: OpenClawConfig,
   ref: string,
   options: { force: boolean; newPrimary?: string }
 ): void {
-  const primary = config.agents!.defaults!.model;
-  if (primary !== ref) return;
+  if (!isPrimaryModelRef(config, ref)) return;
   if (options.newPrimary) {
     setPrimaryModel(config, options.newPrimary);
     return;
@@ -25,7 +37,7 @@ export function setPrimaryModel(config: OpenClawConfig, ref: string): OperationR
   if (!hasProviderModel(config, ref)) {
     throw new Error(`Model ${ref} is not defined in provider models`);
   }
-  config.agents!.defaults!.model = ref;
+  writePrimaryModelRef(config, ref);
   return { config, warnings: [] };
 }
 
@@ -153,6 +165,10 @@ export function updateProviderModel(config: OpenClawConfig, ref: string, input: 
   if (input.id !== modelId && models.some((model) => model.id === input.id)) {
     throw new Error(`Model ${nextRef} already exists`);
   }
+  // 改名会使旧 ref 从目录消失：若被 fallbacks 引用则拒绝（先于任何 mutation）
+  if (input.id !== modelId) {
+    assertFallbackRemovalAllowed(config, ref);
+  }
 
   const existingModel = models[existingIndex];
   provider.models = models.map((model, index) =>
@@ -162,8 +178,8 @@ export function updateProviderModel(config: OpenClawConfig, ref: string, input: 
   const existingAllowlist = config.agents!.defaults!.models![ref];
   if (input.id !== modelId) {
     delete config.agents!.defaults!.models![ref];
-    if (config.agents!.defaults!.model === ref) {
-      config.agents!.defaults!.model = nextRef;
+    if (isPrimaryModelRef(config, ref)) {
+      writePrimaryModelRef(config, nextRef);
     }
   }
 
@@ -187,14 +203,15 @@ export function removeProviderModel(
   const provider = config.models!.providers![providerId];
   if (!provider) throw new Error(`Provider ${providerId} not found`);
 
+  // fallback 依赖保护必须发生在任何 mutation 之前（force 也不可绕过）
+  assertFallbackRemovalAllowed(config, ref);
   assertPrimaryRemovalAllowed(config, ref, options);
 
   provider.models = (provider.models ?? []).filter((model) => model.id !== modelId);
   delete config.agents!.defaults!.models![ref];
 
   const warnings: string[] = [];
-  const primary = config.agents!.defaults!.model;
-  if (primary === ref && options.force) {
+  if (isPrimaryModelRef(config, ref) && options.force) {
     warnings.push(`Primary model ${ref} was removed`);
   }
 

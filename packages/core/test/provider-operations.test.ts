@@ -399,3 +399,52 @@ describe("addCustomProvider", () => {
     })).toThrow("already exists (case-insensitive match)");
   });
 });
+
+describe("provider operations 对象形态主模型与 fallback 保护", () => {
+  /** 对象形态：primary = minimax-portal/MiniMax-M3，fallback 指向 nvidia */
+  function objectPrimarySample() {
+    const config = cloneSample();
+    config.agents!.defaults!.model = {
+      primary: "minimax-portal/MiniMax-M3",
+      fallbacks: ["nvidia/deepseek-ai/deepseek-v4-flash"],
+      customFlag: true
+    } as never;
+    return config;
+  }
+
+  test("removeProvider：对象形态主模型在该 provider 时拒绝删除", () => {
+    const config = objectPrimarySample();
+    expect(() => removeProvider(config, "minimax-portal", { force: false })).toThrow(
+      "Provider minimax-portal contains the primary model"
+    );
+  });
+
+  test("removeProvider：force 删除时 warning 文案含归一 ref 且无 [object Object]", () => {
+    const config = objectPrimarySample();
+    const result = removeProvider(config, "minimax-portal", { force: true });
+    expect(result.warnings).toContain(
+      "Primary model minimax-portal/MiniMax-M3 now points to a deleted provider"
+    );
+    expect(JSON.stringify(result.warnings)).not.toContain("[object Object]");
+  });
+
+  test("removeProvider：newPrimary 迁移后保留对象形状与 fallbacks", () => {
+    const config = objectPrimarySample();
+    removeProvider(config, "minimax-portal", { force: false, newPrimary: "DeepSeek/deepseek-chat" });
+    const model = config.agents!.defaults!.model as Record<string, unknown>;
+    expect(model.primary).toBe("DeepSeek/deepseek-chat");
+    expect(model.fallbacks).toEqual(["nvidia/deepseek-ai/deepseek-v4-flash"]);
+    expect(model.customFlag).toBe(true);
+  });
+
+  test("removeProvider：命中 fallback provider 时拒绝，force 也不可绕过，配置不变", () => {
+    for (const force of [false, true]) {
+      const config = objectPrimarySample();
+      const before = structuredClone(config);
+      expect(() => removeProvider(config, "nvidia", { force })).toThrow(
+        /agents\.defaults\.model\.fallbacks/
+      );
+      expect(config).toEqual(before);
+    }
+  });
+});

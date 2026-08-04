@@ -170,3 +170,34 @@ describe("summarizeProviderFieldChanges", () => {
     ]);
   });
 });
+
+describe("summarizeConfigDiff 对象形态主模型", () => {
+  const base: OpenClawConfig = {
+    models: { providers: { nvidia: { models: [{ id: "a" }] } } },
+    agents: { defaults: { model: "nvidia/a", models: {} } }
+  };
+
+  test("仅 fallbacks 变化不报 primaryChanged", () => {
+    const before = structuredClone(base);
+    const after = structuredClone(base);
+    after.agents!.defaults!.model = { primary: "nvidia/a", fallbacks: ["openai/b"] };
+    expect(summarizeConfigDiff(before, after).primaryChanged).toBeNull();
+  });
+
+  test("跨形态归一 ref 相同（含首尾空白）不报 primaryChanged", () => {
+    const before = structuredClone(base);
+    const after = structuredClone(base);
+    after.agents!.defaults!.model = { primary: " nvidia/a " };
+    expect(summarizeConfigDiff(before, after).primaryChanged).toBeNull();
+  });
+
+  test("ref 不同则报告且 before/after 均为归一字符串", () => {
+    const before = structuredClone(base);
+    const after = structuredClone(base);
+    after.agents!.defaults!.model = { primary: " nvidia/other ", fallbacks: [] };
+    expect(summarizeConfigDiff(before, after).primaryChanged).toEqual({
+      before: "nvidia/a",
+      after: "nvidia/other"
+    });
+  });
+});
