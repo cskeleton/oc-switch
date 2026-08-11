@@ -113,6 +113,31 @@ describe("provider model editing", () => {
     expect(result.config.agents?.defaults?.models?.["nvidia/deepseek-ai/deepseek-v4-pro"]).toEqual({ alias: "ds-pro" });
   });
 
+  test("defaults reasoning to true when adding a model", () => {
+    const config = cloneSample();
+    const result = addProviderModel(config, "nvidia", {
+      id: "vendor/default-reasoning",
+      enabled: false
+    });
+
+    expect(result.config.models?.providers?.nvidia?.models?.find(
+      (model) => model.id === "vendor/default-reasoning"
+    )?.reasoning).toBe(true);
+  });
+
+  test("preserves explicit reasoning false when adding a model", () => {
+    const config = cloneSample();
+    const result = addProviderModel(config, "nvidia", {
+      id: "vendor/no-reasoning",
+      enabled: false,
+      reasoning: false
+    });
+
+    expect(result.config.models?.providers?.nvidia?.models?.find(
+      (model) => model.id === "vendor/no-reasoning"
+    )?.reasoning).toBe(false);
+  });
+
   test("updates model id while preserving unknown fields and migrating allowlist and primary", () => {
     const config = cloneSample();
     Object.assign(config.models!.providers!.nvidia!.models![0]!, {

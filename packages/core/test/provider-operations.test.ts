@@ -303,6 +303,12 @@ describe("addCustomProvider", () => {
       ]
     });
     expect(result.config.models?.providers?.["custom-openai"]?.authHeader).toBeUndefined();
+    expect(result.config.models?.providers?.["custom-openai"]?.models).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "model-a", reasoning: true }),
+        expect.objectContaining({ id: "vendor/model-b", reasoning: true })
+      ])
+    );
     expect(result.config.agents?.defaults?.models?.["custom-openai/model-a"]).toEqual({ alias: "a" });
     expect(result.config.agents?.defaults?.models?.["custom-openai/vendor/model-b"]).toEqual({ alias: "b" });
   });

@@ -234,7 +234,8 @@ describe("ModelsView", () => {
     await userEvent.type(await findByLabelText("Name"), "DeepSeek V4 Pro");
     await userEvent.type(await findByLabelText("Alias"), "ds-pro");
     await userEvent.selectOptions(await findByLabelText("API"), "openai-completions");
-    await userEvent.selectOptions(await findByLabelText("Reasoning"), "true");
+    const reasoningCheckbox = await findByLabelText("Reasoning") as HTMLInputElement;
+    expect(reasoningCheckbox.checked).toBe(true);
     await userEvent.type(await findByLabelText("原生上下文窗口"), "128000");
     await userEvent.type(await findByLabelText("最大输出长度"), "8192");
     await userEvent.type(await findByLabelText("Input"), "text\nimage");
@@ -291,6 +292,72 @@ describe("ModelsView", () => {
       enabled: true,
       reasoning: false
     });
+  });
+
+  test("preserves an absent reasoning value when editing another field", async () => {
+    const updateModel = mock(async (_ref: string, _model: ProviderModelInput) => ({
+      ok: true,
+      ref: "nvidia/deepseek-ai/deepseek-v4-flash"
+    }));
+    const getProviders = mock(async () => ({
+      providers: [
+        providerSummary({ id: "nvidia", baseUrl: "https://nvidia.example/v1" })
+      ]
+    }));
+    const getModels = mock(async () => ({
+      models: [
+        modelSummary({
+          ref: "nvidia/deepseek-ai/deepseek-v4-flash",
+          alias: "flash"
+        })
+      ]
+    }));
+
+    const { findByLabelText, getByText } = render(
+      <ModelsView client={mockClient({ getModels, getProviders, updateModel })} />
+    );
+
+    await userEvent.click(await findByLabelText("编辑模型 nvidia/deepseek-ai/deepseek-v4-flash"));
+    const aliasInput = await findByLabelText("Alias");
+    await userEvent.clear(aliasInput);
+    await userEvent.type(aliasInput, "renamed");
+    await userEvent.click(getByText("保存模型"));
+
+    const payload = updateModel.mock.calls[0]?.[1];
+    expect(payload).toEqual(expect.objectContaining({ alias: "renamed" }));
+    expect(Object.prototype.hasOwnProperty.call(payload, "reasoning")).toBe(false);
+  });
+
+  test("submits reasoning after editing an originally absent value", async () => {
+    const updateModel = mock(async (_ref: string, _model: ProviderModelInput) => ({
+      ok: true,
+      ref: "nvidia/deepseek-ai/deepseek-v4-flash"
+    }));
+    const getProviders = mock(async () => ({
+      providers: [
+        providerSummary({ id: "nvidia", baseUrl: "https://nvidia.example/v1" })
+      ]
+    }));
+    const getModels = mock(async () => ({
+      models: [
+        modelSummary({
+          ref: "nvidia/deepseek-ai/deepseek-v4-flash",
+          alias: "flash"
+        })
+      ]
+    }));
+
+    const { findByLabelText, getByText } = render(
+      <ModelsView client={mockClient({ getModels, getProviders, updateModel })} />
+    );
+
+    await userEvent.click(await findByLabelText("编辑模型 nvidia/deepseek-ai/deepseek-v4-flash"));
+    await userEvent.click(await findByLabelText("Reasoning"));
+    await userEvent.click(getByText("保存模型"));
+
+    expect(updateModel.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ reasoning: true })
+    );
   });
 
   test("rejects invalid numeric model fields before submit", async () => {
@@ -464,7 +531,8 @@ describe("ProvidersView", () => {
     expect(createModel).toHaveBeenCalledWith("nvidia", {
       id: "deepseek-ai/deepseek-v4-pro",
       alias: "ds-pro",
-      enabled: true
+      enabled: true,
+      reasoning: true
     });
   });
 
@@ -2567,6 +2635,7 @@ describe("ModelDialog 参考参数建议", () => {
       expect(onSave).toHaveBeenCalledWith("nvidia", {
         id: "custom-model",
         enabled: true,
+        reasoning: true,
         contextWindow: 200000,
         contextTokens: 128000,
         maxTokens: 8192

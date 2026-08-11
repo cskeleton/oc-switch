@@ -119,7 +119,8 @@ export function ModelDialog({
   const [alias, setAlias] = useState("");
   const [enabled, setEnabled] = useState(true);
   const [api, setApi] = useState("");
-  const [reasoning, setReasoning] = useState("");
+  const [reasoning, setReasoning] = useState(true);
+  const [reasoningTouched, setReasoningTouched] = useState(false);
   const [contextWindow, setContextWindow] = useState("");
   const [contextTokens, setContextTokens] = useState("");
   const [maxTokens, setMaxTokens] = useState("");
@@ -151,7 +152,8 @@ export function ModelDialog({
     setAlias(model?.alias ?? "");
     setEnabled(model?.enabled ?? true);
     setApi(model?.api ?? "");
-    setReasoning(model?.reasoning === undefined ? "" : String(model.reasoning));
+    setReasoning(mode === "create" ? true : (model?.reasoning ?? false));
+    setReasoningTouched(false);
     setContextWindow(model?.contextWindow ? String(model.contextWindow) : "");
     setContextTokens(model?.contextTokens ? String(model.contextTokens) : "");
     setMaxTokens(model?.maxTokens ? String(model.maxTokens) : "");
@@ -160,7 +162,7 @@ export function ModelDialog({
     // 重新打开时不残留上次候选、提示或加载状态
     resetLookupState();
     lookupRequestIdRef.current += 1;
-  }, [fixedProviderId, model, open, providers]);
+  }, [fixedProviderId, mode, model, open, providers]);
 
   const selectedProviderId = fixedProviderId ?? providerId;
   const lookupReady = Boolean(selectedProviderId) && Boolean(modelId.trim());
@@ -239,7 +241,9 @@ export function ModelDialog({
     if (name.trim()) next.name = name.trim();
     if (alias.trim()) next.alias = alias.trim();
     if (api) next.api = api as ApiType;
-    if (reasoning) next.reasoning = reasoning === "true";
+    if (mode === "create" || model?.reasoning !== undefined || reasoningTouched) {
+      next.reasoning = reasoning;
+    }
     let parsedContextWindow: number | undefined;
     let parsedContextTokens: number | undefined;
     let parsedMaxTokens: number | undefined;
@@ -379,14 +383,18 @@ export function ModelDialog({
               ))}
             </select>
           </div>
-          <div className="grid gap-2">
-            <Label>Reasoning</Label>
-            <select aria-label="Reasoning" value={reasoning} onChange={(event) => setReasoning(event.target.value)} className={selectClassName}>
-              <option value="">继承 Provider</option>
-              <option value="true">true</option>
-              <option value="false">false</option>
-            </select>
-          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              aria-label="Reasoning"
+              checked={reasoning}
+              onChange={(event) => {
+                setReasoning(event.target.checked);
+                setReasoningTouched(true);
+              }}
+            />
+            支持思考
+          </label>
           <div className="grid gap-2">
             <Label>原生上下文窗口（可选）</Label>
             <Input

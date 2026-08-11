@@ -32,6 +32,12 @@ describe("batchAddProviderModels", () => {
       .toBe("DeepSeek V4 Pro");
     expect(result.config.models?.providers?.nvidia?.models?.find((m) => m.id === "vendor/model-x")?.name)
       .toBe("Vendor Model X");
+    expect(result.config.models?.providers?.nvidia?.models?.find(
+      (model) => model.id === "deepseek-ai/deepseek-v4-pro"
+    )?.reasoning).toBe(true);
+    expect(result.config.models?.providers?.nvidia?.models?.find(
+      (model) => model.id === "vendor/model-x"
+    )?.reasoning).toBe(true);
     expect(result.config.agents?.defaults?.models?.["nvidia/deepseek-ai/deepseek-v4-pro"]).toBeUndefined();
     expect(result.config.agents?.defaults?.models?.["nvidia/vendor/model-x"]).toBeUndefined();
     expect(result.warnings).toEqual([]);

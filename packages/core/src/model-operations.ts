@@ -82,7 +82,9 @@ function assertProviderModelInput(input: ProviderModelInput): void {
 }
 
 function applyProviderModelInput(existing: OpenClawModel | undefined, input: ProviderModelInput): OpenClawModel {
-  const next: OpenClawModel = { ...(existing ?? {}), id: input.id };
+  const next: OpenClawModel = existing
+    ? { ...existing, id: input.id }
+    : { id: input.id, reasoning: input.reasoning ?? true };
 
   if (input.name !== undefined) {
     const trimmed = input.name.trim();
@@ -98,7 +100,7 @@ function applyProviderModelInput(existing: OpenClawModel | undefined, input: Pro
   for (const key of ["api", "reasoning", "contextWindow", "contextTokens", "maxTokens", "input"] as const) {
     const value = input[key];
     if (value === undefined || (Array.isArray(value) && value.length === 0)) {
-      delete next[key];
+      if (existing !== undefined || key !== "reasoning") delete next[key];
     } else {
       next[key] = value as never;
     }

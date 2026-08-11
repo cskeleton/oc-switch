@@ -593,6 +593,12 @@ describe("cli provider sync", () => {
     const ids = config.models.providers.nvidia.models.map((m: { id: string }) => m.id);
     expect(ids).toContain("vendor/new-model");
     expect(ids).toContain("vendor/nested/extra");
+    expect(config.models.providers.nvidia.models.find(
+      (model: { id: string }) => model.id === "vendor/new-model"
+    ).reasoning).toBe(true);
+    expect(config.models.providers.nvidia.models.find(
+      (model: { id: string }) => model.id === "vendor/nested/extra"
+    ).reasoning).toBe(true);
     expect(config.agents.defaults.models["nvidia/vendor/new-model"]).toBeUndefined();
     expect(config.agents.defaults.models["nvidia/vendor/nested/extra"]).toBeUndefined();
   });

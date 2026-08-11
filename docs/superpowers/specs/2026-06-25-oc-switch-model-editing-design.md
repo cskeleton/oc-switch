@@ -90,13 +90,22 @@ Providers 页和 Models 页共用同一个模型表单组件，避免两边字�
 | Alias | `agents.defaults.models[ref].alias` | 可选；仅在 enabled 为 true 时写入 |
 | Enabled | `agents.defaults.models[ref]` | 开启时写入 allowlist，关闭时删除 allowlist entry |
 | API | `provider.models[].api` | 可选；支持 `openai-completions`、`anthropic-messages`、`google-generative-ai` |
-| Reasoning | `provider.models[].reasoning` | 可选布尔字段；未设置时不写入 |
+| Reasoning | `provider.models[].reasoning` | Checkbox；新增模型默认开启，编辑旧模型时保留“未设置”语义 |
 | 原生上下文窗口（可选） | `provider.models[].contextWindow` | 模型/路由原生能力，可选正整数 |
 | 运行上下文预算（可选） | `provider.models[].contextTokens` | OpenClaw 实际使用上限，可选正整数，不得大于已填写的 `contextWindow` |
 | 最大输出长度（可选） | `provider.models[].maxTokens` | 单次输出上限，可选正整数 |
 | Input | `provider.models[].input` | 可选字符串数组；UI 用逗号或多行文本输入 |
 
 `cost` 与其他未知字段首版不提供结构化编辑，但编辑已有模型时必须原样保留。
+
+#### 4.3.1 Reasoning 默认值与编辑交互
+
+- 所有通过创建流程新加入 provider 本地模型目录的模型默认写入 `reasoning: true`，覆盖 Web 手动新增、Server API、CLI、创建自定义 Provider 时随附的模型，以及发现模型后的批量新增。
+- 单条新增若调用方明确传入 `reasoning: false`，必须保留 `false`，不得被默认值覆盖。
+- Reasoning 在共用模型表单中使用 checkbox。新增模式初始勾选；保存后写入 `true`。
+- 编辑模式按现有值显示：`true` 为勾选，`false` 与字段缺失均为未勾选。
+- 表单必须额外记录 checkbox 是否被用户操作。旧模型缺少 `reasoning` 时，若用户未操作 checkbox，提交不得增加该字段；首次点击后开始按当前勾选状态明确提交 `true` 或 `false`。
+- 不对已存在的 provider 模型做批量迁移或回填；preset/import 与 backup restore 属于数据还原，必须保留来源数据，不应用新增默认值。只有创建流程新增模型，或用户在编辑时明确操作 Reasoning checkbox，才改变该属性。
 
 ### 4.4 数值字段语义
 
@@ -201,11 +210,14 @@ Core 层新增或扩展操作：
 
 ### 6.1 字段写入约定
 
-模型对象只写入用户设置的字段：
+模型对象只写入用户设置的字段，但新增模型的 Reasoning 采用领域默认值：
 
 - 空字符串按未设置处理
 - 可选数字为空时删除该字段
-- 可选布尔为空时删除该字段；明确 true/false 时写入
+- 单条新增时 `reasoning` 缺省按 `true` 写入，明确 `false` 时写入 `false`
+- 创建自定义 Provider 时，其随附模型统一写入 `reasoning: true`
+- 批量新增 provider 模型目录项时统一写入 `reasoning: true`
+- 编辑时可选布尔为空按未设置处理；明确 true/false 时写入
 - `input` 为空数组时删除该字段
 
 编辑已有模型时，先从旧模型复制一份，再覆盖表单字段，因此未知字段不会丢失。
@@ -424,6 +436,9 @@ GET /api/model-metadata/suggestions?providerId=<id>&modelId=<raw-id>&refresh=0|1
 - 删除 primary 模型要求新 primary 或 force
 - 重复模型 ID 被拒绝
 - create/edit 写入、修改与清空 `contextTokens`；未知字段不丢失
+- 单条新增省略 `reasoning` 时写入 `true`，明确传入 `false` 时保留 `false`
+- 创建自定义 Provider 时随附模型统一写入 `reasoning: true`
+- 批量新增模型统一写入 `reasoning: true`，跳过的既有模型保持不变
 - `contextTokens` 为 0、负数、非整数时报错；大于 `contextWindow` 时报错
 - config adapter summary 透传 `contextTokens`
 - Models.dev 目录下载/ETag/TTL/stale/大小限制/失败降级
@@ -456,6 +471,9 @@ GET /api/model-metadata/suggestions?providerId=<id>&modelId=<raw-id>&refresh=0|1
 - 查询建议状态（loading/matched/multiple/not-found/stale/error）与不自动覆盖输入
 - 分别应用上下文/最大输出；「全部应用」不修改 `contextTokens`
 - `contextTokens > contextWindow` 前端阻止提交
+- Reasoning 使用 checkbox；新增模式默认勾选并提交 `true`
+- 编辑既有 `true` / `false` 可通过 checkbox 修改
+- 编辑缺少 `reasoning` 的旧模型时，未操作 checkbox 不提交该字段；操作后明确提交当前布尔值
 
 ### 11.4 验证命令
 
@@ -479,6 +497,8 @@ bun run test:e2e
 - Providers 页与 Models 页是否都有入口
 - 两个入口是否共用同一套模型表单与 API
 - 高级字段是否覆盖 `api`、`reasoning`、`contextWindow`、`contextTokens`、`maxTokens`、`input`
+- 所有创建入口是否默认持久化 `reasoning: true`，且显式 `false` 不被覆盖；preset/import 与 backup restore 是否保持来源数据
+- Reasoning checkbox 是否在无操作时保留旧模型的字段缺失状态，且未发生存量批量回填
 - `contextWindow` / `contextTokens` / `maxTokens` 术语是否未混用；「自动填充」文案是否均改为「建议/显式应用」
 - 修改模型 ID 是否迁移 allowlist 与 primary
 - 未知字段是否保留

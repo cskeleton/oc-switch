@@ -241,7 +241,6 @@ describe("server write endpoints", () => {
           alias: "ds-pro",
           enabled: true,
           api: "openai-completions",
-          reasoning: true,
           contextWindow: 128000,
           maxTokens: 8192,
           input: ["text"]
@@ -260,6 +259,9 @@ describe("server write endpoints", () => {
       maxTokens: 8192,
       input: ["text"]
     });
+    expect(config.models.providers.nvidia.models.find(
+      (model: { id: string }) => model.id === "deepseek-ai/deepseek-v4-pro"
+    ).reasoning).toBe(true);
     expect(config.agents.defaults.models["nvidia/deepseek-ai/deepseek-v4-pro"]).toEqual({ alias: "ds-pro" });
   });
 

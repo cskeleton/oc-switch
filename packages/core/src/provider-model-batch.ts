@@ -47,7 +47,7 @@ export function batchAddProviderModels(
     }
     addedModelIds.push(id);
     existingIds.add(id);
-    const model: OpenClawModel = { id };
+    const model: OpenClawModel = { id, reasoning: true };
     if (item.name !== undefined) {
       const trimmed = item.name.trim();
       if (trimmed) model.name = trimmed;

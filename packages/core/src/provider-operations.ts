@@ -189,6 +189,7 @@ export function addCustomProvider(config: OpenClawConfig, input: CustomProviderI
   const models = input.models.map((model): OpenClawModel =>
     ensureModelName({
       id: model.id,
+      reasoning: true,
       ...(model.name !== undefined ? { name: model.name } : {})
     })
   );
