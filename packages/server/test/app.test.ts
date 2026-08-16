@@ -950,7 +950,7 @@ describe("server write endpoints", () => {
     });
 
     expect(response.status).toBe(400);
-    expect(String(json.error)).toMatch(/20|limit|capacity/i);
+    expect(String(json.error)).toMatch(/limit|capacity/i);
 
     const after = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
     expect(after.models.providers.nvidia.models).toHaveLength(MAX_PROVIDER_MODELS);

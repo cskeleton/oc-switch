@@ -645,7 +645,7 @@ describe("cli provider sync", () => {
     });
 
     expect(result.code).not.toBe(0);
-    expect(result.stderr).toMatch(/20|limit|capacity/i);
+    expect(result.stderr).toMatch(/limit|capacity/i);
     expect(readFileSync(configPath, "utf8")).toBe(configText);
   });
 

@@ -93,7 +93,7 @@ describe("addProviderFromPreset", () => {
 
   test("rejects preset merge when final catalog exceeds capacity", () => {
     const config = cloneSample();
-    config.models!.providers!.nvidia!.models = Array.from({ length: 19 }, (_, i) => ({
+    config.models!.providers!.nvidia!.models = Array.from({ length: MAX_PROVIDER_MODELS - 1 }, (_, i) => ({
       id: `existing-${i}`,
       name: `Existing ${i}`
     }));
@@ -112,7 +112,7 @@ describe("addProviderFromPreset", () => {
       ]
     };
 
-    expect(() => addProviderFromPreset(config, preset, [])).toThrow(/limit|20/i);
+    expect(() => addProviderFromPreset(config, preset, [])).toThrow(/limit|capacity/i);
   });
 
   test("allows preset that only updates existing models when already at capacity", () => {

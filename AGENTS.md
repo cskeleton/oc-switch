@@ -147,7 +147,7 @@ bun run packages/cli/src/index.ts     # 直接调用 CLI
 ## Learned User Preferences
 
 - 巨型 Provider（如 OpenRouter）优先「发现 + 按需勾选添加」，不要把远端全量模型目录持久化进 `openclaw.json`。
-- 每 Provider 本地已添加模型硬上限按 **20** 设计；主要顾虑 OpenClaw 侧维护成本，而非 oc-switch UI 渲染；存量可超过但禁止再增，需批量清理。
+- 每 Provider 本地已添加模型硬上限按 **50** 设计；主要顾虑 OpenClaw 侧维护成本，而非 oc-switch UI 渲染；存量可超过但禁止再增，需批量清理。
 - `anthropic-messages` 应支持模型发现；`google-generative-ai` 保持 unsupported（官方 API 仍在演进、第三方少用）。
 - 本地目录膨胀时需要批量删除 /「只保留已启用」，避免逐条删。
 - 本机日常启动优先 `oc-switch start` / `stop`（`~/bin` 薄包装），不优先 `bun compile` 独立二进制；无需为 macOS 单独拆包或仓库。
@@ -156,7 +156,7 @@ bun run packages/cli/src/index.ts     # 直接调用 CLI
 
 ## Learned Workspace Facts
 
-- Providers「发现模型」/ CLI `provider sync`：**默认只 discover、不写盘**；显式勾选或 `sync --add` 才 batch-add 进 `models.providers[<id>].models[]`。默认不进 allowlist；`--enable` / 勾选「同时启用」才写入。旧无参全量 sync 已移除。常量 `MAX_PROVIDER_MODELS = 20`，须在 **core 所有会增加 `provider.models` 条数的写入路径**统一强制。详见 `2026-07-09-oc-switch-provider-model-discover-design.md`。
+- Providers「发现模型」/ CLI `provider sync`：**默认只 discover、不写盘**；显式勾选或 `sync --add` 才 batch-add 进 `models.providers[<id>].models[]`。默认不进 allowlist；`--enable` / 勾选「同时启用」才写入。旧无参全量 sync 已移除。常量 `MAX_PROVIDER_MODELS = 50`，须在 **core 所有会增加 `provider.models` 条数的写入路径**统一强制。详见 `2026-07-09-oc-switch-provider-model-discover-design.md`。
 - 「模型」弹窗读的是本地已写入的 Provider 目录，不是实时远端全量列表；列表膨胀通常来自历史全量同步，可用多选删除 /「只保留已启用」清理。
 - 已禁用 Provider：禁止 batch-add / 启用类写入；批量删除与「只保留已启用」仍应可用，以便把超限目录降到上限以下。
 - 本机 launcher：`./scripts/install-local-launcher.sh` 只安装 `~/bin/oc-switch` 包装；需自行保证 `~/bin` 在 PATH；Web 登录用 API token（`~/.oc-switch/token.json` / `token rotate`），不是 macOS 系统登录密码。

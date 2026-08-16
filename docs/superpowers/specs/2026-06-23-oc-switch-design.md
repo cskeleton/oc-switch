@@ -235,7 +235,7 @@ interface AllowlistEntry {
 **从远端发现模型（与上列 allowlist 联动无关）：**
 
 - 默认仅 discover，不写 `openclaw.json`；显式勾选 / CLI `--add` 才 batch-add 进 `provider.models`
-- 权威细节见 `2026-07-09-oc-switch-provider-model-discover-design.md`（含硬上限 20、Anthropic adapter、旧全量 sync 已移除）
+- 权威细节见 `2026-07-09-oc-switch-provider-model-discover-design.md`（含硬上限 50、Anthropic adapter、旧全量 sync 已移除）
 
 ### 3.5 `.env` 管理规则
 
