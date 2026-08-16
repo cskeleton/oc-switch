@@ -102,10 +102,10 @@ export function inspectConfigHealth(
     allowlistCountByExactId.set(prefix, (allowlistCountByExactId.get(prefix) ?? 0) + 1);
   }
 
-  // 2. 仅保留「组内出现 >1 个不同大小写 ID」且「至少一个 ID 有 provider 块」的组。
-  //    没有任何 provider 块的组 = 纯 allowlist 引用，通常是 OAuth 认证、由 OpenClaw 自身维护，
-  //    本项目不管（见 spec 非目标 / 用户决策），跳过。
-  const reportable = [...groups.values()].filter((acc) => acc.ids.size > 1 && acc.providerIds.size >= 1);
+  // 2. 仅上报实际存在多个不同大小写 provider 块的组。
+  //    单个 provider 块配合不同大小写的 allowlist/主模型引用属于 drift，
+  //    不视为重复配置，也不产生重复 Provider 告警。
+  const reportable = [...groups.values()].filter((acc) => acc.providerIds.size > 1);
 
   const caseDuplicateGroups: CaseDuplicateGroup[] = reportable.map((acc) => {
     const ids = [...acc.ids].sort();

@@ -77,6 +77,7 @@ OpenClaw 与 oc-switch 对 Provider ID **大小写敏感**，且**不自动 norm
 - 不修改 OpenClaw 对 Provider ID 大小写敏感的语义
 - 不在后台静默 normalize 用户配置
 - 不强制全局命名规范（例如所有 provider 必须小写）
+- 不因单个 Provider 块与 allowlist/主模型引用的大小写漂移发出重复 Provider 告警
 - 首版不处理「非大小写差异的重复 provider」（例如 `openrouter` 与 `open-router` 同 baseUrl）——可列为后续增强
 - 首版不处理「仅 allowlist 孤立、provider 块已不存在」的 general stale ref 全量清理（与 case duplicate 有交集但规格更广，可另立文档）
 
@@ -84,7 +85,7 @@ OpenClaw 与 oc-switch 对 Provider ID **大小写敏感**，且**不自动 norm
 
 ## 4. 问题分类
 
-扫描器应识别以下类型（可叠加）：
+扫描器应识别以下类型（可叠加）；只有包含 `provider-duplicate` 的组进入健康报告并产生提醒：
 
 ### 4.1 `provider-duplicate`（Provider 级重复）
 
@@ -94,7 +95,7 @@ OpenClaw 与 oc-switch 对 Provider ID **大小写敏感**，且**不自动 norm
 
 ### 4.2 `allowlist-drift`（Allowlist 前缀漂移）
 
-allowlist 中存在 `9R/...`，但 `models.providers` 只有 `9r`（或反之）；或两边 provider 都存在但 allowlist 分散。
+allowlist 中存在 `9R/...`，但 `models.providers` 只有 `9r`（或反之）；或两边 provider 都存在但 allowlist 分散。该类型仅作为实际 `provider-duplicate` 组的附加事实；如果组内只有一个真实 Provider 块，则忽略，不产生提醒。
 
 示例：`openrouter` 显示 2 条、`OpenRouter` 显示 1 条。
 
@@ -209,7 +210,7 @@ export function inspectConfigHealth(config: OpenClawConfig): ConfigHealthReport;
 实现要点：
 
 - 从 `models.providers` 与 `agents.defaults.models` 收集 provider 前缀
-- 按 `toLowerCase()` 分组，仅当组内 `ids.length > 1` 或存在 allowlist/provider 不一致时上报
+- 按 `toLowerCase()` 分组，仅当组内存在多个真实 `models.providers` key（即 `providerIds.size > 1`）时上报；单独的 allowlist/provider 大小写不一致不产生报告
 - `baseUrl` 比较前做轻度 normalize（trim、去末尾 `/`、小写 host 可选——首版仅 trim + 去尾斜杠）
 - 纯函数、可单测；不读写磁盘
 

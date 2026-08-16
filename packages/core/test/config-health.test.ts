@@ -49,20 +49,18 @@ describe("inspectConfigHealth", () => {
     expect(group.confidence).toBe("high");
   });
 
-  test("allowlist-drift：provider 块仅 9R，allowlist 全用 9r → canonical 取持有配置的 9R", () => {
+  test("仅 allowlist 前缀大小写漂移不产生 Provider 重复告警", () => {
     const report = inspectConfigHealth(cfg({
       models: { providers: { "9R": { baseUrl: "http://192.168.22.20:20128/v1", apiKey: { source: "env", id: "X_KEY" }, models: [{ id: "deepseek-v3" }, { id: "kimi" }] } } },
       agents: { defaults: { model: "minimax/x", models: { "9r/deepseek-v3": {}, "9r/kimi": {} } } }
     }));
 
-    expect(report.caseDuplicateGroups).toHaveLength(1);
-    const group = report.caseDuplicateGroups[0]!;
-    expect(group.kinds).toContain("allowlist-drift");
-    expect(group.canonicalId).toBe("9R");
-    expect(group.duplicateIds).toEqual(["9r"]);
-    expect(group.details.allowlistCounts).toEqual({ "9R": 0, "9r": 2 });
-    expect(group.details.modelCounts).toEqual({ "9R": 2, "9r": 0 });
-    expect(group.mergeable).toBe(true);
+    expect(report.caseDuplicateGroups).toEqual([]);
+    expect(report.summary).toEqual({
+      duplicateGroupCount: 0,
+      affectedProviderCount: 0,
+      affectedAllowlistCount: 0
+    });
   });
 
   test("主模型落在重复组 → primary-split 且 canonicalId 取主模型一侧", () => {
@@ -121,13 +119,14 @@ describe("inspectConfigHealth", () => {
         providers: {
           deepseek: { baseUrl: "https://api.deepseek.com/v1", apiKey: { source: "env", id: "D" }, models: [{ id: "c" }] },
           DeepSeek: { baseUrl: "https://api.deepseek.com/v1", apiKey: { source: "env", id: "D" }, models: [{ id: "c" }] },
+          "9r": { baseUrl: "http://h/v1", apiKey: { source: "env", id: "K" }, models: [{ id: "v3" }] },
           "9R": { baseUrl: "http://h/v1", apiKey: { source: "env", id: "K" }, models: [{ id: "v3" }] }
         }
       },
       agents: { defaults: { model: "x/y", models: { "deepseek/c": {}, "9r/v3": {} } } }
     }));
     expect(report.summary.duplicateGroupCount).toBe(2);
-    expect(report.summary.affectedProviderCount).toBe(3);
+    expect(report.summary.affectedProviderCount).toBe(4);
     expect(report.summary.affectedAllowlistCount).toBe(2);
   });
 });

@@ -384,7 +384,8 @@ describe("ModelsView", () => {
 
   test("侧栏对大小写重复 Provider 标注推荐/重复而非并列两项", async () => {
     const getProviders = mock(async () => ({ providers: [
-      providerSummary({ id: "9R", baseUrl: "http://h/v1", modelCount: 2, enabledModelCount: 0 })
+      providerSummary({ id: "9R", baseUrl: "http://h/v1", modelCount: 2, enabledModelCount: 0 }),
+      providerSummary({ id: "9r", baseUrl: "http://h/v1", modelCount: 2, enabledModelCount: 0 })
     ] }));
     const getModels = mock(async () => ({ models: [
       modelSummary({ ref: "9R/v3", enabled: false }),
@@ -392,11 +393,11 @@ describe("ModelsView", () => {
     ] }));
     const getHealth = mock(async (): Promise<ConfigHealthReport> => ({
       caseDuplicateGroups: [{
-        groupKey: "9r", ids: ["9R", "9r"], kinds: ["allowlist-drift"] as CaseDuplicateKind[], confidence: "high", sameOrigin: false,
+        groupKey: "9r", ids: ["9R", "9r"], kinds: ["provider-duplicate"] as CaseDuplicateKind[], confidence: "high", sameOrigin: true,
         mergeable: true, mergeBlockers: [], canonicalId: "9R", duplicateIds: ["9r"], reasons: [],
         details: { baseUrls: {}, allowlistCounts: {}, modelCounts: {}, envVars: {} }
       }],
-      summary: { duplicateGroupCount: 1, affectedProviderCount: 1, affectedAllowlistCount: 1 }
+      summary: { duplicateGroupCount: 1, affectedProviderCount: 2, affectedAllowlistCount: 1 }
     }));
     const { findByText } = render(<ModelsView client={mockClient({ getProviders, getModels, getHealth })} />);
     expect(await findByText("（推荐）")).toBeTruthy();
