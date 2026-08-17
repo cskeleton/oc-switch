@@ -1,6 +1,12 @@
 import { formatModelRef, parseModelRef } from "./model-ref";
 import { defaultModelName } from "./openclaw-compat";
-import { ensureDefaults, hasProviderModel, type OperationResult } from "./operation-common";
+import {
+  ensureDefaults,
+  hasProviderModel,
+  matchingAllowlistRefs,
+  resolveProviderId,
+  type OperationResult
+} from "./operation-common";
 import { isPrimaryModelRef, readFallbackModelRefs, readPrimaryModelRef, writePrimaryModelRef } from "./primary-model";
 import { assertProviderModelCapacity } from "./provider-model-limits";
 import type { AllowlistEntry, OpenClawConfig, OpenClawModel, ProviderModelInput } from "./types";
@@ -43,7 +49,9 @@ export function setPrimaryModel(config: OpenClawConfig, ref: string): OperationR
 
 export function disableModel(config: OpenClawConfig, ref: string): OperationResult {
   ensureDefaults(config);
-  delete config.agents!.defaults!.models![ref];
+  for (const allowlistRef of matchingAllowlistRefs(config, ref)) {
+    delete config.agents!.defaults!.models![allowlistRef];
+  }
   return { config, warnings: [] };
 }
 
@@ -52,9 +60,10 @@ export function enableModel(config: OpenClawConfig, ref: string, alias?: string)
   if (!hasProviderModel(config, ref)) {
     throw new Error(`Model ${ref} is not defined in provider models`);
   }
-  const existing = config.agents!.defaults!.models![ref] ?? {};
+  const allowlistRef = matchingAllowlistRefs(config, ref)[0] ?? ref;
+  const existing = config.agents!.defaults!.models![allowlistRef] ?? {};
   const next: AllowlistEntry = alias ? { ...existing, alias } : existing;
-  config.agents!.defaults!.models![ref] = next;
+  config.agents!.defaults!.models![allowlistRef] = next;
   return { config, warnings: [] };
 }
 
@@ -156,14 +165,15 @@ export function updateProviderModel(config: OpenClawConfig, ref: string, input: 
   ensureDefaults(config);
   assertProviderModelInput(input);
   const { providerId, modelId } = parseModelRef(ref);
-  const provider = config.models!.providers![providerId];
+  const resolvedProviderId = resolveProviderId(config, providerId);
+  const provider = resolvedProviderId ? config.models!.providers![resolvedProviderId] : undefined;
   if (!provider) throw new Error(`Provider ${providerId} not found`);
 
   const models = provider.models ?? [];
   const existingIndex = models.findIndex((model) => model.id === modelId);
   if (existingIndex === -1) throw new Error(`Model ${ref} not found`);
 
-  const nextRef = formatModelRef(providerId, input.id);
+  const nextRef = formatModelRef(resolvedProviderId!, input.id);
   if (input.id !== modelId && models.some((model) => model.id === input.id)) {
     throw new Error(`Model ${nextRef} already exists`);
   }
@@ -177,19 +187,33 @@ export function updateProviderModel(config: OpenClawConfig, ref: string, input: 
     index === existingIndex ? applyProviderModelInput(existingModel, input) : model
   );
 
-  const existingAllowlist = config.agents!.defaults!.models![ref];
+  const existingAllowlistRefs = matchingAllowlistRefs(config, ref);
+  const existingAllowlistRef = existingAllowlistRefs[0];
+  const existingAllowlist = existingAllowlistRef
+    ? config.agents!.defaults!.models![existingAllowlistRef]
+    : undefined;
+  const preferredAllowlistProviderId = existingAllowlistRef
+    ? parseModelRef(existingAllowlistRef).providerId
+    : resolvedProviderId;
   if (input.id !== modelId) {
-    delete config.agents!.defaults!.models![ref];
+    for (const allowlistRef of existingAllowlistRefs) {
+      delete config.agents!.defaults!.models![allowlistRef];
+    }
     if (isPrimaryModelRef(config, ref)) {
       writePrimaryModelRef(config, nextRef);
     }
   }
 
   if (input.enabled) {
-    config.agents!.defaults!.models![nextRef] = existingAllowlist ?? config.agents!.defaults!.models![nextRef] ?? {};
-    upsertAllowlistEntry(config, nextRef, input.alias);
+    const targetAllowlistRef = input.id === modelId && existingAllowlistRef
+      ? existingAllowlistRef
+      : matchingAllowlistRefs(config, nextRef)[0] ?? formatModelRef(preferredAllowlistProviderId!, input.id);
+    config.agents!.defaults!.models![targetAllowlistRef] = existingAllowlist ?? config.agents!.defaults!.models![targetAllowlistRef] ?? {};
+    upsertAllowlistEntry(config, targetAllowlistRef, input.alias);
   } else {
-    delete config.agents!.defaults!.models![nextRef];
+    for (const allowlistRef of matchingAllowlistRefs(config, nextRef)) {
+      delete config.agents!.defaults!.models![allowlistRef];
+    }
   }
 
   return { config, warnings: [] };
@@ -202,7 +226,8 @@ export function removeProviderModel(
 ): OperationResult {
   ensureDefaults(config);
   const { providerId, modelId } = parseModelRef(ref);
-  const provider = config.models!.providers![providerId];
+  const resolvedProviderId = resolveProviderId(config, providerId);
+  const provider = resolvedProviderId ? config.models!.providers![resolvedProviderId] : undefined;
   if (!provider) throw new Error(`Provider ${providerId} not found`);
 
   // fallback 依赖保护必须发生在任何 mutation 之前（force 也不可绕过）
@@ -210,7 +235,9 @@ export function removeProviderModel(
   assertPrimaryRemovalAllowed(config, ref, options);
 
   provider.models = (provider.models ?? []).filter((model) => model.id !== modelId);
-  delete config.agents!.defaults!.models![ref];
+  for (const allowlistRef of matchingAllowlistRefs(config, ref)) {
+    delete config.agents!.defaults!.models![allowlistRef];
+  }
 
   const warnings: string[] = [];
   if (isPrimaryModelRef(config, ref) && options.force) {

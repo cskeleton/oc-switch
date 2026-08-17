@@ -1,5 +1,5 @@
 import { providerEnvVar } from "./openclaw-compat";
-import { parseModelRef } from "./model-ref";
+import { normalizeModelRefForIdentity, normalizeProviderId, parseModelRef } from "./model-ref";
 import { readPrimaryModelRef } from "./primary-model";
 import type { OpenClawConfig } from "./types";
 
@@ -103,7 +103,8 @@ function summarizeProviderEnabledCounts(config: OpenClawConfig): Map<string, num
   const counts = new Map<string, number>();
   for (const ref of Object.keys(config.agents?.defaults?.models ?? {})) {
     const providerId = parseModelRef(ref).providerId;
-    counts.set(providerId, (counts.get(providerId) ?? 0) + 1);
+    const key = normalizeProviderId(providerId);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   return counts;
 }
@@ -121,8 +122,9 @@ export function summarizeProviderStateChanges(
 
   const changes: ProviderStateChangeItem[] = [];
   for (const providerId of providerIds) {
-    const beforeEnabled = beforeCounts.get(providerId) ?? 0;
-    const afterEnabled = afterCounts.get(providerId) ?? 0;
+    const normalizedProviderId = normalizeProviderId(providerId);
+    const beforeEnabled = beforeCounts.get(normalizedProviderId) ?? 0;
+    const afterEnabled = afterCounts.get(normalizedProviderId) ?? 0;
     if (beforeEnabled > 0 && afterEnabled === 0) {
       changes.push({ providerId, change: "disable" });
     } else if (beforeEnabled === 0 && afterEnabled > 0) {
@@ -193,16 +195,24 @@ export function summarizeConfigDiff(
 
   const beforeAllowlist = before.agents?.defaults?.models ?? {};
   const afterAllowlist = after.agents?.defaults?.models ?? {};
-  const beforeRefs = new Set(Object.keys(beforeAllowlist));
-  const afterRefs = new Set(Object.keys(afterAllowlist));
+  const beforeRefs = new Map([...Object.keys(beforeAllowlist)].map((ref) => [normalizeModelRefForIdentity(ref), ref]));
+  const afterRefs = new Map([...Object.keys(afterAllowlist)].map((ref) => [normalizeModelRefForIdentity(ref), ref]));
 
-  const modelsEnabled = [...afterRefs].filter((ref) => !beforeRefs.has(ref)).sort();
-  const modelsDisabled = [...beforeRefs].filter((ref) => !afterRefs.has(ref)).sort();
+  const modelsEnabled = [...afterRefs.entries()]
+    .filter(([identity]) => !beforeRefs.has(identity))
+    .map(([, ref]) => ref)
+    .sort();
+  const modelsDisabled = [...beforeRefs.entries()]
+    .filter(([identity]) => !afterRefs.has(identity))
+    .map(([, ref]) => ref)
+    .sort();
 
   // 按归一 primary ref 比较：跨形态 ref 不变不报；仅 fallbacks 变化不报主模型变更
   const beforePrimary = readPrimaryModelRef(before);
   const afterPrimary = readPrimaryModelRef(after);
-  const primaryChanged = beforePrimary === afterPrimary
+  const primaryChanged = beforePrimary && afterPrimary && normalizeModelRefForIdentity(beforePrimary) === normalizeModelRefForIdentity(afterPrimary)
+    ? null
+    : beforePrimary === afterPrimary
     ? null
     : { before: beforePrimary, after: afterPrimary };
 

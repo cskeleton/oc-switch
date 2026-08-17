@@ -153,6 +153,10 @@ describe("isPrimaryModelRef", () => {
     expect(isPrimaryModelRef(configWith('"openai/gpt-5.2"'), "openai/other")).toBe(false);
   });
 
+  test("Provider 前缀大小写漂移仍命中同一主模型", () => {
+    expect(isPrimaryModelRef(configWith('"cpa/codex-free"'), "CPA/codex-free")).toBe(true);
+  });
+
   test("非法/缺失 primary 永不命中", () => {
     expect(isPrimaryModelRef(configWith('{"fallbacks":["nvidia/a"]}'), "nvidia/a")).toBe(false);
     expect(isPrimaryModelRef(configWith('"bad"'), "bad")).toBe(false);

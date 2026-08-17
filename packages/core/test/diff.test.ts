@@ -123,6 +123,24 @@ describe("summarizeProviderStateChanges", () => {
       { providerId: "alpha", change: "disable" }
     ]);
   });
+
+  test("忽略 allowlist ModelRef 仅 Provider 前缀大小写变化", () => {
+    const before: OpenClawConfig = {
+      models: { providers: { CPA: { models: [{ id: "codex-free" }] } } },
+      agents: { defaults: { model: "CPA/codex-free", models: { "CPA/codex-free": {} } } }
+    };
+    const after: OpenClawConfig = {
+      models: { providers: { CPA: { models: [{ id: "codex-free" }] } } },
+      agents: { defaults: { model: "cpa/codex-free", models: { "cpa/codex-free": {} } } }
+    };
+
+    expect(summarizeConfigDiff(before, after)).toMatchObject({
+      modelsEnabled: [],
+      modelsDisabled: [],
+      primaryChanged: null,
+      providerStateChanges: []
+    });
+  });
 });
 
 describe("summarizeProviderFieldChanges", () => {

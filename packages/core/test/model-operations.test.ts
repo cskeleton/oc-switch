@@ -37,6 +37,20 @@ describe("model operations", () => {
       alias: "nv-ds-flash"
     });
   });
+
+  test("canonical Provider ref 操作会复用大小写漂移的 allowlist 条目", () => {
+    const config: OpenClawConfig = {
+      models: { providers: { CPA: { models: [{ id: "codex-free" }] } } },
+      agents: { defaults: { models: { "cpa/codex-free": { alias: "free" } } } }
+    };
+
+    const enabled = enableModel(config, "CPA/codex-free", "free-again");
+    expect(enabled.config.agents?.defaults?.models?.["CPA/codex-free"]).toBeUndefined();
+    expect(enabled.config.agents?.defaults?.models?.["cpa/codex-free"]).toEqual({ alias: "free-again" });
+
+    const disabled = disableModel(enabled.config, "CPA/codex-free");
+    expect(disabled.config.agents?.defaults?.models?.["cpa/codex-free"]).toBeUndefined();
+  });
 });
 
 describe("addProviderModel", () => {
@@ -186,6 +200,23 @@ describe("provider model editing", () => {
 
     expect(result.config.models?.providers?.nvidia?.models?.some((entry) => entry.id === "deepseek-ai/deepseek-v4-flash")).toBe(true);
     expect(result.config.agents?.defaults?.models?.["nvidia/deepseek-ai/deepseek-v4-flash"]).toBeUndefined();
+  });
+
+  test("编辑大小写漂移模型时迁移原 allowlist 和主模型引用", () => {
+    const config: OpenClawConfig = {
+      models: { providers: { CPA: { models: [{ id: "codex-free" }] } } },
+      agents: { defaults: { model: "cpa/codex-free", models: { "cpa/codex-free": { alias: "free" } } } }
+    };
+
+    const result = updateProviderModel(config, "CPA/codex-free", {
+      id: "codex-pro",
+      enabled: true,
+      alias: "pro"
+    });
+
+    expect(result.config.agents?.defaults?.models?.["cpa/codex-free"]).toBeUndefined();
+    expect(result.config.agents?.defaults?.models?.["cpa/codex-pro"]).toEqual({ alias: "pro" });
+    expect(result.config.agents?.defaults?.model).toBe("CPA/codex-pro");
   });
 
   test("rejects duplicate model ids and invalid numeric fields", () => {

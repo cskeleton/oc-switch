@@ -99,13 +99,24 @@ allowlist 中存在 `9R/...`，但 `models.providers` 只有 `9r`（或反之）
 
 示例：`openrouter` 显示 2 条、`OpenRouter` 显示 1 条。
 
-### 4.3 `same-origin-hint`（同源信号）
+### 4.3 单 Provider 块的读取侧关联
+
+当 `models.providers` 只有一个实际 Provider key、但 allowlist 或 primary 的 Provider 前缀仅大小写不同，读取侧必须将它们关联为同一个逻辑 Provider/Model：
+
+- `ConfigAdapter` 只折叠 Provider 前缀，保留 model ID 大小写；模型页不得生成两条模型或把 Provider 模型误标为禁用。
+- 配置 diff 只比较折叠后的逻辑 ModelRef，不因 Provider 前缀大小写变化报告启用、禁用或 Provider 状态变化。
+- 展示使用实际 Provider key；写操作复用已有 allowlist key 的大小写，避免再次生成平行条目。
+- 如果同一归一 Provider 下存在多个真实 Provider key，则不在读取侧静默合并，继续由 `provider-duplicate` 健康报告处理。
+
+以上仅修正读取、比较和关联逻辑，不自动改写 OpenClaw 配置中的大小写。
+
+### 4.4 `same-origin-hint`（同源信号）
 
 同一重复组内，多个 provider 的 `baseUrl`（normalize 后）相同，或 `apiKey.id` / `authHeader.id` 指向同一 env 变量。
 
 用于提高「建议合并」的置信度，并在 UI 文案中说明「大概率同一来源」。
 
-### 4.4 `primary-split`（主模型落在重复组）
+### 4.5 `primary-split`（主模型落在重复组）
 
 `agents.defaults.model` 的 provider 前缀属于某重复组，但组内还有其他 ID 仍持有模型或 allowlist。
 

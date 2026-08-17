@@ -1,3 +1,4 @@
+import { normalizeModelRefForIdentity } from "./model-ref";
 import type { OpenClawConfig, OpenClawPrimaryModelObject } from "./types";
 
 /**
@@ -70,5 +71,11 @@ export function writePrimaryModelRef(config: OpenClawConfig, ref: string): void 
 export function isPrimaryModelRef(config: OpenClawConfig, ref: string): boolean {
   const primary = readPrimaryModelRef(config);
   const normalized = normalizeRefValue(ref);
-  return primary !== undefined && normalized !== undefined && primary === normalized;
+  if (primary === undefined || normalized === undefined) return false;
+  if (primary === normalized) return true;
+  try {
+    return normalizeModelRefForIdentity(primary) === normalizeModelRefForIdentity(normalized);
+  } catch {
+    return false;
+  }
 }

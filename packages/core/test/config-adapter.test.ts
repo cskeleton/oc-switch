@@ -64,6 +64,29 @@ describe("ConfigAdapter", () => {
     });
   });
 
+  test("合并唯一 Provider 的 allowlist 前缀大小写漂移且保持启用状态", () => {
+    const config: OpenClawConfig = {
+      models: { providers: { CPA: { models: [{ id: "codex-free" }] } } },
+      agents: { defaults: { models: { "cpa/codex-free": { alias: "free" } } } }
+    };
+    const adapter = createConfigAdapter(config);
+
+    expect(adapter.listProviders()[0]).toMatchObject({
+      id: "CPA",
+      modelCount: 1,
+      enabledModelCount: 1
+    });
+    expect(adapter.listModels()).toEqual([{
+      ref: "CPA/codex-free",
+      providerId: "CPA",
+      modelId: "codex-free",
+      name: undefined,
+      alias: "free",
+      enabled: true,
+      isPrimary: false
+    }]);
+  });
+
   test("lists editable provider model fields", () => {
     const config = structuredClone(sample);
     Object.assign(config.models!.providers!.nvidia!.models![0]!, {
