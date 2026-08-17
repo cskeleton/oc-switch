@@ -12,7 +12,6 @@ import { ModelMetadataSuggestionCard } from "./ModelMetadataSuggestionCard";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
-import { Textarea } from "./ui/textarea";
 
 interface ModelDialogProps {
   open: boolean;
@@ -35,6 +34,9 @@ const API_OPTIONS: Array<{ value: ApiType; label: string }> = [
   { value: "anthropic-messages", label: "anthropic-messages" },
   { value: "google-generative-ai", label: "google-generative-ai" }
 ];
+
+const INPUT_MODE_OPTIONS = ["text", "image", "video"] as const;
+type InputMode = (typeof INPUT_MODE_OPTIONS)[number];
 
 const K = 1024;
 
@@ -59,12 +61,10 @@ const MAX_TOKENS_QUICK_VALUES = [
 
 type LookupStatus = "idle" | "loading" | "matched" | "multiple" | "not-found" | "stale" | "error";
 
-function splitInputModes(value: string): string[] | undefined {
-  const modes = value
-    .split(/[\n,]/)
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-  return modes.length ? modes : undefined;
+function getModelIdForMetadataLookup(value: string): string {
+  const trimmed = value.trim();
+  const slashIndex = trimmed.lastIndexOf("/");
+  return (slashIndex >= 0 ? trimmed.slice(slashIndex + 1) : trimmed).trim();
 }
 
 function optionalPositiveInteger(value: string, label: string): number | undefined {
@@ -124,7 +124,8 @@ export function ModelDialog({
   const [contextWindow, setContextWindow] = useState("");
   const [contextTokens, setContextTokens] = useState("");
   const [maxTokens, setMaxTokens] = useState("");
-  const [input, setInput] = useState("");
+  const [inputModes, setInputModes] = useState<string[]>([]);
+  const [inputModesTouched, setInputModesTouched] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -157,7 +158,8 @@ export function ModelDialog({
     setContextWindow(model?.contextWindow ? String(model.contextWindow) : "");
     setContextTokens(model?.contextTokens ? String(model.contextTokens) : "");
     setMaxTokens(model?.maxTokens ? String(model.maxTokens) : "");
-    setInput(model?.input?.join("\n") ?? "");
+    setInputModes(model?.input ?? []);
+    setInputModesTouched(false);
     setError(null);
     // 重新打开时不残留上次候选、提示或加载状态
     resetLookupState();
@@ -165,13 +167,14 @@ export function ModelDialog({
   }, [fixedProviderId, mode, model, open, providers]);
 
   const selectedProviderId = fixedProviderId ?? providerId;
-  const lookupReady = Boolean(selectedProviderId) && Boolean(modelId.trim());
+  const lookupReady = Boolean(selectedProviderId) && Boolean(getModelIdForMetadataLookup(modelId));
   const lookupLoading = lookupStatus === "loading";
 
   async function lookupMetadata() {
     if (!lookupReady || lookupLoading) return;
     const requestProviderId = selectedProviderId;
-    const requestModelId = modelId.trim();
+    const requestModelInput = modelId.trim();
+    const requestModelId = getModelIdForMetadataLookup(requestModelInput);
     const requestId = ++lookupRequestIdRef.current;
     resetLookupState();
     setLookupStatus("loading");
@@ -180,7 +183,7 @@ export function ModelDialog({
       // 过期响应丢弃：请求返回时 Provider/Model ID 必须与发起时一致
       if (requestId !== lookupRequestIdRef.current) return;
       const current = currentIdentityRef.current;
-      if (current.providerId !== requestProviderId || current.modelId !== requestModelId) {
+      if (current.providerId !== requestProviderId || current.modelId !== requestModelInput) {
         // 请求已过期（用户在查询期间改了输入）：恢复可编辑状态，避免永久卡在 loading
         resetLookupState();
         return;
@@ -213,7 +216,7 @@ export function ModelDialog({
     } catch (err) {
       if (requestId !== lookupRequestIdRef.current) return;
       const current = currentIdentityRef.current;
-      if (current.providerId !== requestProviderId || current.modelId !== requestModelId) {
+      if (current.providerId !== requestProviderId || current.modelId !== requestModelInput) {
         // 过期请求的错误与当前输入无关：恢复可编辑状态
         resetLookupState();
         return;
@@ -266,8 +269,7 @@ export function ModelDialog({
     if (parsedContextWindow !== undefined) next.contextWindow = parsedContextWindow;
     if (parsedContextTokens !== undefined) next.contextTokens = parsedContextTokens;
     if (parsedMaxTokens !== undefined) next.maxTokens = parsedMaxTokens;
-    const inputModes = splitInputModes(input);
-    if (inputModes) next.input = inputModes;
+    if (inputModesTouched) next.input = inputModes;
 
     setSaving(true);
     try {
@@ -285,6 +287,16 @@ export function ModelDialog({
   function parsedNumberOrUndefined(value: string): number | undefined {
     const parsed = Number(value.trim());
     return value.trim() && Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  function toggleInputMode(modeToToggle: InputMode): void {
+    setInputModesTouched(true);
+    setInputModes((current) => {
+      const selected = new Set(current.filter((mode): mode is InputMode => INPUT_MODE_OPTIONS.includes(mode as InputMode)));
+      if (selected.has(modeToToggle)) selected.delete(modeToToggle);
+      else selected.add(modeToToggle);
+      return INPUT_MODE_OPTIONS.filter((mode) => selected.has(mode));
+    });
   }
 
   return (
@@ -441,8 +453,31 @@ export function ModelDialog({
             </p>
           </div>
           <div className="grid gap-2 md:col-span-2">
-            <Label>Input Modes (每行一个)</Label>
-            <Textarea aria-label="Input" value={input} onChange={(event) => setInput(event.target.value)} placeholder="text\nimage\nvideo" />
+            <div className="flex items-baseline justify-between gap-2">
+              <Label>Input Modes</Label>
+              <span className={helpClassName}>可多选</span>
+            </div>
+            <div role="group" aria-label="Input Modes" className="flex flex-wrap gap-2">
+              {INPUT_MODE_OPTIONS.map((modeOption) => {
+                const selected = inputModes.includes(modeOption);
+                return (
+                  <button
+                    key={modeOption}
+                    type="button"
+                    aria-pressed={selected}
+                    onClick={() => toggleInputMode(modeOption)}
+                    className={`rounded-md border px-3 py-1.5 text-sm font-medium transition-colors ${
+                      selected
+                        ? "border-primary bg-primary text-primary-foreground shadow-sm"
+                        : "border-input bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                    }`}
+                  >
+                    {modeOption}
+                  </button>
+                );
+              })}
+            </div>
+            <p className={helpClassName}>模型支持的输入类型；未选择时不写入该字段。</p>
           </div>
           <div className="flex items-center space-x-2 md:col-span-2 mt-2">
             <input

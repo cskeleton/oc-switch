@@ -224,7 +224,7 @@ describe("ModelsView", () => {
     }));
     const getModels = mock(async () => ({ models: [] }));
 
-    const { findByLabelText, findByText, getByText } = render(
+    const { findByLabelText, findByRole, findByText, getByText } = render(
       <ModelsView client={mockClient({ getModels, getProviders, createModel })} />
     );
 
@@ -238,7 +238,8 @@ describe("ModelsView", () => {
     expect(reasoningCheckbox.checked).toBe(true);
     await userEvent.type(await findByLabelText("原生上下文窗口"), "128000");
     await userEvent.type(await findByLabelText("最大输出长度"), "8192");
-    await userEvent.type(await findByLabelText("Input"), "text\nimage");
+    await userEvent.click(await findByRole("button", { name: "text" }));
+    await userEvent.click(await findByRole("button", { name: "image" }));
     await userEvent.click(getByText("保存模型"));
 
     expect(createModel).toHaveBeenCalledWith("nvidia", {
@@ -2644,6 +2645,36 @@ describe("ModelDialog 参考参数建议", () => {
     );
   });
 
+  test("Input Modes 使用按钮并支持多选保存", async () => {
+    const onSave = mock(async () => {});
+    const { getByLabelText, getByRole, getByText } = renderModelDialog({ onSave });
+
+    const textMode = getByRole("button", { name: "text" });
+    const imageMode = getByRole("button", { name: "image" });
+    const videoMode = getByRole("button", { name: "video" });
+    expect(textMode.getAttribute("aria-pressed")).toBe("false");
+    expect(imageMode.getAttribute("aria-pressed")).toBe("false");
+    expect(videoMode.getAttribute("aria-pressed")).toBe("false");
+
+    await userEvent.click(textMode);
+    await userEvent.click(imageMode);
+    expect(textMode.getAttribute("aria-pressed")).toBe("true");
+    expect(imageMode.getAttribute("aria-pressed")).toBe("true");
+    expect(videoMode.getAttribute("aria-pressed")).toBe("false");
+
+    await userEvent.type(getByLabelText("Model ID"), "custom-model");
+    await userEvent.click(getByText("保存模型"));
+
+    await waitFor(() =>
+      expect(onSave).toHaveBeenCalledWith("nvidia", {
+        id: "custom-model",
+        enabled: true,
+        reasoning: true,
+        input: ["text", "image"]
+      })
+    );
+  });
+
   test("contextTokens 大于 contextWindow 时前端阻止提交", async () => {
     const onSave = mock(async () => {});
     const { getByLabelText, getByText, findByText } = renderModelDialog({ onSave });
@@ -2699,7 +2730,7 @@ describe("ModelDialog 参考参数建议", () => {
     await userEvent.type(await findByLabelText("Model ID"), "openai/gpt-5.2");
     await userEvent.click(await findByLabelText("查询参考参数"));
 
-    await waitFor(() => expect(getModelMetadataSuggestions).toHaveBeenCalledWith("nvidia", "openai/gpt-5.2"));
+    await waitFor(() => expect(getModelMetadataSuggestions).toHaveBeenCalledWith("nvidia", "gpt-5.2"));
     expect(await findByText("GPT-5.2")).toBeTruthy();
   });
 
@@ -2717,6 +2748,6 @@ describe("ModelDialog 参考参数建议", () => {
     await userEvent.type(await findByLabelText("Model ID"), "openai/gpt-5.2");
     await userEvent.click(await findByLabelText("查询参考参数"));
 
-    await waitFor(() => expect(getModelMetadataSuggestions).toHaveBeenCalledWith("nvidia", "openai/gpt-5.2"));
+    await waitFor(() => expect(getModelMetadataSuggestions).toHaveBeenCalledWith("nvidia", "gpt-5.2"));
   });
 });
