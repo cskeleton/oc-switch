@@ -6,6 +6,7 @@ import sample from "./fixtures/openclaw.sample.json";
 import { writePrimaryModelRef } from "../src/primary-model";
 import { writeEnvTransaction, writeOpenClawTransaction } from "../src/transaction-writer";
 import type { RuntimeDiscoveryResult, RuntimePathCandidateGroup } from "../src/runtime-discovery-types";
+import type { OpenClawConfig } from "../src/types";
 import { expectedGatewayEnvPath, prepareGatewayEnvTarget, withTestHome, withTestHomeAsync } from "./gateway-sync-fixture";
 
 function discoveryGroup(
@@ -64,6 +65,26 @@ afterEach(() => {
 const darwinTest = process.platform === "darwin" ? test : test.skip;
 
 describe("writeOpenClawTransaction", () => {
+  test("normalizes legacy Provider IDs and refs before persisting any config write", async () => {
+    const ws = makeWorkspace();
+
+    await writeOpenClawTransaction({
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath,
+      stateDir: ws.stateDir,
+      reason: "normalize provider IDs",
+      mutate(config) {
+        return config;
+      }
+    });
+
+    const persisted = JSON.parse(readFileSync(ws.openclawPath, "utf8")) as OpenClawConfig;
+    expect(persisted.models?.providers?.deepseek).toBeDefined();
+    expect(persisted.models?.providers?.DeepSeek).toBeUndefined();
+    expect(persisted.agents?.defaults?.models?.["deepseek/deepseek-chat"]).toEqual({ alias: "ds-chat" });
+    expect(persisted.agents?.defaults?.model).toBe("minimax-portal/MiniMax-M3");
+  });
+
   test("writes config and env with backup package", async () => {
     const ws = makeWorkspace();
     const result = await writeOpenClawTransaction({

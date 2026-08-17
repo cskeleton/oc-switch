@@ -15,7 +15,7 @@ import {
   previewEnvUpdates,
   providerEnvVar,
   readManifest,
-  readProviderStates,
+  getDisabledProviderState,
   removeDisabledProviderState,
   removeProvider,
   restoreDisabledProvider,
@@ -331,8 +331,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
         });
       }
 
-      const states = readProviderStates(paths.stateDir);
-      const snapshot = states.disabledProviders[providerId];
+      const snapshot = getDisabledProviderState(paths.stateDir, providerId);
       if (!snapshot) throw new Error(`Provider ${providerId} has no disabled state snapshot`);
       if (snapshot.openclawPath !== paths.openclawPath) {
         throw new Error(`Provider ${providerId} disabled snapshot belongs to another OpenClaw config`);

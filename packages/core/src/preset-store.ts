@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { formatModelRef } from "./model-ref";
+import { formatModelRef, normalizeProviderId } from "./model-ref";
+import { resolveProviderId } from "./operation-common";
 import { providerEnvVar } from "./openclaw-compat";
 import type { OpenClawConfig, ProviderPreset } from "./types";
 
@@ -78,7 +79,8 @@ export function saveCustomPreset(customDir: string, preset: ProviderPreset): str
 }
 
 export function exportProviderPreset(config: OpenClawConfig, providerId: string): ProviderPreset {
-  const provider = config.models?.providers?.[providerId];
+  const resolvedProviderId = resolveProviderId(config, providerId);
+  const provider = resolvedProviderId ? config.models?.providers?.[resolvedProviderId] : undefined;
   if (!provider) throw new Error(`Provider ${providerId} not found`);
 
   const apiKeyEnv = providerEnvVar(provider);
@@ -86,14 +88,14 @@ export function exportProviderPreset(config: OpenClawConfig, providerId: string)
 
   const allowlist = config.agents?.defaults?.models ?? {};
   const models = (provider.models ?? []).map((model) => {
-    const ref = formatModelRef(providerId, model.id);
+    const ref = formatModelRef(resolvedProviderId!, model.id);
     const alias = allowlist[ref]?.alias;
     return alias ? { ...model, alias } : { ...model };
   });
 
   return {
-    id: providerId,
-    name: providerId,
+    id: normalizeProviderId(resolvedProviderId!),
+    name: normalizeProviderId(resolvedProviderId!),
     provider: {
       api: provider.api ?? "openai-completions",
       baseUrl: provider.baseUrl ?? "",

@@ -677,8 +677,8 @@ describe("server write endpoints", () => {
 
     expect(response.status).toBe(200);
     const manifest = JSON.parse(readFileSync(join(ws.paths.stateDir, "manifest.json"), "utf8"));
-    expect(manifest.providers.DeepSeek).toMatchObject({
-      providerId: "DeepSeek",
+    expect(manifest.providers.deepseek).toMatchObject({
+      providerId: "deepseek",
       envVar: "DEEPSEEK_API_KEY",
       orphan: true
     });

@@ -9,7 +9,8 @@ import {
   editProvider,
   mergeProviderCaseDuplicates,
   loadPreset,
-  readProviderStates,
+  isProviderDisabled,
+  getDisabledProviderState,
   removeDisabledProviderState,
   removeProvider,
   restoreDisabledProvider,
@@ -25,10 +26,9 @@ export function registerProviderCommands(program: Command, context: CommandConte
   const providers = program.command("providers");
   providers.command("list").action(() => {
     const paths = context.activePaths();
-    const states = readProviderStates(paths.stateDir);
     const rows = createConfigAdapter(context.readConfig()).listProviders();
     for (const row of rows) {
-      const status = states.disabledProviders[row.id] ? "disabled" : "enabled";
+      const status = isProviderDisabled(paths.stateDir, row.id) ? "disabled" : "enabled";
       console.log(`${row.id}\t${row.api ?? "unknown"}\t${status}\t${row.enabledModelCount}/${row.modelCount}`);
     }
   });
@@ -265,7 +265,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
     .argument("<name>")
     .action(async (name: string) => {
       const paths = context.activePaths();
-      const snapshot = readProviderStates(paths.stateDir).disabledProviders[name];
+      const snapshot = getDisabledProviderState(paths.stateDir, name);
       if (!snapshot) throw new Error(`Provider ${name} has no disabled state snapshot`);
       if (snapshot.openclawPath !== paths.openclawPath) {
         throw new Error(`Provider ${name} disabled snapshot belongs to another OpenClaw config`);

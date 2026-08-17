@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { createBackup } from "./backup-manager";
 import { removeManagedEnvKeys } from "./env-manager";
 import { readJsonState, writeJsonState } from "./json-state-store";
+import { normalizeProviderId } from "./model-ref";
 import type { OcSwitchPaths } from "./paths";
 
 export interface ManifestProviderMetadata {
@@ -47,16 +48,32 @@ export function readManifest(stateDir: string): OcSwitchManifest {
     invalidJson: "throw",
     normalize(value) {
       const parsed = value as Partial<OcSwitchManifest>;
-      return { providers: parsed.providers ?? {}, extraEnv: parsed.extraEnv ?? {} };
+      const providers: Record<string, ManifestProviderEntry> = {};
+      for (const [key, rawEntry] of Object.entries(parsed.providers ?? {})) {
+        const providerId = normalizeProviderId(rawEntry.providerId || key);
+        if (Object.prototype.hasOwnProperty.call(providers, providerId)) {
+          throw new Error(`Manifest provider entries ${key} and ${providerId} conflict after lowercase normalization.`);
+        }
+        providers[providerId] = { ...rawEntry, providerId };
+      }
+      return { providers, extraEnv: parsed.extraEnv ?? {} };
     }
   });
 }
 
 export function writeManifest(stateDir: string, manifest: OcSwitchManifest): void {
+  const providers: Record<string, ManifestProviderEntry> = {};
+  for (const [key, entry] of Object.entries(manifest.providers)) {
+    const providerId = normalizeProviderId(entry.providerId || key);
+    if (Object.prototype.hasOwnProperty.call(providers, providerId)) {
+      throw new Error(`Manifest provider entries ${key} and ${providerId} conflict after lowercase normalization.`);
+    }
+    providers[providerId] = { ...entry, providerId };
+  }
   writeJsonState({
     stateDir,
     filename: MANIFEST_FILE,
-    value: manifest
+    value: { ...manifest, providers }
   });
 }
 
@@ -96,11 +113,12 @@ export function upsertProviderEnvManifest(
   metadata: ManifestProviderMetadata = {}
 ): void {
   const manifest = readManifest(stateDir);
-  const existing = manifest.providers[providerId];
-  manifest.providers[providerId] = {
+  const normalizedProviderId = normalizeProviderId(providerId);
+  const existing = manifest.providers[normalizedProviderId];
+  manifest.providers[normalizedProviderId] = {
     ...existing,
     ...metadata,
-    providerId,
+    providerId: normalizedProviderId,
     envVar,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
@@ -116,10 +134,11 @@ export function markProviderEnvOrphan(
   now = new Date().toISOString()
 ): void {
   const manifest = readManifest(stateDir);
-  const existing = manifest.providers[providerId];
-  manifest.providers[providerId] = {
+  const normalizedProviderId = normalizeProviderId(providerId);
+  const existing = manifest.providers[normalizedProviderId];
+  manifest.providers[normalizedProviderId] = {
     ...existing,
-    providerId,
+    providerId: normalizedProviderId,
     envVar,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,

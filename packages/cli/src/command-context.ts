@@ -4,6 +4,7 @@ import {
   getActivePaths,
   isProviderDisabled,
   providerEnvVar as coreProviderEnvVar,
+  resolveProviderId,
   type FetchImpl,
   type OcSwitchPaths,
   type OpenClawConfig,
@@ -19,7 +20,8 @@ import { dirname, join } from "node:path";
 export const repoRoot = join(dirname(import.meta.path), "../../..");
 
 function providerEnvVar(config: OpenClawConfig, providerId: string): string | undefined {
-  return coreProviderEnvVar(config.models?.providers?.[providerId]);
+  const resolvedProviderId = resolveProviderId(config, providerId);
+  return coreProviderEnvVar(resolvedProviderId ? config.models?.providers?.[resolvedProviderId] : undefined);
 }
 
 function mockSyncFetch(): FetchImpl | undefined {

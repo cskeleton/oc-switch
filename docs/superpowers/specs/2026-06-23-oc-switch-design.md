@@ -21,7 +21,7 @@
 
 对本机当前配置的验证结果：
 
-- `models.providers` 为对象，共 12 个 provider，provider key 大小写敏感（如 `DeepSeek`、`OpenRouter`）
+- `models.providers` 为对象，共 12 个 provider；oc-switch 持久化 Provider key 时统一使用小写（如 `deepseek`、`openrouter`）
 - `agents.defaults.models` 为对象，共 43 个 allowlist 条目，value 常见结构为 `{ alias, agentRuntime? }`
 - 多个 provider 的模型 ID 本身包含斜杠，例如 `deepseek-ai/deepseek-v4-flash`、`qwen/qwen3.5-27b`
 - 因此完整模型引用必须按“第一个 `/` 前为 provider，其余完整保留为 modelId”解析
@@ -134,7 +134,7 @@ ModelRef = `${providerId}/${modelId}`
 
 解析规则：
 
-- `providerId` 不允许包含 `/`，必须与 `models.providers` 的 key 完全一致，大小写敏感，不自动 normalize
+- `providerId` 不允许包含 `/`；写入 OpenClaw 前统一转换为小写，`modelId` 保留原始大小写并必须与上游 ID 精确匹配
 - `modelId` 可以包含 `/`、`.`、`:`、`-` 等字符，解析时保留第一个 `/` 后面的完整字符串
 - `parseModelRef(ref)` 只按第一个 `/` 拆分：`providerId = beforeFirstSlash(ref)`，`modelId = afterFirstSlash(ref)`
 - 无 `/`、provider 为空、modelId 为空均为非法引用
@@ -515,7 +515,7 @@ oc-switch/
 首版测试至少包含以下 fixture：
 
 - **slash-model-ref**：`nvidia/deepseek-ai/deepseek-v4-flash` 解析为 provider `nvidia` 与 modelId `deepseek-ai/deepseek-v4-flash`
-- **case-sensitive-provider**：`DeepSeek` 与 `deepseek` 不能互相覆盖或 normalize
+- **provider-id-storage-normalization**：`DeepSeek/Model-X` 写入为 `deepseek/Model-X`，model ID 不变；真正的 `DeepSeek` 与 `deepseek` Provider 块冲突时拒绝静默覆盖
 - **allowlist-value-preserve**：更新 alias 时保留 `agentRuntime` 与未知字段
 - **provider-delete-scope**：删除 `nvidia` 只移除 provider 首段等于 `nvidia` 的 allowlist 条目
 - **env-conflict**：管理块外已有同名 env var 时默认拒绝覆盖

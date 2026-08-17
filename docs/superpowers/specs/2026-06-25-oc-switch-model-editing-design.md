@@ -140,7 +140,7 @@ ModelRef = `${providerId}/${modelId}`
 - `providerId` 不允许包含 `/`
 - `modelId` 可以包含 `/`
 - 拆分时只按第一个 `/`
-- 大小写敏感，不自动 normalize
+- Provider 前缀写入时统一转换为小写；model ID 保持大小写敏感并原样存储
 
 ### 5.2 新增模型
 

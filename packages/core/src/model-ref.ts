@@ -22,13 +22,18 @@ export function formatModelRef(providerId: string, modelId: string): string {
   return `${providerId}/${modelId}`;
 }
 
-/** 仅用于跨配置比较和展示关联；不改变实际写入的 Provider ID。 */
+/** Provider ID 的持久化规范：统一小写，model ID 保留原样。 */
 export function normalizeProviderId(providerId: string): string {
   return providerId.toLowerCase();
 }
 
-/** 仅折叠 ModelRef 的 Provider 前缀，保留 model ID 大小写。 */
-export function normalizeModelRefForIdentity(ref: string): string {
+/** 仅归一化 ModelRef 的 Provider 前缀，保留 model ID 大小写。 */
+export function normalizeModelRefForStorage(ref: string): string {
   const { providerId, modelId } = parseModelRef(ref);
   return formatModelRef(normalizeProviderId(providerId), modelId);
+}
+
+/** 跨配置比较使用与持久化相同的 Provider 前缀归一规则。 */
+export function normalizeModelRefForIdentity(ref: string): string {
+  return normalizeModelRefForStorage(ref);
 }

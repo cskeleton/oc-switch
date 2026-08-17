@@ -1,4 +1,4 @@
-import { formatModelRef, parseModelRef } from "./model-ref";
+import { formatModelRef, normalizeModelRefForStorage, normalizeProviderId, parseModelRef } from "./model-ref";
 import { defaultModelName } from "./openclaw-compat";
 import {
   ensureDefaults,
@@ -16,7 +16,7 @@ import type { AllowlistEntry, OpenClawConfig, OpenClawModel, ProviderModelInput 
  * 不得删除或改名，force 也不可绕过；oc-switch 不自动改写 fallbacks。
  */
 function assertFallbackRemovalAllowed(config: OpenClawConfig, ref: string): void {
-  if (readFallbackModelRefs(config).includes(ref)) {
+  if (readFallbackModelRefs(config).some((fallbackRef) => normalizeModelRefForStorage(fallbackRef) === normalizeModelRefForStorage(ref))) {
     throw new Error(
       `Model ${ref} is referenced by agents.defaults.model.fallbacks. Remove it from the OpenClaw fallback list first.`
     );
@@ -60,10 +60,12 @@ export function enableModel(config: OpenClawConfig, ref: string, alias?: string)
   if (!hasProviderModel(config, ref)) {
     throw new Error(`Model ${ref} is not defined in provider models`);
   }
-  const allowlistRef = matchingAllowlistRefs(config, ref)[0] ?? ref;
-  const existing = config.agents!.defaults!.models![allowlistRef] ?? {};
+  const matchingRefs = matchingAllowlistRefs(config, ref);
+  const existingRef = matchingRefs[0];
+  const existing = existingRef ? config.agents!.defaults!.models![existingRef] ?? {} : {};
   const next: AllowlistEntry = alias ? { ...existing, alias } : existing;
-  config.agents!.defaults!.models![allowlistRef] = next;
+  for (const matchingRef of matchingRefs) delete config.agents!.defaults!.models![matchingRef];
+  config.agents!.defaults!.models![normalizeModelRefForStorage(ref)] = next;
   return { config, warnings: [] };
 }
 
@@ -141,10 +143,11 @@ export function addProviderModel(
         return { providerId, modelId, input: { ...input, id: modelId } };
       })();
   assertProviderModelInput(refInput.input);
-  const provider = config.models!.providers![refInput.providerId];
+  const resolvedProviderId = resolveProviderId(config, refInput.providerId);
+  const provider = resolvedProviderId ? config.models!.providers![resolvedProviderId] : undefined;
   if (!provider) throw new Error(`Provider ${refInput.providerId} not found`);
 
-  const ref = formatModelRef(refInput.providerId, refInput.modelId);
+  const ref = formatModelRef(resolvedProviderId!, refInput.modelId);
   const models = provider.models ?? [];
   if (models.some((model) => model.id === refInput.modelId)) {
     throw new Error(`Model ${ref} already exists`);
@@ -173,7 +176,8 @@ export function updateProviderModel(config: OpenClawConfig, ref: string, input: 
   const existingIndex = models.findIndex((model) => model.id === modelId);
   if (existingIndex === -1) throw new Error(`Model ${ref} not found`);
 
-  const nextRef = formatModelRef(resolvedProviderId!, input.id);
+  const canonicalProviderId = normalizeProviderId(resolvedProviderId!);
+  const nextRef = formatModelRef(canonicalProviderId, input.id);
   if (input.id !== modelId && models.some((model) => model.id === input.id)) {
     throw new Error(`Model ${nextRef} already exists`);
   }
@@ -192,9 +196,6 @@ export function updateProviderModel(config: OpenClawConfig, ref: string, input: 
   const existingAllowlist = existingAllowlistRef
     ? config.agents!.defaults!.models![existingAllowlistRef]
     : undefined;
-  const preferredAllowlistProviderId = existingAllowlistRef
-    ? parseModelRef(existingAllowlistRef).providerId
-    : resolvedProviderId;
   if (input.id !== modelId) {
     for (const allowlistRef of existingAllowlistRefs) {
       delete config.agents!.defaults!.models![allowlistRef];
@@ -205,10 +206,11 @@ export function updateProviderModel(config: OpenClawConfig, ref: string, input: 
   }
 
   if (input.enabled) {
-    const targetAllowlistRef = input.id === modelId && existingAllowlistRef
-      ? existingAllowlistRef
-      : matchingAllowlistRefs(config, nextRef)[0] ?? formatModelRef(preferredAllowlistProviderId!, input.id);
-    config.agents!.defaults!.models![targetAllowlistRef] = existingAllowlist ?? config.agents!.defaults!.models![targetAllowlistRef] ?? {};
+    for (const allowlistRef of matchingAllowlistRefs(config, nextRef)) {
+      delete config.agents!.defaults!.models![allowlistRef];
+    }
+    const targetAllowlistRef = formatModelRef(canonicalProviderId, input.id);
+    config.agents!.defaults!.models![targetAllowlistRef] = existingAllowlist ?? {};
     upsertAllowlistEntry(config, targetAllowlistRef, input.alias);
   } else {
     for (const allowlistRef of matchingAllowlistRefs(config, nextRef)) {
@@ -250,6 +252,6 @@ export function removeProviderModel(
 export function definedRefs(config: OpenClawConfig): string[] {
   const providers = config.models?.providers ?? {};
   return Object.entries(providers).flatMap(([providerId, provider]) =>
-    (provider.models ?? []).map((model) => formatModelRef(providerId, model.id))
+    (provider.models ?? []).map((model) => formatModelRef(normalizeProviderId(providerId), model.id))
   );
 }

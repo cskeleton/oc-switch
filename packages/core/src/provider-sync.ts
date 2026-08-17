@@ -1,5 +1,7 @@
 import { readEnvValue } from "./env-manager";
+import { normalizeProviderId } from "./model-ref";
 import { providerEnvVar } from "./openclaw-compat";
+import { resolveProviderId } from "./operation-common";
 import type { OpenClawConfig, OpenClawProvider } from "./types";
 
 /** 远端模型条目（发现结果，不写盘） */
@@ -259,13 +261,15 @@ export async function discoverProviderModels(
   options?: FetchImpl | ProviderDiscoverOptions
 ): Promise<ProviderDiscoverResult> {
   const { fetchImpl, envContent } = resolveDiscoverOptions(options);
-  const provider = config.models?.providers?.[providerId];
+  const resolvedProviderId = resolveProviderId(config, providerId);
+  const provider = resolvedProviderId ? config.models?.providers?.[resolvedProviderId] : undefined;
   if (!provider) throw new Error(`Provider ${providerId} not found`);
+  const canonicalProviderId = normalizeProviderId(resolvedProviderId!);
 
   const api = provider.api ?? "openai-completions";
   if (api === "google-generative-ai") {
     return {
-      providerId,
+      providerId: canonicalProviderId,
       remoteModels: [],
       alreadyAddedIds: [],
       truncated: false,
@@ -274,10 +278,10 @@ export async function discoverProviderModels(
   }
 
   if (api === "anthropic-messages") {
-    return discoverAnthropicModels(providerId, provider, fetchImpl, envContent);
+    return discoverAnthropicModels(canonicalProviderId, provider, fetchImpl, envContent);
   }
 
-  return discoverOpenAiModels(providerId, provider, fetchImpl, envContent);
+  return discoverOpenAiModels(canonicalProviderId, provider, fetchImpl, envContent);
 }
 
 /**
@@ -289,7 +293,7 @@ export async function discoverProviderModelsFromCredentials(
   options?: FetchImpl | ProviderDiscoverOptions
 ): Promise<ProviderDiscoverResult> {
   const { fetchImpl } = resolveDiscoverOptions(options);
-  const providerId = input.providerId ?? "__preview__";
+  const providerId = normalizeProviderId(input.providerId ?? "__preview__");
   const api = input.api ?? "openai-completions";
   if (!input.baseUrl || input.baseUrl.trim().length === 0) {
     throw new Error("baseUrl must be a non-empty string");

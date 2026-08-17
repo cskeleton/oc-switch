@@ -27,11 +27,11 @@
 
 ### 1.2 技术根因
 
-OpenClaw 与 oc-switch 对 Provider ID **大小写敏感**，且**不自动 normalize**（见 `2026-06-23-oc-switch-design.md` §2.5）：
+OpenClaw 底层对 Provider ID **大小写敏感**，但 oc-switch 的持久化策略是 Provider ID **统一小写**：
 
-- `models.providers["9r"]` 与 `models.providers["9R"]` 是**两个独立 key**
-- allowlist（`agents.defaults.models`）的 ModelRef 前缀必须与 provider key **逐字符一致**
-- `9r/foo` 与 `9R/foo` 是两条不同的 allowlist 条目
+- 历史配置中的 `models.providers["9r"]` 与 `models.providers["9R"]` 仍是**两个独立 key**，迁移时不能静默覆盖
+- 新写入的 `models.providers` key、allowlist ModelRef 前缀、primary/fallback Provider 前缀统一使用小写
+- model ID 保持大小写敏感，`9r/Foo` 中的 `Foo` 必须原样保留，以匹配上游模型 ID
 
 重复通常来自：
 
@@ -45,7 +45,7 @@ OpenClaw 与 oc-switch 对 Provider ID **大小写敏感**，且**不自动 norm
 | 问题 | 结论 |
 |------|------|
 | 两个都得留着吗？ | **否**。逻辑上同一来源应只保留 **一个** canonical Provider ID |
-| 全局统一成全大写/全小写？ | **否**。不应批量改写所有 provider；只对「已判定同源」的重复对做合并 |
+| 全局统一成全大写/全小写？ | **是**。oc-switch 存储规范统一为 Provider ID 小写；已有配置通过 `health repair` 或下一次配置写入迁移 |
 | 自定义站（如 9 Router） | 高概率同源；以 `baseUrl`、主模型、配置完整度判断，**不是**让用户猜 |
 | oc-switch 当前责任 | 已能读写配置，但**未检测、未标注、未引导合并**；模型页合并展示 ID 会**放大困惑** |
 
@@ -74,9 +74,9 @@ OpenClaw 与 oc-switch 对 Provider ID **大小写敏感**，且**不自动 norm
 
 ## 3. 非目标
 
-- 不修改 OpenClaw 对 Provider ID 大小写敏感的语义
+- 不修改 OpenClaw 对 Provider ID 大小写敏感的运行时语义；只规范 oc-switch 写入的持久化形式
 - 不在后台静默 normalize 用户配置
-- 不强制全局命名规范（例如所有 provider 必须小写）
+- 不把 model ID、displayName、模型名称等非 Provider ID 字段转换为小写
 - 不因单个 Provider 块与 allowlist/主模型引用的大小写漂移发出重复 Provider 告警
 - 首版不处理「非大小写差异的重复 provider」（例如 `openrouter` 与 `open-router` 同 baseUrl）——可列为后续增强
 - 首版不处理「仅 allowlist 孤立、provider 块已不存在」的 general stale ref 全量清理（与 case duplicate 有交集但规格更广，可另立文档）
@@ -108,7 +108,7 @@ allowlist 中存在 `9R/...`，但 `models.providers` 只有 `9r`（或反之）
 - 展示使用实际 Provider key；写操作复用已有 allowlist key 的大小写，避免再次生成平行条目。
 - 如果同一归一 Provider 下存在多个真实 Provider key，则不在读取侧静默合并，继续由 `provider-duplicate` 健康报告处理。
 
-以上仅修正读取、比较和关联逻辑，不自动改写 OpenClaw 配置中的大小写。
+以上规则同时覆盖读取兼容、比较和写入：写入配置时统一转换 Provider 前缀为小写；如果两个真实 Provider 块或两个冲突的 allowlist 条目会在转换后占用同一 key，则拒绝静默覆盖并要求先人工合并。
 
 ### 4.4 `same-origin-hint`（同源信号）
 

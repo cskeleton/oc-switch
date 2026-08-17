@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import JSON5 from "json5";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import {
@@ -14,7 +15,9 @@ import {
   type GatewayRuntimeTarget
 } from "./gateway-runtime-target";
 import { discoverOpenClawRuntime } from "./path-discovery";
+import { normalizeConfigForStorage } from "./config-normalization";
 import type { RuntimeDiscoveryProvider } from "./runtime-discovery-types";
+import type { OpenClawConfig } from "./types";
 
 export const DEFAULT_BACKUP_RETENTION = 20;
 
@@ -149,7 +152,15 @@ export interface RestoreBackupInput {
 }
 
 export function restoreBackup(input: RestoreBackupInput): void {
-  copyFileSync(join(input.backupDir, "openclaw.json"), input.openclawPath);
+  const backupOpenClawPath = join(input.backupDir, "openclaw.json");
+  const rawConfig = readFileSync(backupOpenClawPath, "utf8");
+  const config = JSON5.parse(rawConfig) as OpenClawConfig;
+  const normalized = normalizeConfigForStorage(config);
+  if (normalized.changed) {
+    writeFileSync(input.openclawPath, `${JSON.stringify(normalized.config, null, 2)}\n`);
+  } else {
+    copyFileSync(backupOpenClawPath, input.openclawPath);
+  }
   const backupEnv = join(input.backupDir, ".env");
   if (existsSync(backupEnv)) {
     copyFileSync(backupEnv, input.envPath);

@@ -44,7 +44,7 @@
 | Fixture | 说明 | 验证方式 | 命令 / 测试 |
 |---------|------|----------|-------------|
 | slash-model-ref | `nvidia/deepseek-ai/deepseek-v4-flash` → provider `nvidia`，modelId `deepseek-ai/deepseek-v4-flash` | 单元 + CLI + smoke | `packages/core/test/model-ref.test.ts`；`packages/cli/test/cli.test.ts`；`bun run acceptance` |
-| case-sensitive-provider | `DeepSeek` 与 `deepseek` 不互相覆盖 | 单元 | `packages/core/test/model-ref.test.ts`（preserves provider casing）；`packages/core/test/config-adapter.test.ts` |
+| provider-id-storage-normalization | `DeepSeek/Model-X` 写入为 `deepseek/Model-X`，model ID 保持原样；同名 Provider 块冲突时拒绝静默覆盖 | 单元 | `packages/core/test/config-normalization.test.ts`；`packages/core/test/transaction-writer.test.ts` |
 | allowlist-value-preserve | 更新 alias 时保留 `agentRuntime` 与未知字段 | 单元 | `packages/core/test/operations.test.ts`；`packages/core/test/config-adapter.test.ts` |
 | provider-delete-scope | 删除 `nvidia` 只移除首段为 `nvidia` 的 allowlist | 单元 | `packages/core/test/operations.test.ts` |
 | env-conflict | 管理块外同名 env var 默认拒绝覆盖 | 单元 | `packages/core/test/env-manager.test.ts` |

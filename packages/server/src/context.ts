@@ -4,7 +4,7 @@ import {
   getActivePaths,
   isProviderDisabled,
   providerEnvVar as coreProviderEnvVar,
-  readProviderStates,
+  resolveProviderId,
   type FetchImpl,
   type OcSwitchPaths,
   type OpenClawConfig,
@@ -72,7 +72,8 @@ export function readEnvContent(paths: OcSwitchPaths): string | undefined {
 }
 
 export function providerEnvVar(config: OpenClawConfig, providerId: string): string | undefined {
-  return coreProviderEnvVar(config.models?.providers?.[providerId]);
+  const resolvedProviderId = resolveProviderId(config, providerId);
+  return coreProviderEnvVar(resolvedProviderId ? config.models?.providers?.[resolvedProviderId] : undefined);
 }
 
 function disabledProviderError(providerId: string): Error {
@@ -86,9 +87,8 @@ export function assertProviderCanEnable(paths: OcSwitchPaths, providerId: string
 }
 
 export function withDisabledStatus(paths: OcSwitchPaths, providers: ProviderSummary[]): ProviderSummary[] {
-  const states = readProviderStates(paths.stateDir);
   return providers.map((provider) => ({
     ...provider,
-    disabled: Boolean(states.disabledProviders[provider.id])
+    disabled: isProviderDisabled(paths.stateDir, provider.id)
   }));
 }

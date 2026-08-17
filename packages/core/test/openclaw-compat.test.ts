@@ -55,18 +55,43 @@ describe("openclaw compatibility helpers", () => {
     const result = repairOpenClawCompatibility(config);
     expect(result.changed).toBe(true);
     const nvidia = result.config.models?.providers?.nvidia;
-    const anthropicProxy = result.config.models?.providers?.anthropicProxy;
+    const anthropicProxy = result.config.models?.providers?.anthropicproxy;
     expect(nvidia?.apiKey).toBe("${NVIDIA_API_KEY}");
     expect(nvidia?.models?.[0]?.name).toBe("Vendor Model A");
     expect(anthropicProxy?.apiKey).toBe("${ANTHROPIC_API_KEY}");
     expect(anthropicProxy?.authHeader).toBe(true);
   });
 
+  test("repairs Provider ID casing and refs while preserving model ID casing", () => {
+    const config = {
+      models: {
+        providers: {
+          DeepSeek: {
+            models: [{ id: "DeepSeek-Chat" }]
+          }
+        }
+      },
+      agents: {
+        defaults: {
+          model: "DeepSeek/DeepSeek-Chat",
+          models: { "DeepSeek/DeepSeek-Chat": {} }
+        }
+      }
+    } as OpenClawConfig;
+
+    const result = repairOpenClawCompatibility(config);
+
+    expect(result.changed).toBe(true);
+    expect(result.config.models?.providers?.deepseek?.models?.[0]?.id).toBe("DeepSeek-Chat");
+    expect(result.config.agents?.defaults?.model).toBe("deepseek/DeepSeek-Chat");
+    expect(result.config.agents?.defaults?.models?.["deepseek/DeepSeek-Chat"]).toEqual({});
+  });
+
   test("does not rewrite canonical SecretRef objects", () => {
     const config = {
       models: {
         providers: {
-          vaultBacked: {
+          vaultbacked: {
             apiKey: { source: "env" as const, provider: "custom-env", id: "NVIDIA_API_KEY" },
             models: [{ id: "vendor/model-a", name: "Vendor Model A" }]
           }
@@ -76,7 +101,7 @@ describe("openclaw compatibility helpers", () => {
 
     const result = repairOpenClawCompatibility(config);
     expect(result.changed).toBe(false);
-    expect(result.config.models?.providers?.vaultBacked?.apiKey).toEqual({
+    expect(result.config.models?.providers?.vaultbacked?.apiKey).toEqual({
       source: "env",
       provider: "custom-env",
       id: "NVIDIA_API_KEY"

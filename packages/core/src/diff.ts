@@ -62,7 +62,7 @@ export function buildEnvVarProviderMap(...configs: OpenClawConfig[]): Map<string
   for (const config of configs) {
     for (const [id, provider] of Object.entries(config.models?.providers ?? {})) {
       const envVar = providerEnvVar(provider);
-      if (envVar && !map.has(envVar)) map.set(envVar, id);
+      if (envVar && !map.has(envVar)) map.set(envVar, normalizeProviderId(id));
     }
   }
   return map;
@@ -116,8 +116,11 @@ export function summarizeProviderStateChanges(
 ): ProviderStateChangeItem[] {
   const beforeCounts = summarizeProviderEnabledCounts(before);
   const afterCounts = summarizeProviderEnabledCounts(after);
-  const providerIds = Object.keys(before.models?.providers ?? {})
-    .filter((id) => Boolean(after.models?.providers?.[id]))
+  const beforeProviders = before.models?.providers ?? {};
+  const afterProviders = after.models?.providers ?? {};
+  const beforeIdsByNormalized = new Map(Object.keys(beforeProviders).map((id) => [normalizeProviderId(id), id]));
+  const providerIds = Object.keys(afterProviders)
+    .filter((id) => beforeIdsByNormalized.has(normalizeProviderId(id)))
     .sort();
 
   const changes: ProviderStateChangeItem[] = [];
@@ -152,10 +155,14 @@ export function summarizeProviderFieldChanges(
   const result: ProviderFieldChangeItem[] = [];
   const beforeProviders = before.models?.providers ?? {};
   const afterProviders = after.models?.providers ?? {};
-  const sharedProviderIds = Object.keys(beforeProviders).filter((id) => id in afterProviders).sort();
+  const afterIdsByNormalized = new Map(Object.keys(afterProviders).map((id) => [normalizeProviderId(id), id]));
+  const sharedProviderIds = Object.keys(beforeProviders)
+    .filter((id) => afterIdsByNormalized.has(normalizeProviderId(id)))
+    .sort();
 
-  for (const providerId of sharedProviderIds) {
-    const beforeProvider = beforeProviders[providerId] ?? {};
+  for (const beforeProviderId of sharedProviderIds) {
+    const providerId = afterIdsByNormalized.get(normalizeProviderId(beforeProviderId))!;
+    const beforeProvider = beforeProviders[beforeProviderId] ?? {};
     const afterProvider = afterProviders[providerId] ?? {};
     const keys = new Set([...Object.keys(beforeProvider), ...Object.keys(afterProvider)]);
 
@@ -184,13 +191,45 @@ export function summarizeConfigDiff(
 ): ConfigDiffSummary {
   const beforeProviders = before.models?.providers ?? {};
   const afterProviders = after.models?.providers ?? {};
-  const beforeIds = new Set(Object.keys(beforeProviders));
-  const afterIds = new Set(Object.keys(afterProviders));
+  const beforeIdsByNormalized = new Map(Object.keys(beforeProviders).map((id) => [normalizeProviderId(id), id]));
+  const afterIdsByNormalized = new Map(Object.keys(afterProviders).map((id) => [normalizeProviderId(id), id]));
+  const beforeProviderCounts = new Map<string, number>();
+  const afterProviderCounts = new Map<string, number>();
+  for (const id of Object.keys(beforeProviders)) {
+    const normalizedId = normalizeProviderId(id);
+    beforeProviderCounts.set(normalizedId, (beforeProviderCounts.get(normalizedId) ?? 0) + 1);
+  }
+  for (const id of Object.keys(afterProviders)) {
+    const normalizedId = normalizeProviderId(id);
+    afterProviderCounts.set(normalizedId, (afterProviderCounts.get(normalizedId) ?? 0) + 1);
+  }
 
-  const providersAdded = [...afterIds].filter((id) => !beforeIds.has(id)).sort();
-  const providersRemoved = [...beforeIds].filter((id) => !afterIds.has(id)).sort();
-  const providersChanged = [...beforeIds]
-    .filter((id) => afterIds.has(id) && JSON.stringify(beforeProviders[id]) !== JSON.stringify(afterProviders[id]))
+  const providersAdded = [...afterIdsByNormalized.entries()]
+    .filter(([normalizedId]) => !beforeIdsByNormalized.has(normalizedId))
+    .map(([, id]) => id)
+    .concat(
+      Object.keys(afterProviders)
+        .filter((id) => !Object.prototype.hasOwnProperty.call(beforeProviders, id))
+        .filter((id) => (afterProviderCounts.get(normalizeProviderId(id)) ?? 0) > (beforeProviderCounts.get(normalizeProviderId(id)) ?? 0))
+    )
+    .sort()
+    .filter((id, index, ids) => index === 0 || id !== ids[index - 1]);
+  const providersRemoved = [...beforeIdsByNormalized.entries()]
+    .filter(([normalizedId]) => !afterIdsByNormalized.has(normalizedId))
+    .map(([, id]) => id)
+    .concat(
+      Object.keys(beforeProviders)
+        .filter((id) => !Object.prototype.hasOwnProperty.call(afterProviders, id))
+        .filter((id) => (beforeProviderCounts.get(normalizeProviderId(id)) ?? 0) > (afterProviderCounts.get(normalizeProviderId(id)) ?? 0))
+    )
+    .sort()
+    .filter((id, index, ids) => index === 0 || id !== ids[index - 1]);
+  const providersChanged = [...afterIdsByNormalized.entries()]
+    .filter(([normalizedId, id]) => {
+      const beforeId = beforeIdsByNormalized.get(normalizedId);
+      return beforeId !== undefined && JSON.stringify(beforeProviders[beforeId]) !== JSON.stringify(afterProviders[id]);
+    })
+    .map(([, id]) => id)
     .sort();
 
   const beforeAllowlist = before.agents?.defaults?.models ?? {};

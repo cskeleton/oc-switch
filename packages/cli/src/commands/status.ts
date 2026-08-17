@@ -22,11 +22,11 @@ export function registerStatusCommands(program: Command, context: CommandContext
       if (options.dryRun) {
         console.log(JSON.stringify(summarizeConfigDiff(before, repaired.config), null, 2));
         for (const warning of repaired.warnings) console.warn(warning);
-        console.log(repaired.changed ? "Would repair OpenClaw compatibility issues" : "No compatibility repairs needed");
+        console.log(repaired.changed ? "Would repair OpenClaw compatibility and Provider ID casing" : "No compatibility or Provider ID casing repairs needed");
         return;
       }
       if (!repaired.changed) {
-        console.log("No compatibility repairs needed");
+        console.log("No compatibility or Provider ID casing repairs needed");
         for (const warning of repaired.warnings) console.warn(warning);
         return;
       }
@@ -38,7 +38,7 @@ export function registerStatusCommands(program: Command, context: CommandContext
           return repaired.config;
         }
       });
-      console.log(`Repaired OpenClaw compatibility (backup: ${result.backupDir.split("/").pop()})`);
+      console.log(`Repaired OpenClaw compatibility and Provider ID casing (backup: ${result.backupDir.split("/").pop()})`);
       for (const warning of repaired.warnings) console.warn(warning);
     });
 

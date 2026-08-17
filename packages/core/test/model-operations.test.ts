@@ -216,7 +216,7 @@ describe("provider model editing", () => {
 
     expect(result.config.agents?.defaults?.models?.["cpa/codex-free"]).toBeUndefined();
     expect(result.config.agents?.defaults?.models?.["cpa/codex-pro"]).toEqual({ alias: "pro" });
-    expect(result.config.agents?.defaults?.model).toBe("CPA/codex-pro");
+    expect(result.config.agents?.defaults?.model).toBe("cpa/codex-pro");
   });
 
   test("rejects duplicate model ids and invalid numeric fields", () => {

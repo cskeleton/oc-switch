@@ -1,7 +1,7 @@
-import { formatModelRef, parseModelRef } from "./model-ref";
+import { formatModelRef, normalizeProviderId, parseModelRef } from "./model-ref";
 import { setPrimaryModel } from "./model-operations";
 import { formatEnvRefForOpenClaw, ensureModelName } from "./openclaw-compat";
-import { ensureDefaults, type OperationResult } from "./operation-common";
+import { ensureDefaults, matchingAllowlistRefs, resolveProviderId, type OperationResult } from "./operation-common";
 import { readFallbackModelRefs, readPrimaryModelRef } from "./primary-model";
 import { assertProviderModelCapacity } from "./provider-model-limits";
 import type { ApiType, CustomProviderInput, OpenClawConfig, OpenClawModel, ProviderPreset } from "./types";
@@ -21,7 +21,7 @@ function removeLegacyAuthHeaderRef<T extends { authHeader?: unknown }>(provider:
 
 function assertProviderFallbackRemovalAllowed(config: OpenClawConfig, providerId: string): void {
   const fallbackRefs = readFallbackModelRefs(config);
-  if (fallbackRefs.some((ref) => parseModelRef(ref).providerId === providerId)) {
+  if (fallbackRefs.some((ref) => normalizeProviderId(parseModelRef(ref).providerId) === normalizeProviderId(providerId))) {
     throw new Error(
       `Provider ${providerId} is referenced by agents.defaults.model.fallbacks. Remove or migrate fallbacks in the OpenClaw config first.`
     );
@@ -34,7 +34,7 @@ function assertProviderPrimaryRemovalAllowed(
   options: { force: boolean; newPrimary?: string }
 ): void {
   const primary = readPrimaryModelRef(config);
-  if (!primary || parseModelRef(primary).providerId !== providerId) return;
+  if (!primary || normalizeProviderId(parseModelRef(primary).providerId) !== normalizeProviderId(providerId)) return;
   if (options.newPrimary) {
     setPrimaryModel(config, options.newPrimary);
     return;
@@ -54,20 +54,21 @@ export function removeProvider(
   options: { force: boolean; newPrimary?: string }
 ): OperationResult {
   ensureDefaults(config);
+  const resolvedProviderId = resolveProviderId(config, providerId) ?? providerId;
   const primary = readPrimaryModelRef(config);
   // fallback 依赖保护必须发生在任何 mutation 之前（force 也不可绕过）
-  assertProviderFallbackRemovalAllowed(config, providerId);
-  assertProviderPrimaryRemovalAllowed(config, providerId, options);
+  assertProviderFallbackRemovalAllowed(config, resolvedProviderId);
+  assertProviderPrimaryRemovalAllowed(config, resolvedProviderId, options);
 
-  delete config.models!.providers![providerId];
+  delete config.models!.providers![resolvedProviderId];
 
   for (const ref of Object.keys(config.agents!.defaults!.models!)) {
-    if (parseModelRef(ref).providerId === providerId) {
+    if (normalizeProviderId(parseModelRef(ref).providerId) === normalizeProviderId(resolvedProviderId)) {
       delete config.agents!.defaults!.models![ref];
     }
   }
 
-  const warnings = primary && parseModelRef(primary).providerId === providerId && options.force
+  const warnings = primary && normalizeProviderId(parseModelRef(primary).providerId) === normalizeProviderId(resolvedProviderId) && options.force
     ? [`Primary model ${primary} now points to a deleted provider`]
     : [];
 
@@ -80,7 +81,8 @@ export function editProvider(
   changes: { baseUrl?: string; api?: ApiType; apiKeyEnv?: string }
 ): OperationResult {
   ensureDefaults(config);
-  const provider = config.models!.providers![providerId];
+  const resolvedProviderId = resolveProviderId(config, providerId);
+  const provider = resolvedProviderId ? config.models!.providers![resolvedProviderId] : undefined;
   if (!provider) throw new Error(`Provider ${providerId} not found`);
 
   if (changes.baseUrl !== undefined) provider.baseUrl = changes.baseUrl;
@@ -102,7 +104,9 @@ export function addProviderFromPreset(
   enabledModelIds: string[] = preset.models.map((model) => model.id)
 ): OperationResult {
   ensureDefaults(config);
-  const existingProvider = config.models!.providers![preset.id];
+  const providerId = normalizeProviderId(preset.id);
+  const existingProviderId = resolveProviderId(config, providerId);
+  const existingProvider = existingProviderId ? config.models!.providers![existingProviderId] : undefined;
   const existingIds = new Set((existingProvider?.models ?? []).map((m) => m.id));
   const modelsById = new Map<string, OpenClawModel>();
 
@@ -118,21 +122,27 @@ export function addProviderFromPreset(
   const netNew = preset.models.filter((m) => !existingIds.has(m.id)).length;
   assertProviderModelCapacity(existingProvider, netNew);
 
-  config.models!.providers![preset.id] = removeLegacyAuthHeaderRef({
+  config.models!.providers![providerId] = removeLegacyAuthHeaderRef({
     ...existingProvider,
     baseUrl: preset.provider.baseUrl,
     apiKey: formatEnvRefForOpenClaw(preset.provider.apiKeyEnv),
     api: preset.provider.api,
     models: Array.from(modelsById.values()).map((model) => ensureModelName(model))
   });
+  if (existingProviderId && existingProviderId !== providerId) {
+    delete config.models!.providers![existingProviderId];
+  }
 
   for (const model of preset.models) {
-    const ref = formatModelRef(preset.id, model.id);
+    const ref = formatModelRef(providerId, model.id);
+    const matchingRefs = matchingAllowlistRefs(config, ref);
+    const existingRef = matchingRefs[0];
+    const existingEntry = existingRef ? config.agents!.defaults!.models![existingRef] : undefined;
+    for (const matchingRef of matchingRefs) delete config.agents!.defaults!.models![matchingRef];
     if (enabledModelIds.includes(model.id)) {
-      const existingEntry = config.agents!.defaults!.models![ref] ?? {};
       config.agents!.defaults!.models![ref] = model.alias
         ? { ...existingEntry, alias: model.alias }
-        : existingEntry;
+        : existingEntry ?? {};
     } else {
       delete config.agents!.defaults!.models![ref];
     }
@@ -164,9 +174,8 @@ function normalizeCustomProviderBaseUrl(api: CustomProviderInput["api"], baseUrl
 function assertCustomProviderInput(config: OpenClawConfig, input: CustomProviderInput): void {
   if (!input.providerId.trim()) throw new Error("providerId must be a non-empty string");
   if (input.providerId.includes("/")) throw new Error("Provider ID must not contain /");
-  if (config.models?.providers?.[input.providerId]) throw new Error(`Provider ${input.providerId} already exists`);
-  const lower = input.providerId.toLowerCase();
-  const caseClash = Object.keys(config.models?.providers ?? {}).find((id) => id.toLowerCase() === lower);
+  const lower = normalizeProviderId(input.providerId);
+  const caseClash = Object.keys(config.models?.providers ?? {}).find((id) => normalizeProviderId(id) === lower);
   if (caseClash) throw new Error(`Provider ${caseClash} already exists (case-insensitive match)`);
   if (!PROVIDER_API_TYPES.has(input.api)) throw new Error("api must be a supported API type");
   if (!ENV_VAR_PATTERN.test(input.apiKeyEnv)) throw new Error("apiKeyEnv must be a valid env var name");
@@ -184,6 +193,7 @@ export function addCustomProvider(config: OpenClawConfig, input: CustomProviderI
   ensureDefaults(config);
   assertCustomProviderInput(config, input);
   assertProviderModelCapacity(undefined, input.models.length);
+  const providerId = normalizeProviderId(input.providerId);
 
   const baseUrl = normalizeCustomProviderBaseUrl(input.api, input.baseUrl, input.isFullUrl);
   const models = input.models.map((model): OpenClawModel =>
@@ -194,7 +204,7 @@ export function addCustomProvider(config: OpenClawConfig, input: CustomProviderI
     })
   );
 
-  config.models!.providers![input.providerId] = {
+  config.models!.providers![providerId] = {
     baseUrl,
     api: input.api,
     apiKey: formatEnvRefForOpenClaw(input.apiKeyEnv),
@@ -203,7 +213,7 @@ export function addCustomProvider(config: OpenClawConfig, input: CustomProviderI
 
   if (input.enableAllModels) {
     for (const model of input.models) {
-      const ref = formatModelRef(input.providerId, model.id);
+      const ref = formatModelRef(providerId, model.id);
       config.agents!.defaults!.models![ref] = model.alias ? { alias: model.alias } : {};
     }
   }

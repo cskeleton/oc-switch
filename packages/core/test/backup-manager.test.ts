@@ -59,6 +59,23 @@ afterEach(() => {
 const darwinTest = process.platform === "darwin" ? test : test.skip;
 
 describe("backup manager", () => {
+  test("normalizes Provider IDs when restoring a legacy backup", () => {
+    const ws = workspace();
+    writeFileSync(ws.openclawPath, JSON.stringify({
+      models: { providers: { OpenRouter: { models: [{ id: "Model-X" }] } } },
+      agents: { defaults: { model: "OpenRouter/Model-X", models: { "OpenRouter/Model-X": {} } } }
+    }));
+    const backupDir = createBackup({ ...ws, reason: "restore normalized", beforeHash: "hash" });
+    writeFileSync(ws.openclawPath, "{\"after\":true}\n");
+
+    restoreBackup({ backupDir, openclawPath: ws.openclawPath, envPath: ws.envPath });
+
+    const restored = JSON.parse(readFileSync(ws.openclawPath, "utf8"));
+    expect(restored.models.providers.openrouter.models[0].id).toBe("Model-X");
+    expect(restored.agents.defaults.model).toBe("openrouter/Model-X");
+    expect(restored.agents.defaults.models["openrouter/Model-X"]).toEqual({});
+  });
+
   test("lists backup packages newest first", () => {
     const ws = workspace();
     const first = createBackup({ ...ws, reason: "first", beforeHash: "hash-1" });

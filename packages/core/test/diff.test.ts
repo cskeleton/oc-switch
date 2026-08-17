@@ -9,6 +9,29 @@ import {
 import type { OpenClawConfig } from "../src/types";
 
 describe("summarizeConfigDiff", () => {
+  test("ignores Provider key casing-only migration", () => {
+    const before: OpenClawConfig = {
+      models: { providers: { CPA: { api: "openai-completions", models: [{ id: "Model-X" }] } } },
+      agents: { defaults: { model: "CPA/Model-X", models: { "CPA/Model-X": {} } } }
+    };
+    const after: OpenClawConfig = {
+      models: { providers: { cpa: { api: "openai-completions", models: [{ id: "Model-X" }] } } },
+      agents: { defaults: { model: "cpa/Model-X", models: { "cpa/Model-X": {} } } }
+    };
+
+    expect(summarizeConfigDiff(before, after)).toEqual({
+      providersAdded: [],
+      providersRemoved: [],
+      providersChanged: [],
+      modelsEnabled: [],
+      modelsDisabled: [],
+      primaryChanged: null,
+      credentialsChanged: [],
+      providerStateChanges: [],
+      providerFieldChanges: []
+    });
+  });
+
   test("summarizes provider, allowlist, and primary changes only", () => {
     const before: OpenClawConfig = {
       models: { providers: { old: { models: [{ id: "a" }] } } },

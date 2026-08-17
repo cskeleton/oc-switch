@@ -17,6 +17,17 @@ afterEach(() => {
 });
 
 describe("manifest manager metadata", () => {
+  test("stores Provider IDs and reads legacy Provider IDs in lowercase", () => {
+    const dir = stateDir();
+    upsertProviderEnvManifest(dir, "OpenRouter", "OPENROUTER_API_KEY", "2026-06-24T00:00:00.000Z");
+
+    expect(readManifest(dir).providers.openrouter).toMatchObject({
+      providerId: "openrouter",
+      envVar: "OPENROUTER_API_KEY"
+    });
+    expect(readManifest(dir).providers.OpenRouter).toBeUndefined();
+  });
+
   test("stores provider display metadata and preserves createdAt on update", () => {
     const dir = stateDir();
     upsertProviderEnvManifest(dir, "custom", "CUSTOM_API_KEY", "2026-06-24T00:00:00.000Z", {

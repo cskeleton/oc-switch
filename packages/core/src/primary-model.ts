@@ -1,4 +1,4 @@
-import { normalizeModelRefForIdentity } from "./model-ref";
+import { normalizeModelRefForIdentity, normalizeModelRefForStorage } from "./model-ref";
 import type { OpenClawConfig, OpenClawPrimaryModelObject } from "./types";
 
 /**
@@ -64,7 +64,8 @@ export function writePrimaryModelRef(config: OpenClawConfig, ref: string): void 
   config.agents ??= {};
   config.agents.defaults ??= {};
   const current = config.agents.defaults.model;
-  config.agents.defaults.model = isPrimaryModelRecord(current) ? { ...current, primary: ref } : ref;
+  const normalizedRef = normalizeModelRefForStorage(ref);
+  config.agents.defaults.model = isPrimaryModelRecord(current) ? { ...current, primary: normalizedRef } : normalizedRef;
 }
 
 /** 当前主模型归一 ref 是否等于给定 ref（两种形态等价比较；非法/缺失 primary 永不命中） */

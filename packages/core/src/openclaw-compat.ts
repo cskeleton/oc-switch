@@ -1,4 +1,5 @@
 import type { EnvRef, OpenClawConfig, OpenClawModel, OpenClawProvider, OpenClawSecretRef } from "./types";
+import { normalizeConfigForStorage } from "./config-normalization";
 
 export const OPENCLAW_ENV_VAR_PATTERN = /^[A-Z][A-Z0-9_]{0,127}$/;
 
@@ -127,6 +128,9 @@ export function repairOpenClawCompatibility<T extends OpenClawConfig>(config: T)
 } {
   const warnings: string[] = [];
   let changed = false;
+
+  const normalized = normalizeConfigForStorage(config);
+  changed ||= normalized.changed;
 
   for (const [providerId, provider] of Object.entries(config.models?.providers ?? {})) {
     if (repairProvider(provider, providerId, warnings)) {

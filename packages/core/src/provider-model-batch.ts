@@ -1,6 +1,6 @@
-import { formatModelRef, parseModelRef } from "./model-ref";
+import { formatModelRef, normalizeProviderId, parseModelRef } from "./model-ref";
 import { ensureModelName } from "./openclaw-compat";
-import { ensureDefaults, type OperationResult } from "./operation-common";
+import { ensureDefaults, matchingAllowlistRefs, resolveProviderId, type OperationResult } from "./operation-common";
 import { readFallbackModelRefs, readPrimaryModelRef } from "./primary-model";
 import { assertProviderModelCapacity } from "./provider-model-limits";
 import type { OpenClawConfig, OpenClawModel } from "./types";
@@ -30,7 +30,8 @@ export function batchAddProviderModels(
   input: BatchAddProviderModelsInput
 ): BatchAddProviderModelsResult {
   ensureDefaults(config);
-  const provider = config.models!.providers![providerId];
+  const resolvedProviderId = resolveProviderId(config, providerId);
+  const provider = resolvedProviderId ? config.models!.providers![resolvedProviderId] : undefined;
   if (!provider) throw new Error(`Provider ${providerId} not found`);
 
   const existingIds = new Set((provider.models ?? []).map((model) => model.id));
@@ -62,8 +63,12 @@ export function batchAddProviderModels(
   const enable = input.enable ?? false;
   if (enable) {
     for (const id of addedModelIds) {
-      const ref = formatModelRef(providerId, id);
-      config.agents!.defaults!.models![ref] = config.agents!.defaults!.models![ref] ?? {};
+      const ref = formatModelRef(normalizeProviderId(resolvedProviderId!), id);
+      const matchingRefs = matchingAllowlistRefs(config, ref);
+      const existingRef = matchingRefs[0];
+      const existing = existingRef ? config.agents!.defaults!.models![existingRef] : undefined;
+      for (const matchingRef of matchingRefs) delete config.agents!.defaults!.models![matchingRef];
+      config.agents!.defaults!.models![ref] = existing ?? {};
     }
   }
 
@@ -78,7 +83,7 @@ function assertNotRemovingPrimaryModel(
   const primary = readPrimaryModelRef(config);
   if (!primary) return;
   const { providerId: primaryProviderId, modelId: primaryModelId } = parseModelRef(primary);
-  if (primaryProviderId !== providerId) return;
+  if (normalizeProviderId(primaryProviderId) !== normalizeProviderId(providerId)) return;
   if (modelIds.includes(primaryModelId)) {
     throw new Error(`Cannot remove primary model ${primary}`);
   }
@@ -92,7 +97,7 @@ function assertNotRemovingFallbackModel(
 ): void {
   const fallbackModelIds = readFallbackModelRefs(config)
     .map((ref) => parseModelRef(ref))
-    .filter((parts) => parts.providerId === providerId)
+    .filter((parts) => normalizeProviderId(parts.providerId) === normalizeProviderId(providerId))
     .map((parts) => parts.modelId);
   for (const modelId of modelIds) {
     if (fallbackModelIds.includes(modelId)) {
@@ -111,7 +116,7 @@ function assertPrimaryCatalogPresentForKeepEnabledOnly(
   const primary = readPrimaryModelRef(config);
   if (!primary) return;
   const { providerId: primaryProviderId, modelId: primaryModelId } = parseModelRef(primary);
-  if (primaryProviderId !== providerId) return;
+  if (normalizeProviderId(primaryProviderId) !== normalizeProviderId(providerId)) return;
   const inCatalog = providerModels.some((model) => model.id === primaryModelId);
   if (!inCatalog) {
     throw new Error(
@@ -124,7 +129,7 @@ function collectAllowlistedModelIds(config: OpenClawConfig, providerId: string):
   const ids = new Set<string>();
   for (const ref of Object.keys(config.agents!.defaults!.models ?? {})) {
     const { providerId: refProviderId, modelId } = parseModelRef(ref);
-    if (refProviderId === providerId) ids.add(modelId);
+    if (normalizeProviderId(refProviderId) === normalizeProviderId(providerId)) ids.add(modelId);
   }
   return ids;
 }
@@ -136,7 +141,8 @@ export function batchRemoveProviderModels(
   input: BatchRemoveProviderModelsInput
 ): BatchRemoveProviderModelsResult {
   ensureDefaults(config);
-  const provider = config.models!.providers![providerId];
+  const resolvedProviderId = resolveProviderId(config, providerId);
+  const provider = resolvedProviderId ? config.models!.providers![resolvedProviderId] : undefined;
   if (!provider) throw new Error(`Provider ${providerId} not found`);
 
   const models = provider.models ?? [];
@@ -148,7 +154,7 @@ export function batchRemoveProviderModels(
     const primary = readPrimaryModelRef(config);
     if (primary) {
       const { providerId: primaryProviderId, modelId: primaryModelId } = parseModelRef(primary);
-      if (primaryProviderId === providerId) keepIds.add(primaryModelId);
+      if (normalizeProviderId(primaryProviderId) === normalizeProviderId(providerId)) keepIds.add(primaryModelId);
     }
 
     const removedModelIds = models.filter((model) => !keepIds.has(model.id)).map((model) => model.id);
@@ -159,7 +165,9 @@ export function batchRemoveProviderModels(
     provider.models = models.filter((model) => keepIds.has(model.id));
 
     for (const id of removedModelIds) {
-      delete config.agents!.defaults!.models![formatModelRef(providerId, id)];
+      for (const ref of matchingAllowlistRefs(config, formatModelRef(resolvedProviderId!, id))) {
+        delete config.agents!.defaults!.models![ref];
+      }
     }
 
     return { config, warnings: [], removedModelIds };
@@ -179,7 +187,9 @@ export function batchRemoveProviderModels(
   provider.models = models.filter((model) => !removeSet.has(model.id));
 
   for (const id of modelIds) {
-    delete config.agents!.defaults!.models![formatModelRef(providerId, id)];
+    for (const ref of matchingAllowlistRefs(config, formatModelRef(resolvedProviderId!, id))) {
+      delete config.agents!.defaults!.models![ref];
+    }
   }
 
   return { config, warnings: [], removedModelIds };

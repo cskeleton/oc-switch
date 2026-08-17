@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatModelRef, parseModelRef } from "../src/model-ref";
+import { formatModelRef, normalizeModelRefForStorage, normalizeProviderId, parseModelRef } from "../src/model-ref";
 
 describe("parseModelRef", () => {
   test("splits only on the first slash", () => {
@@ -26,5 +26,12 @@ describe("parseModelRef", () => {
 describe("formatModelRef", () => {
   test("joins provider and model id without normalizing", () => {
     expect(formatModelRef("OpenRouter", "openrouter/free")).toBe("OpenRouter/openrouter/free");
+  });
+});
+
+describe("storage normalization", () => {
+  test("normalizes only the provider prefix", () => {
+    expect(normalizeProviderId("OpenRouter")).toBe("openrouter");
+    expect(normalizeModelRefForStorage("OpenRouter/Claude-3.5-Sonnet")).toBe("openrouter/Claude-3.5-Sonnet");
   });
 });

@@ -163,7 +163,6 @@ describe("mergeProviderCaseDuplicates", () => {
     const result = mergeProviderCaseDuplicates(config, { groupKey: "9r", canonicalId: "9R", removeIds: ["9r"] });
 
     expect(result.config.models?.providers?.["9R"]?.models?.map((m) => m.id)).toEqual(["v3", "kimi"]);
-    expect(result.config.agents?.defaults?.models?.["9r/v3"]).toBeUndefined();
     expect(result.config.agents?.defaults?.models?.["9R/v3"]).toEqual({ alias: "a" });
     expect(result.config.agents?.defaults?.models?.["9R/kimi"]).toEqual({});
   });

@@ -65,7 +65,7 @@ Providers 页面顶部新增“添加 Provider”按钮。
 
 | 字段 | 必填 | 写入目标 | 说明 |
 | --- | --- | --- | --- |
-| Provider ID | 是 | `models.providers.{id}` | 大小写敏感，不允许 `/`，默认由供应商名称生成，可手改 |
+| Provider ID | 是 | `models.providers.{id}` | 不允许 `/`，写入时统一转换为小写；默认由供应商名称生成，可手改 |
 | 供应商名称 | 是 | manifest metadata | UI 展示名，不影响 OpenClaw provider key |
 | 备注 | 否 | manifest metadata | 用户备注 |
 | 官网链接 | 否 | manifest metadata | 仅展示和后续编辑使用 |

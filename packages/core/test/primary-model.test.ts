@@ -100,6 +100,14 @@ describe("readFallbackModelRefs", () => {
 });
 
 describe("writePrimaryModelRef", () => {
+  test("stores the Provider ID in lowercase while preserving model ID casing", () => {
+    const config = configWith('"openai/old"');
+
+    writePrimaryModelRef(config, "OpenAI/Model-X");
+
+    expect(config.agents?.defaults?.model).toBe("openai/Model-X");
+  });
+
   test("对象形态仅更新 primary，保留 fallbacks 与未知键", () => {
     const config = configWith('{"primary":"openai/old","fallbacks":["nvidia/a"],"customFlag":true}');
     writePrimaryModelRef(config, "minimax-portal/MiniMax-M3");

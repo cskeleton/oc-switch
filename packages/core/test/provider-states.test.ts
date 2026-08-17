@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,6 +13,32 @@ function tempStateDir(): string {
 }
 
 describe("provider-states", () => {
+  test("reads legacy disabled state with lowercase provider IDs and model ref prefixes", () => {
+    const stateDir = tempStateDir();
+    try {
+      writeFileSync(join(stateDir, "provider-states.json"), JSON.stringify({
+        version: 1,
+        disabledProviders: {
+          CPA: {
+            providerId: "CPA",
+            openclawPath: "/tmp/openclaw.json",
+            disabledAt: "2026-06-25T12:00:00.000Z",
+            allowlistEntries: { "CPA/Model-X": { alias: "x" } }
+          }
+        }
+      }));
+
+      const states = readProviderStates(stateDir);
+      expect(states.disabledProviders.cpa).toMatchObject({
+        providerId: "cpa",
+        allowlistEntries: { "cpa/Model-X": { alias: "x" } }
+      });
+      expect(states.disabledProviders.CPA).toBeUndefined();
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   test("returns an empty versioned state when the file does not exist", () => {
     const stateDir = tempStateDir();
     try {

@@ -22,6 +22,7 @@ import {
 } from "./gateway-runtime-target";
 import { discoverOpenClawRuntime } from "./path-discovery";
 import type { RuntimeDiscoveryProvider } from "./runtime-discovery-types";
+import { normalizeConfigForStorage } from "./config-normalization";
 import type { OpenClawConfig } from "./types";
 
 export type ManifestUpdate =
@@ -137,7 +138,8 @@ export async function writeOpenClawTransaction(input: TransactionInput): Promise
     const beforeHash = sha256(beforeRaw);
     const beforeEnv = existsSync(input.envPath) ? readFileSync(input.envPath, "utf8") : "";
 
-    const afterConfig = input.mutate(structuredClone(beforeConfig));
+    const mutatedConfig = input.mutate(structuredClone(beforeConfig));
+    const afterConfig = normalizeConfigForStorage(mutatedConfig).config;
     assertAllowedSemanticChange(beforeConfig, afterConfig);
     const afterRaw = `${JSON.stringify(afterConfig, null, 2)}\n`;
     const hasEnvUpdates = Boolean(input.envUpdates && Object.keys(input.envUpdates).length);

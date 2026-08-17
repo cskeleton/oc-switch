@@ -34,6 +34,26 @@ describe("provider operations", () => {
 });
 
 describe("addProviderFromPreset", () => {
+  test("stores preset Provider ID and refs in lowercase while preserving model IDs", () => {
+    const config = cloneSample();
+    const preset: ProviderPreset = {
+      id: "MyProvider",
+      name: "My Provider",
+      provider: {
+        api: "openai-completions",
+        baseUrl: "https://custom.example/v1",
+        apiKeyEnv: "MY_PROVIDER_API_KEY"
+      },
+      models: [{ id: "Vendor/Model-X" }]
+    };
+
+    const result = addProviderFromPreset(config, preset, ["Vendor/Model-X"]);
+
+    expect(result.config.models?.providers?.myprovider?.models?.[0]?.id).toBe("Vendor/Model-X");
+    expect(result.config.agents?.defaults?.models?.["myprovider/Vendor/Model-X"]).toEqual({});
+    expect(result.config.models?.providers?.MyProvider).toBeUndefined();
+  });
+
   test("adds provider, env ref, models, and allowlist", () => {
     const config = cloneSample();
     const preset: ProviderPreset = {
@@ -277,6 +297,24 @@ describe("removeProvider", () => {
 });
 
 describe("addCustomProvider", () => {
+  test("stores a custom provider ID and enabled refs in lowercase without changing model IDs", () => {
+    const config = cloneSample();
+    const result = addCustomProvider(config, {
+      providerId: "MyProvider",
+      displayName: "My Provider",
+      api: "openai-completions",
+      baseUrl: "https://api.custom.example",
+      isFullUrl: false,
+      apiKeyEnv: "MY_PROVIDER_API_KEY",
+      models: [{ id: "Vendor/Model-X" }],
+      enableAllModels: true
+    });
+
+    expect(result.config.models?.providers?.myprovider?.models?.[0]?.id).toBe("Vendor/Model-X");
+    expect(result.config.agents?.defaults?.models?.["myprovider/Vendor/Model-X"]).toEqual({});
+    expect(result.config.models?.providers?.MyProvider).toBeUndefined();
+  });
+
   test("adds openai-compatible provider, normalizes baseUrl, models, and allowlist", () => {
     const config = cloneSample();
     const result = addCustomProvider(config, {
@@ -438,7 +476,7 @@ describe("provider operations 对象形态主模型与 fallback 保护", () => {
     const config = objectPrimarySample();
     removeProvider(config, "minimax-portal", { force: false, newPrimary: "DeepSeek/deepseek-chat" });
     const model = config.agents!.defaults!.model as Record<string, unknown>;
-    expect(model.primary).toBe("DeepSeek/deepseek-chat");
+    expect(model.primary).toBe("deepseek/deepseek-chat");
     expect(model.fallbacks).toEqual(["nvidia/deepseek-ai/deepseek-v4-flash"]);
     expect(model.customFlag).toBe(true);
   });
