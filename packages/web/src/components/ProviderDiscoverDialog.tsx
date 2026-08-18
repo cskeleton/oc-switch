@@ -7,7 +7,7 @@ import { Label } from "./ui/label";
 import { Switch } from "./ui/switch";
 
 /** 与 core MAX_PROVIDER_MODELS 对齐（spec §5.1 / §9.2） */
-const MAX_PROVIDER_MODELS = 50;
+const MAX_PROVIDER_MODELS = 100;
 
 interface ProviderDiscoverDialogProps {
   open: boolean;

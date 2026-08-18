@@ -3,12 +3,12 @@ import { assertProviderModelCapacity, MAX_PROVIDER_MODELS } from "../src/provide
 import type { OpenClawProvider } from "../src/types";
 
 describe("assertProviderModelCapacity", () => {
-  test("exports MAX_PROVIDER_MODELS = 50", () => {
-    expect(MAX_PROVIDER_MODELS).toBe(50);
+  test("exports MAX_PROVIDER_MODELS = 100", () => {
+    expect(MAX_PROVIDER_MODELS).toBe(100);
   });
 
   test("allows adding when under cap", () => {
-    const provider = { models: Array.from({ length: 19 }, (_, i) => ({ id: `m${i}`, name: `M${i}` })) } as OpenClawProvider;
+    const provider = { models: Array.from({ length: MAX_PROVIDER_MODELS - 1 }, (_, i) => ({ id: `m${i}`, name: `M${i}` })) } as OpenClawProvider;
     expect(() => assertProviderModelCapacity(provider, 1)).not.toThrow();
   });
 

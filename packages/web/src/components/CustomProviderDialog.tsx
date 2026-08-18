@@ -26,7 +26,7 @@ const emptyModelRows = (): ModelRow[] => [
   { id: "", name: "", alias: "" },
   { id: "", name: "", alias: "" }
 ];
-const MAX_PROVIDER_MODELS = 50;
+const MAX_PROVIDER_MODELS = 100;
 
 function providerIdFromName(name: string): string {
   return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");

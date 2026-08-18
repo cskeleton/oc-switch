@@ -385,7 +385,7 @@ CLI 采用同一 core 操作与事务写入路径。
 - discover 结果仅存在会话内；关闭弹窗即丢弃
 - 勾选回填时按模型 `id` 去重；已存在 `id` 跳过
 - 勾选回填时优先填充现有空白模型行，再追加新行，避免无意义扩容表单行数
-- 勾选回填需遵守 `MAX_PROVIDER_MODELS = 50`（最终提交前后均由 core 再次校验）
+- 勾选回填需遵守 `MAX_PROVIDER_MODELS = 100`（最终提交前后均由 core 再次校验）
 - 该流程遵守「discover 默认不写盘」规则；真正写盘仅发生在用户确认提交 custom provider 后
 - `isFullUrl=true` 时 discover 请求地址按用户输入原样使用；`isFullUrl=false` 时才按 API 类型应用补 `/v1` 等归一化规则（与最终 custom 提交语义一致）
 
