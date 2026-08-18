@@ -149,7 +149,10 @@ describe("cli read commands", () => {
     const repair = await runCli(["health", "repair"], { OPENCLAW_CONFIG_PATH: configPath, HOME: dir });
     expect(repair.code).toBe(0);
     expect(repair.stdout).toContain("Repaired OpenClaw compatibility");
-    expect(JSON.parse(readFileSync(configPath, "utf8")).models.providers.repairme.apiKey).toBe("${REPAIRME_API_KEY}");
+    expect(JSON.parse(readFileSync(configPath, "utf8")).models.providers.repairme.apiKey).toEqual({
+      source: "env",
+      id: "REPAIRME_API_KEY"
+    });
   });
 });
 
@@ -466,7 +469,11 @@ describe("cli provider crud", () => {
 
     expect(result.code).toBe(0);
     const config = JSON.parse(readFileSync(configPath, "utf8"));
-    expect(config.models.providers["custom-disabled"].apiKey).toBe("${CUSTOM_DISABLED_API_KEY}");
+    expect(config.models.providers["custom-disabled"].apiKey).toEqual({
+      source: "env",
+      provider: "default",
+      id: "CUSTOM_DISABLED_API_KEY"
+    });
     expect(config.models.providers["custom-disabled"].authHeader).toBeUndefined();
     expect(config.agents.defaults.models["custom-disabled/claude-4"]).toBeUndefined();
   });

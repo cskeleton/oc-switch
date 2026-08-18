@@ -125,4 +125,15 @@ describe("inspectEnvFile", () => {
       "NVIDIA_API_KEY"
     ]);
   });
+
+  test("marks empty provider env values without exposing them", () => {
+    const result = inspectEnvFile({
+      content: "NVIDIA_API_KEY=\nLEGACY_KEY=''\n",
+      providerRefs: listProviderEnvRefs(config),
+      manifest: { providers: {}, extraEnv: {} }
+    });
+
+    expect(result.variables.find((item) => item.envVar === "NVIDIA_API_KEY")?.empty).toBe(true);
+    expect(result.variables.find((item) => item.envVar === "LEGACY_KEY")?.empty).toBe(true);
+  });
 });

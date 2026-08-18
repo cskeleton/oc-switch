@@ -50,7 +50,7 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 
 - **配置路径**：默认 `OPENCLAW_CONFIG_PATH` 或 `~/.openclaw/openclaw.json`；活动路径持久化于 `~/.oc-switch/settings.json`，可在 Settings 切换（`GET/PUT /api/settings/paths`）。
 - **`.env`**：默认 `~/.openclaw/.env`；oc-switch 写入限定在 `# oc-switch:start` … `# oc-switch:end` 托管块内。
-- **API Key**：仅存 `.env`；`openclaw.json` 的 `models.providers.*.apiKey` 写 `"${ENV_VAR}"`。OpenClaw 2026.6.8+ 不接受 oc-switch 旧版两字段 `{ "source": "env", "id": "..." }` 作为新写入格式。`authHeader` 是 boolean 开关，不保存密钥。CLI / API / Web **不回显**完整密钥；env preview 不收 value。
+- **API Key**：仅存 `.env`；新写入的 `models.providers.*.apiKey` 使用 canonical SecretRef `{ source: "env", provider: "default", id: "ENV_VAR" }`。旧 `${ENV_VAR}`、`$ENV_VAR` 与两字段 EnvRef 只在 Providers 页提示并由用户确认迁移；源 `.env` 缺失、空值、重复或复杂表达式时 fail closed。已关联 Gateway service env 缺 Key 可迁移；同名值与 `.env` 不一致时因进程环境覆盖而 fail closed。`health repair` 不得静默迁移或降级 Provider `apiKey`。`authHeader` 是 boolean 开关，不保存密钥。CLI / API / Web **不回显**完整密钥；env preview 不收 value。
 - **`baseUrl`**：遵循 OpenClaw——`openai-completions` 含 `/v1`；`anthropic-messages` 通常不带末尾 `/v1`。
 
 ### 写入与安全
@@ -80,7 +80,7 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 ### 路径与环境
 
 - 分层 env 管理；跨平台运行实例探测（Linux systemd / macOS LaunchAgent），返回 `RuntimeDiscoveryResult` 与候选组（`candidateId`）；管理源 `.env` 与 Gateway service env 分离，后者只读展示且不得成为 active `envPath`
-- **运行时 env 来源**：`openclaw.json` 仅存 `${ENV_VAR}` 引用；`openclaw` CLI 通常加载 state 目录 `.env`。Gateway **服务进程不直接读 `.env`**，而是读 OpenClaw 为服务生成的 env 快照（Linux：unit 实际 `EnvironmentFile=`，常见为 `gateway.systemd.env`；macOS：`service-env/*.env`）。改 API Key 后须同步服务 env 并 restart/apply，仅写 `.env` 不会让运行中 Gateway 自动加载新 Key（日常切模型/allowlist 通常无需重启）。
+- **运行时 env 来源**：`openclaw.json` 使用 canonical SecretRef 引用；`openclaw` CLI 与 Gateway 可加载 state 目录全局 `.env`。OpenClaw 同时为服务生成 env 快照（Linux：unit 实际 `EnvironmentFile=`，常见为 `gateway.systemd.env`；macOS：`service-env/*.env`）；服务进程环境优先于 dotenv，因此快照同名旧值会覆盖 `.env`，而快照缺项可由 `.env` 补足。改 API Key 后仍应同步服务 env 并 restart/apply，使运行中进程加载新值（日常切模型/allowlist 通常无需重启）。
 - Gateway 服务环境：`.env` 托管块在写入校验通过且能唯一关联候选组时自动同步到该组 service env（Linux：PID/unit 关联的 `EnvironmentFile=`，禁止仅按 `dirname(envPath)/gateway.systemd.env` 猜测；macOS：共享 LaunchAgent 解析器识别的 `service-env/*.env`，兼容 `/bin/sh + wrapper` 与旧 wrapper 布局）；无法唯一关联时主写入仍成功但 `gatewayEnvSync.ok=false`；目标文件块外内容原样保留，块外同名 Key 只告警不自动改写；Web/CLI/API 提供 `sync-env`、`restart`、`apply`（均可带 `--candidate` / `candidateId`），多实例时必须指定候选，不自动静默重启 Gateway
 - 已知后续：stale allowlist 专用清理 UI、chmod 警告、真实配置写 E2E、`GET /api/gateway/env-drift`
 

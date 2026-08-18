@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  inspectGatewayServiceEnvKeyStates,
+  readGatewayServiceEnvKeys,
   readLaunchdServiceEnv,
   readManagedBlockEntries,
   syncManagedBlockToGatewayServiceEnv
@@ -203,5 +205,58 @@ describe("readLaunchdServiceEnv", () => {
       TOKEN: "abc"
     });
     expect(readManagedBlockEntries(content)).toEqual({ NVIDIA_API_KEY: "secret" });
+  });
+
+  test("lists keys from both launchd outside entries and the managed block", () => {
+    const ws = macWorkspace();
+    writeFileSync(ws.serviceEnvPath, [
+      "export HTTP_PROXY='http://proxy'",
+      "# oc-switch:start",
+      "export NVIDIA_API_KEY='secret'",
+      "# oc-switch:end"
+    ].join("\n"));
+
+    expect(readGatewayServiceEnvKeys({
+      targetKind: "launchd",
+      targetPath: ws.serviceEnvPath
+    })).toEqual(["HTTP_PROXY", "NVIDIA_API_KEY"]);
+  });
+
+  test("does not list empty Gateway service env values as resolvable keys", () => {
+    const ws = workspace();
+    writeFileSync(ws.gatewayPath, "READY_KEY=value\nEMPTY_KEY=\n");
+
+    expect(readGatewayServiceEnvKeys({
+      targetKind: "systemd",
+      targetPath: ws.gatewayPath
+    })).toEqual(["READY_KEY"]);
+  });
+});
+
+describe("inspectGatewayServiceEnvKeyStates", () => {
+  test("reports missing, equal, and different states without exposing values", () => {
+    const ws = workspace();
+    writeFileSync(ws.gatewayPath, [
+      "EQUAL_KEY=same-secret",
+      "DIFFERENT_KEY=old-secret",
+      "EMPTY_KEY=",
+      "SERVICE_ONLY=service-secret"
+    ].join("\n") + "\n");
+
+    expect(inspectGatewayServiceEnvKeyStates({
+      sourceEntries: {
+        EQUAL_KEY: "same-secret",
+        DIFFERENT_KEY: "new-secret",
+        EMPTY_KEY: "source-secret",
+        MISSING_KEY: "source-secret"
+      },
+      keys: ["EQUAL_KEY", "DIFFERENT_KEY", "EMPTY_KEY", "MISSING_KEY"],
+      target: { targetKind: "systemd", targetPath: ws.gatewayPath }
+    })).toEqual({
+      DIFFERENT_KEY: "different",
+      EMPTY_KEY: "different",
+      EQUAL_KEY: "equal",
+      MISSING_KEY: "missing"
+    });
   });
 });

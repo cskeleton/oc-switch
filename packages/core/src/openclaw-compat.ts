@@ -39,17 +39,61 @@ export function parseEnvVarName(input: unknown): string | undefined {
   return undefined;
 }
 
-/** 将合法 env 变量名格式化为 OpenClaw `${VAR}` 字符串 */
-export function formatEnvRefForOpenClaw(varName: string): string {
+/** 将合法 env 变量名格式化为 OpenClaw canonical SecretRef */
+export function formatEnvRefForOpenClaw(varName: string): OpenClawSecretRef {
   if (!OPENCLAW_ENV_VAR_PATTERN.test(varName)) {
     throw new Error(`env var name must match ${OPENCLAW_ENV_VAR_PATTERN.source}`);
   }
-  return `\${${varName}}`;
+  return { source: "env", provider: "default", id: varName };
 }
 
 /** 输入是否为 OpenClaw 可识别的 env 引用 */
 export function isValidOpenClawEnvRef(input: unknown): boolean {
   return parseEnvVarName(input) !== undefined;
+}
+
+export interface ProviderSecretRefMigrationCandidate {
+  providerId: string;
+  envVar: string;
+  currentFormat: "env-shorthand" | "legacy-env-ref";
+}
+
+/** 列出可无损升级为 canonical SecretRef 的 Provider apiKey。 */
+export function inspectProviderSecretRefMigrations(
+  config: OpenClawConfig
+): ProviderSecretRefMigrationCandidate[] {
+  const candidates: ProviderSecretRefMigrationCandidate[] = [];
+  for (const [providerId, provider] of Object.entries(config.models?.providers ?? {})) {
+    const apiKey = provider.apiKey;
+    const envVar = parseEnvVarName(apiKey);
+    if (!envVar) continue;
+    if (typeof apiKey === "string") {
+      candidates.push({ providerId, envVar, currentFormat: "env-shorthand" });
+    } else if (isLegacyEnvRef(apiKey)) {
+      candidates.push({ providerId, envVar, currentFormat: "legacy-env-ref" });
+    }
+  }
+  return candidates.sort((a, b) => a.providerId.localeCompare(b.providerId));
+}
+
+/** 仅迁移调用方明确选择的 Provider；未知或已变化的候选会 fail closed。 */
+export function migrateProviderSecretRefs<T extends OpenClawConfig>(
+  config: T,
+  providerIds: string[]
+): { config: T; changed: boolean } {
+  const candidates = new Map(
+    inspectProviderSecretRefMigrations(config).map((candidate) => [candidate.providerId, candidate])
+  );
+  for (const providerId of providerIds) {
+    if (!candidates.has(providerId)) {
+      throw new Error(`Provider ${providerId} is not an eligible SecretRef migration candidate`);
+    }
+  }
+  for (const providerId of providerIds) {
+    const candidate = candidates.get(providerId)!;
+    config.models!.providers![providerId]!.apiKey = formatEnvRefForOpenClaw(candidate.envVar);
+  }
+  return { config, changed: providerIds.length > 0 };
 }
 
 /** 从 model id 生成可读默认名称 */
@@ -85,14 +129,6 @@ export function providerEnvVar(provider: OpenClawProvider | undefined): string |
 
 function repairProvider(provider: OpenClawProvider, providerId: string, warnings: string[]): boolean {
   let changed = false;
-
-  if (isLegacyEnvRef(provider.apiKey)) {
-    const varName = parseEnvVarName(provider.apiKey);
-    if (varName) {
-      provider.apiKey = formatEnvRefForOpenClaw(varName);
-      changed = true;
-    }
-  }
 
   if (isEnvRefObject(provider.authHeader)) {
     const varName = parseEnvVarName(provider.authHeader);

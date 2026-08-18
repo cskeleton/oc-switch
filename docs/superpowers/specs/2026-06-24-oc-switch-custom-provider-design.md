@@ -72,7 +72,7 @@ Providers 页面顶部新增“添加 Provider”按钮。
 | API 类型 | 是 | `provider.api` | 支持 `openai-completions`、`anthropic-messages`、`google-generative-ai` |
 | 请求地址 | 是 | `provider.baseUrl` | 写入 OpenClaw provider 的 `baseUrl` |
 | 完整 URL | 否 | manifest metadata | 控制表单输入辅助行为，不改变 OpenClaw schema |
-| API Key env 名 | 是 | `provider.apiKey`，写入 OpenClaw 2026.6.8 兼容的 `"${ENV_VAR}"` 字符串；`authHeader` 仅作为 boolean 兼容开关，不保存密钥引用 | 默认由 Provider ID 生成 |
+| API Key env 名 | 是 | `provider.apiKey`，写入 canonical SecretRef `{ source: "env", provider: "default", id: "ENV_VAR" }`；`authHeader` 仅作为 boolean 兼容开关，不保存密钥引用 | 默认由 Provider ID 生成 |
 | API Key | 是 | `.env` managed block | 只写入 `.env`，不回显 |
 | 模型列表 | 是 | `provider.models[]` | 表格式输入：每行 `id`、可选 `name`、可选 `alias` |
 
@@ -164,7 +164,7 @@ export interface CustomProviderInput {
       "my-provider": {
         "baseUrl": "https://api.example.com/v1",
         "api": "openai-completions",
-        "apiKey": "${MY_PROVIDER_API_KEY}",
+        "apiKey": { "source": "env", "provider": "default", "id": "MY_PROVIDER_API_KEY" },
         "models": [
           { "id": "model-a", "name": "Model A" },
           { "id": "vendor/model-b", "name": "Vendor Model B" }
@@ -228,10 +228,12 @@ MY_PROVIDER_API_KEY=sk-...
 
 ### 6.2 auth 字段选择
 
-首版规则（OpenClaw 2026.6.8 兼容）：
+当前规则：
 
-- 所有 API 类型统一写 `apiKey: "${ENV_VAR}"` 字符串
+- 所有 API 类型统一写 `apiKey: { source: "env", provider: "default", id: "ENV_VAR" }`
 - 不在新写入中使用 `authHeader` 保存密钥；`authHeader` 仅作为 boolean 兼容开关（修复旧配置时可为 `true`）
+
+旧 `${ENV_VAR}`、`$ENV_VAR` 与两字段 `{ source: "env", id: "ENV_VAR" }` 不在普通写入或 `health repair` 中静默改写。Providers 页通过 `GET /api/providers/secret-ref-migrations` 展示候选；源 `.env` 存在唯一、非空且语法简单的值时才可能为 `ready`。唯一关联的 Gateway service env 缺少该变量不构成 blocker，因为 OpenClaw 可从全局 `.env` 补足；若 service env 存在同名但不同值（含空值），则进程环境会覆盖 dotenv，返回 `gateway-env-drift` 并 fail closed；无法唯一关联目标时仍返回 `gateway-target-unavailable`。用户确认后，`POST /api/providers/secret-ref-migrations` 仅迁移明确提交的 Provider，事务写入前创建备份并返回 `gatewayRestartRequired: true`；任一候选状态变化或存在 blocker 时 fail closed。比较过程和响应均不得暴露值。
 
 ### 6.3 manifest metadata
 
@@ -414,7 +416,8 @@ CLI 采用同一 core 操作与事务写入路径。
 
 - `addCustomProvider` 写入 provider、models、allowlist
 - `model.id` 包含 `/` 时 ref 正确
-- 所有 API 类型写入 `apiKey: "${ENV_VAR}"` 且填充 model `name`
+- 所有 API 类型写入 canonical env SecretRef 且填充 model `name`
+- 旧 env shorthand/两字段 EnvRef 迁移只接受明确确认的 ready 候选；不改 `.env`，响应不含 Key 值
 - `openai-completions` 在 `isFullUrl=false` 时补 `/v1`
 - providerId/env/baseUrl/models 校验失败
 

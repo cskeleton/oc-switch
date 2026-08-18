@@ -9,12 +9,17 @@ import {
   discoverProviderModelsFromCredentials,
   editProvider,
   inspectEnvFile,
+  inspectGatewayServiceEnvKeyStates,
+  inspectProviderSecretRefMigrations,
   listProviderEnvRefs,
   loadPreset,
   mergeProviderCaseDuplicates,
+  migrateProviderSecretRefs,
   previewEnvUpdates,
   providerEnvVar,
+  readEnvValue,
   readManifest,
+  resolveGatewayRuntimeTarget,
   getDisabledProviderState,
   removeDisabledProviderState,
   removeProvider,
@@ -65,6 +70,72 @@ function providerEnvPreview(paths: OcSwitchPaths, envVar: string) {
   });
 }
 
+type SecretRefMigrationBlocker =
+  | "source-env-missing"
+  | "source-env-empty"
+  | "source-env-duplicate"
+  | "source-env-complex"
+  | "gateway-target-unavailable"
+  | "gateway-env-drift";
+
+function inspectSecretRefMigrations(runtime: AppRuntime) {
+  const paths = runtime.currentPaths();
+  const config = readConfig(paths);
+  const migrationCandidates = inspectProviderSecretRefMigrations(config);
+  const envContent = readEnvContent(paths) ?? "";
+  const envInspection = inspectEnvFile({
+    content: envContent,
+    providerRefs: listProviderEnvRefs(config),
+    manifest: readManifest(paths.stateDir)
+  });
+  const envByName = new Map(envInspection.variables.map((variable) => [variable.envVar, variable]));
+
+  const sourceEntries = Object.fromEntries(migrationCandidates.flatMap((candidate) => {
+    const value = readEnvValue(envContent, candidate.envVar);
+    return value === undefined ? [] : [[candidate.envVar, value]];
+  }));
+  let gatewayStates: Record<string, "missing" | "equal" | "different"> | undefined;
+  try {
+    const target = resolveGatewayRuntimeTarget({
+      activePaths: { openclawPath: paths.openclawPath, envPath: paths.envPath },
+      discovery: runtime.runtimeDiscoveryProvider(),
+      mode: "automatic"
+    });
+    gatewayStates = inspectGatewayServiceEnvKeyStates({
+      target: target.serviceEnvTarget,
+      sourceEntries,
+      keys: migrationCandidates.map((candidate) => candidate.envVar)
+    });
+  } catch {
+    gatewayStates = undefined;
+  }
+
+  const candidates = migrationCandidates.map((candidate) => {
+    const source = envByName.get(candidate.envVar);
+    const blockers: SecretRefMigrationBlocker[] = [];
+    if (!source?.present) blockers.push("source-env-missing");
+    if (source?.empty) blockers.push("source-env-empty");
+    if (source?.duplicate) blockers.push("source-env-duplicate");
+    if (source?.complex) blockers.push("source-env-complex");
+    if (!gatewayStates) blockers.push("gateway-target-unavailable");
+    else if (gatewayStates[candidate.envVar] === "different") blockers.push("gateway-env-drift");
+    return {
+      ...candidate,
+      status: blockers.length ? "blocked" as const : "ready" as const,
+      blockers
+    };
+  });
+
+  return {
+    candidates,
+    summary: {
+      candidateCount: candidates.length,
+      readyCount: candidates.filter((candidate) => candidate.status === "ready").length,
+      blockedCount: candidates.filter((candidate) => candidate.status === "blocked").length
+    }
+  };
+}
+
 /** 只读发现远端模型目录；不写配置、不建备份 */
 async function handleProviderDiscover(c: Context, runtime: AppRuntime) {
   const providerId = requireString(c.req.param("id"), "id");
@@ -97,6 +168,53 @@ async function handleProviderDiscover(c: Context, runtime: AppRuntime) {
 }
 
 export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
+  app.get("/api/providers/secret-ref-migrations", (c) => {
+    try {
+      return c.json(inspectSecretRefMigrations(runtime));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/providers/secret-ref-migrations", async (c) => {
+    try {
+      const body = await c.req.json() as Record<string, unknown>;
+      if (body.confirm !== true) throw new Error("SecretRef migration requires explicit confirmation");
+      if (!Array.isArray(body.providerIds) || body.providerIds.length === 0) {
+        throw new Error("providerIds must be a non-empty array");
+      }
+      const providerIds = body.providerIds.map((value) => requireString(value, "providerId"));
+      if (new Set(providerIds).size !== providerIds.length) throw new Error("providerIds must not contain duplicates");
+
+      const preview = inspectSecretRefMigrations(runtime);
+      const candidates = new Map(preview.candidates.map((candidate) => [candidate.providerId, candidate]));
+      for (const providerId of providerIds) {
+        const candidate = candidates.get(providerId);
+        if (!candidate) throw new Error(`Provider ${providerId} is not an eligible SecretRef migration candidate`);
+        if (candidate.blockers.length) {
+          throw new Error(`Provider ${providerId} SecretRef migration blocked: ${candidate.blockers.join(",")}`);
+        }
+      }
+
+      const result = await writeOpenClawTransaction({
+        ...runtime.currentPaths(),
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
+        reason: `migrate Provider SecretRefs: ${providerIds.join(", ")}`,
+        mutate(config) {
+          return migrateProviderSecretRefs(config, providerIds).config;
+        }
+      });
+      return c.json({
+        ok: true,
+        migratedProviderIds: providerIds,
+        backupId: result.backupDir.split("/").pop(),
+        gatewayRestartRequired: true
+      });
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
   app.get("/api/providers", (c) => {
     const paths = runtime.currentPaths();
     const config = readConfig(paths);

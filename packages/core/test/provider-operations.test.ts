@@ -70,7 +70,11 @@ describe("addProviderFromPreset", () => {
     };
 
     const result = addProviderFromPreset(config, preset, ["vendor/model"]);
-    expect(result.config.models?.providers?.custom?.apiKey).toBe("${CUSTOM_API_KEY}");
+    expect(result.config.models?.providers?.custom?.apiKey).toEqual({
+      source: "env",
+      provider: "default",
+      id: "CUSTOM_API_KEY"
+    });
     expect(result.config.models?.providers?.custom?.models?.[0]?.id).toBe("vendor/model");
     expect(result.config.agents?.defaults?.models?.["custom/vendor/model"]).toEqual({ alias: "vendor" });
   });
@@ -211,7 +215,7 @@ describe("addProviderFromPreset", () => {
 
     const result = addProviderFromPreset(config, preset, ["vendor/model"]);
     const provider = result.config.models?.providers?.custom;
-    expect(provider?.apiKey).toBe("${CUSTOM_API_KEY}");
+    expect(provider?.apiKey).toEqual({ source: "env", provider: "default", id: "CUSTOM_API_KEY" });
     expect(provider?.authHeader).toBeUndefined();
   });
 });
@@ -250,7 +254,7 @@ describe("editProvider", () => {
     const provider = result.config.models?.providers?.nvidia;
     expect(provider?.baseUrl).toBe("https://updated.example/v1");
     expect(provider?.api).toBe("anthropic-messages");
-    expect(provider?.apiKey).toBe("${NEW_NVIDIA_KEY}");
+    expect(provider?.apiKey).toEqual({ source: "env", provider: "default", id: "NEW_NVIDIA_KEY" });
     expect(provider?.timeoutSeconds).toBe(42);
     expect(provider?.models?.[0]?.id).toBe("deepseek-ai/deepseek-v4-flash");
   });
@@ -271,7 +275,7 @@ describe("editProvider", () => {
     });
 
     const provider = result.config.models?.providers?.nvidia;
-    expect(provider?.apiKey).toBe("${NEW_NVIDIA_KEY}");
+    expect(provider?.apiKey).toEqual({ source: "env", provider: "default", id: "NEW_NVIDIA_KEY" });
     expect(provider?.authHeader).toBeUndefined();
   });
 });
@@ -334,7 +338,7 @@ describe("addCustomProvider", () => {
     expect(result.config.models?.providers?.["custom-openai"]).toMatchObject({
       baseUrl: "https://api.custom.example/v1",
       api: "openai-completions",
-      apiKey: "${CUSTOM_OPENAI_API_KEY}",
+      apiKey: { source: "env", provider: "default", id: "CUSTOM_OPENAI_API_KEY" },
       models: [
         { id: "model-a", name: "Model A" },
         { id: "vendor/model-b", name: "Vendor Model B" }
@@ -367,7 +371,7 @@ describe("addCustomProvider", () => {
     expect(result.config.models?.providers?.["custom-anthropic"]).toMatchObject({
       baseUrl: "https://anthropic.custom.example",
       api: "anthropic-messages",
-      apiKey: "${CUSTOM_ANTHROPIC_API_KEY}",
+      apiKey: { source: "env", provider: "default", id: "CUSTOM_ANTHROPIC_API_KEY" },
       models: [{ id: "claude-4", name: "Claude 4" }]
     });
     expect(result.config.models?.providers?.["custom-anthropic"]?.authHeader).toBeUndefined();

@@ -22,6 +22,7 @@ export interface EnvVariableSummary {
   missing: boolean;
   duplicate: boolean;
   complex: boolean;
+  empty: boolean;
   note?: string;
   updatedAt?: string;
 }
@@ -35,6 +36,7 @@ interface ParsedEnvLine {
   envVar: string;
   managed: boolean;
   complex: boolean;
+  empty: boolean;
 }
 
 function parseEnvLine(line: string, managed: boolean): ParsedEnvLine | undefined {
@@ -45,11 +47,13 @@ function parseEnvLine(line: string, managed: boolean): ParsedEnvLine | undefined
   const match = normalized.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
   if (!match?.[1]) return undefined;
   const rawValue = match[2] ?? "";
+  const trimmedValue = rawValue.trim();
   const complex = exportPrefix ||
     /\s+#/.test(rawValue) ||
     rawValue.includes("${") ||
     ((rawValue.startsWith("\"") && rawValue.endsWith("\"")) || (rawValue.startsWith("'") && rawValue.endsWith("'")));
-  return { envVar: match[1], managed, complex };
+  const empty = trimmedValue === "" || trimmedValue === "''" || trimmedValue === "\"\"";
+  return { envVar: match[1], managed, complex, empty };
 }
 
 export function listProviderEnvRefs(config: OpenClawConfig): ProviderEnvRef[] {
@@ -111,6 +115,7 @@ export function inspectEnvFile(input: {
       missing: entries.length === 0 && providerIds.length > 0,
       duplicate: entries.length > 1,
       complex: entries.some((entry) => entry.complex),
+      empty: entries.some((entry) => entry.empty),
       ...(extra?.note ? { note: extra.note } : {}),
       ...(extra?.updatedAt ? { updatedAt: extra.updatedAt } : {})
     };

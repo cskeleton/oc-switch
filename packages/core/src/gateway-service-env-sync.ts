@@ -103,6 +103,50 @@ export function readLaunchdServiceEnv(content: string): Record<string, string> {
   return entries;
 }
 
+/** 只返回已关联 Gateway 服务环境中的变量名，不暴露值。 */
+export function readGatewayServiceEnvKeys(target: GatewayServiceEnvTarget): string[] {
+  if (!existsSync(target.targetPath)) return [];
+  const content = readFileSync(target.targetPath, "utf8");
+  const entries = target.targetKind === "launchd"
+    ? { ...readLaunchdServiceEnv(content), ...readManagedBlockEntries(content) }
+    : readGatewaySystemdEnv(content);
+  return Object.entries(entries)
+    .filter(([, value]) => value.trim().length > 0)
+    .map(([key]) => key)
+    .sort();
+}
+
+export type GatewayServiceEnvKeyState = "missing" | "equal" | "different";
+
+/**
+ * 比较源 .env 与已关联 Gateway 服务环境中的指定变量，不向调用方返回任何值。
+ * 服务环境缺失变量时，运行时仍可从全局 .env 加载；同名不同值才会形成覆盖漂移。
+ */
+export function inspectGatewayServiceEnvKeyStates(input: {
+  target: GatewayServiceEnvTarget;
+  sourceEntries: Record<string, string>;
+  keys: string[];
+}): Record<string, GatewayServiceEnvKeyState> {
+  const content = existsSync(input.target.targetPath)
+    ? readFileSync(input.target.targetPath, "utf8")
+    : "";
+  const serviceEntries = input.target.targetKind === "launchd"
+    ? { ...readLaunchdServiceEnv(content), ...readManagedBlockEntries(content) }
+    : readGatewaySystemdEnv(content);
+
+  return Object.fromEntries(Array.from(new Set(input.keys)).sort().map((key) => {
+    const serviceValue = serviceEntries[key];
+    if (serviceValue === undefined) return [key, "missing"];
+    const sourceValue = input.sourceEntries[key];
+    const state = sourceValue !== undefined
+      && serviceValue.trim().length > 0
+      && serviceValue === sourceValue
+      ? "equal"
+      : "different";
+    return [key, state];
+  }));
+}
+
 function unquoteEnvValue(value: string): string {
   if (
     (value.startsWith("\"") && value.endsWith("\"")) ||

@@ -154,7 +154,7 @@ export interface ConfigStatusReport {
 | source | 完整 id 模式 | severity 默认 | 触发条件 |
 |--------|---------------|---------------|----------|
 | `health` | `health:duplicate:${groupKey}` | `warning` | `health.caseDuplicateGroups` 每组一条；`mergeable` 只影响 `detail`/`action` 文案 |
-| `health` | `health:legacy-env-ref:${providerId}` | `blocking` | `apiKey` 使用旧两字段 EnvRef |
+| `health` | `health:secret-ref-migration:${providerId}` | `warning` | `apiKey` 使用 `${ENV_VAR}`、`$ENV_VAR` 或旧两字段 EnvRef，可在 Providers 页确认迁移 |
 | `health` | `health:invalid-auth-header-ref:${providerId}` | `blocking` | `authHeader` 错写为密钥引用 |
 | `health` | `health:missing-model-name:${providerId}/${modelId}` | `blocking` | provider model 缺少 OpenClaw 必填 name |
 | `env` | `env:missing:${envVar}` | `warning` | provider 引用 env var 在 `.env` 中缺失 |

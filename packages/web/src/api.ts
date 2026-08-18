@@ -61,6 +61,31 @@ export interface ProviderSummary {
   apiKeyEnvStatus: ApiKeyEnvStatus;
 }
 
+export type ProviderSecretRefMigrationBlocker =
+  | "source-env-missing"
+  | "source-env-empty"
+  | "source-env-duplicate"
+  | "source-env-complex"
+  | "gateway-target-unavailable"
+  | "gateway-env-drift";
+
+export interface ProviderSecretRefMigrationCandidate {
+  providerId: string;
+  envVar: string;
+  currentFormat: "env-shorthand" | "legacy-env-ref";
+  status: "ready" | "blocked";
+  blockers: ProviderSecretRefMigrationBlocker[];
+}
+
+export interface ProviderSecretRefMigrationPreview {
+  candidates: ProviderSecretRefMigrationCandidate[];
+  summary: {
+    candidateCount: number;
+    readyCount: number;
+    blockedCount: number;
+  };
+}
+
 export interface ModelSummary {
   ref: string;
   providerId: string;
@@ -460,6 +485,16 @@ export function createApiClient(options: ApiClientOptions) {
   return {
     getStatus: () => request<StatusResponse>("/api/status"),
     getProviders: () => request<{ providers: ProviderSummary[] }>("/api/providers"),
+    getProviderSecretRefMigrations: () =>
+      request<ProviderSecretRefMigrationPreview>("/api/providers/secret-ref-migrations"),
+    migrateProviderSecretRefs: (providerIds: string[]) =>
+      request<{ ok: boolean; migratedProviderIds: string[]; backupId?: string; gatewayRestartRequired: boolean }>(
+        "/api/providers/secret-ref-migrations",
+        {
+          method: "POST",
+          body: JSON.stringify({ providerIds, confirm: true })
+        }
+      ),
     getModels: () => request<{ models: ModelSummary[] }>("/api/models"),
     setPrimary: (ref: string) =>
       request<{ ok: boolean; ref: string }>("/api/models/primary", {

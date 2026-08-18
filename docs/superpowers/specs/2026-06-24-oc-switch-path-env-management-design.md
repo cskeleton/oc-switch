@@ -786,7 +786,7 @@ Core 是唯一文件读写层。Server/Web 不直接读写本地文件。
 
 ## 15. Gateway 服务环境同步
 
-OpenClaw Gateway 作为系统服务运行时，**不会**直接读取 `.env` 全文，而是读取 OpenClaw 为当前平台生成的服务环境快照。oc-switch 写入的 Provider / 托管变量位于 `.env` 的 `# oc-switch:start` … `# oc-switch:end` 块内；Gateway 要生效须将这个托管块同步到当前平台对应的服务环境文件，再重启 Gateway。
+OpenClaw Gateway 作为系统服务运行时，可加载 state 目录的全局 `.env`，同时也读取 OpenClaw 为当前平台生成的服务环境快照。服务进程环境优先于 dotenv：快照缺失的变量可由 `.env` 补足，但快照中的同名旧值会覆盖 `.env`。oc-switch 写入的 Provider / 托管变量位于 `.env` 的 `# oc-switch:start` … `# oc-switch:end` 块内；为避免快照漂移并让运行中进程确定加载新值，仍应将这个托管块同步到当前平台对应的服务环境文件，再重启 Gateway。
 
 oc-switch 必须自动识别运行平台并选择同步目标：
 
@@ -826,6 +826,8 @@ oc-switch 必须自动识别运行平台并选择同步目标：
 - 若托管块 Key 不在 unit 内 `OPENCLAW_SERVICE_MANAGED_ENV_KEYS` 列表中，返回 **warning**（不阻断）；提示用户日后可 `openclaw gateway install` 更新列表。
 - 若目标文件块外存在同名 Key，返回 **warning**（不阻断）；oc-switch 不越权改写块外内容。
 - API / CLI / Web **不回显**密钥明文；sync 响应仅含 `syncedKeys`、`removedKeys`、`warnings`。
+
+SecretRef 迁移预检比较源 `.env` 与已唯一关联的 service env 时，只返回每个变量的 `missing` / `equal` / `different` 状态，不返回值。`missing` 与 `equal` 均允许迁移；`different`（包括 service env 空值）返回 `gateway-env-drift` 并阻止迁移；目标无法唯一关联时返回 `gateway-target-unavailable`。
 
 ### 15.3 触发时机
 

@@ -434,6 +434,49 @@ describe("ModelsView", () => {
 });
 
 describe("ProvidersView", () => {
+  test("prompts for legacy env reference migration and submits only ready Providers", async () => {
+    const getProviderSecretRefMigrations = mock(async () => ({
+      candidates: [
+        {
+          providerId: "nvidia",
+          envVar: "NVIDIA_API_KEY",
+          currentFormat: "env-shorthand" as const,
+          status: "ready" as const,
+          blockers: []
+        },
+        {
+          providerId: "blocked",
+          envVar: "BLOCKED_API_KEY",
+          currentFormat: "legacy-env-ref" as const,
+          status: "blocked" as const,
+          blockers: ["gateway-env-drift" as const]
+        }
+      ],
+      summary: { candidateCount: 2, readyCount: 1, blockedCount: 1 }
+    }));
+    const migrateProviderSecretRefs = mock(async () => ({
+      ok: true,
+      migratedProviderIds: ["nvidia"],
+      backupId: "backup-1",
+      gatewayRestartRequired: true
+    }));
+    const client = mockClient({
+      getProviders: async () => ({ providers: [providerSummary({ id: "nvidia" })] }),
+      getProviderSecretRefMigrations,
+      migrateProviderSecretRefs
+    });
+
+    const { findByText, getByText } = render(<ProvidersView client={client} />);
+
+    expect(await findByText("发现 2 个旧环境变量引用")).toBeTruthy();
+    await userEvent.click(getByText("查看并迁移"));
+    expect(await findByText(/blocked.*Gateway 服务环境中的值与 .env 不一致/)).toBeTruthy();
+    await userEvent.click(getByText("迁移 1 项"));
+
+    await waitFor(() => expect(migrateProviderSecretRefs).toHaveBeenCalledWith(["nvidia"]));
+    expect(await findByText("已将 1 个 Provider API Key 引用迁移为 SecretRef；请重启 Gateway 使运行时快照生效。")).toBeTruthy();
+  });
+
   test("shows provider id, api type, counts, and primary marker", async () => {
     const { findAllByText, findByText } = render(
       <ProvidersView

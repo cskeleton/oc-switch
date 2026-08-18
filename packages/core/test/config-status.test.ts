@@ -46,7 +46,7 @@ describe("inspectConfigStatus", () => {
         providers: {
           test: {
             baseUrl: "https://api.test/v1",
-            apiKey: "${TEST_KEY}",
+            apiKey: { source: "env", provider: "default", id: "TEST_KEY" },
             models: [{ id: "m", name: "Model M" }]
           }
         }
@@ -192,13 +192,13 @@ describe("inspectConfigStatus", () => {
 });
 
 describe("OpenClaw compatibility issues", () => {
-  test("reports legacy env ref, invalid authHeader ref, and missing model names", () => {
+  test("reports legacy Provider env refs as opt-in SecretRef migrations", () => {
     const { paths } = workspace();
     const config: OpenClawConfig = {
       models: {
         providers: {
           nvidia: {
-            apiKey: { source: "env", id: "NVIDIA_API_KEY" },
+            apiKey: "${NVIDIA_API_KEY}",
             models: [{ id: "vendor/model-a" }]
           },
           anthropicProxy: {
@@ -211,10 +211,10 @@ describe("OpenClaw compatibility issues", () => {
     };
     const report = inspect(paths, { config });
     expect(report.issues).toContainEqual(expect.objectContaining({
-      id: "health:legacy-env-ref:nvidia",
-      severity: "blocking",
+      id: "health:secret-ref-migration:nvidia",
+      severity: "warning",
       source: "health",
-      title: expect.stringContaining("OpenClaw 2026.6.8")
+      title: expect.stringContaining("SecretRef")
     }));
     expect(report.issues).toContainEqual(expect.objectContaining({
       id: "health:invalid-auth-header-ref:anthropicProxy",
@@ -243,7 +243,7 @@ describe("OpenClaw compatibility issues", () => {
     };
 
     const report = inspect(paths, { config });
-    expect(report.issues.some((issue) => issue.id === "health:legacy-env-ref:vaultBacked")).toBe(false);
+    expect(report.issues.some((issue) => issue.id === "health:secret-ref-migration:vaultBacked")).toBe(false);
     expect(report.summary.blockingIssueCount).toBe(0);
   });
 });

@@ -2,6 +2,7 @@ import { accessSync, constants, existsSync } from "node:fs";
 import type { ConfigHealthReport } from "./config-health";
 import { inspectConfigHealth } from "./config-health";
 import { inspectEnvFile, listProviderEnvRefs } from "./env-inspector";
+import { inspectProviderSecretRefMigrations } from "./openclaw-compat";
 import { listOrphanEnvKeys, readManifest } from "./manifest-manager";
 import type { OcSwitchPaths } from "./paths";
 import { readProviderStates } from "./provider-states";
@@ -193,25 +194,21 @@ function isEnvRefObject(input: unknown): boolean {
   return typeof input === "object" && input !== null && (input as { source?: string }).source === "env";
 }
 
-function isLegacyEnvObject(input: unknown): boolean {
-  return isEnvRefObject(input) && (input as { provider?: unknown }).provider === undefined;
-}
-
 function buildCompatibilityIssues(config: OpenClawConfig): ConfigStatusIssue[] {
   const issues: ConfigStatusIssue[] = [];
 
-  for (const [providerId, provider] of Object.entries(config.models?.providers ?? {})) {
-    if (isLegacyEnvObject(provider.apiKey)) {
-      issues.push({
-        id: issueId("health", "legacy-env-ref", providerId),
-        severity: "blocking",
-        source: "health",
-        title: `Provider ${providerId} 的 apiKey 使用旧版 EnvRef，与 OpenClaw 2026.6.8 不兼容`,
-        detail: "应迁移为 \"${ENV_VAR}\" 字符串格式",
-        action: "oc-switch health repair"
-      });
-    }
+  for (const candidate of inspectProviderSecretRefMigrations(config)) {
+    issues.push({
+      id: issueId("health", "secret-ref-migration", candidate.providerId),
+      severity: "warning",
+      source: "health",
+      title: `Provider ${candidate.providerId} 的 apiKey 可迁移为 canonical SecretRef`,
+      detail: `${candidate.envVar} 当前使用旧环境变量引用格式`,
+      action: "在 Providers 页查看并确认迁移"
+    });
+  }
 
+  for (const [providerId, provider] of Object.entries(config.models?.providers ?? {})) {
     if (isEnvRefObject(provider.authHeader)) {
       issues.push({
         id: issueId("health", "invalid-auth-header-ref", providerId),

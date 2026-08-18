@@ -15,7 +15,7 @@
 
 - 12 个自定义 provider（elysiver、juya、cherryin、nvidia 等）
 - 43 个 `agents.defaults.models` allowlist 条目
-- 全部 API Key 以 env 引用形式存储（`apiKey: { source: "env", id: "..." }`）
+- 全部 API Key 以 canonical env SecretRef 形式存储（`apiKey: { source: "env", provider: "default", id: "..." }`）
 - `models.mode: "merge"` 与 bundled provider 共存
 - 模型 ID 含斜杠（如 `nvidia/deepseek-ai/deepseek-v4-flash`）
 
@@ -193,7 +193,7 @@ preset.models[]        →  models.providers.{id}.models[]
                          agents.defaults.models["{id}/{modelId}"]
 
 apiKeyEnv              →  .env: ELYSIVER_API_KEY=sk-xxx
-                         JSON: apiKey: { source: "env", id: "ELYSIVER_API_KEY" }
+                         JSON: apiKey: { source: "env", provider: "default", id: "ELYSIVER_API_KEY" }
 ```
 
 `agents.defaults.models` 的 value 按 OpenClaw 原始结构保留，oc-switch 首版只主动维护：

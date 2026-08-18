@@ -250,9 +250,9 @@ OpenClaw 配置可能含 JSON5 注释与尾逗号。读取时支持 JSON5，保�
 
 ### No API Keys in JSON / 密钥不入 JSON
 
-API keys live only in `~/.openclaw/.env` inside the `# oc-switch:start` … `# oc-switch:end` managed block. `openclaw.json` stores provider credentials as `"${ENV_VAR}"` strings on `models.providers.*.apiKey`. OpenClaw 2026.6.8+ does not accept oc-switch's legacy two-field `{ "source": "env", "id": "..." }` as a new-write format. `authHeader` is a boolean switch, not a secret field. CLI, logs, REST, and Web GUI never print full key values.
+API keys live only in `~/.openclaw/.env` inside the `# oc-switch:start` … `# oc-switch:end` managed block. New provider writes store a canonical SecretRef on `models.providers.*.apiKey`: `{ "source": "env", "provider": "default", "id": "ENV_VAR" }`. The Providers page detects legacy `${ENV_VAR}`, `$ENV_VAR`, and two-field EnvRef values and offers an explicit, backed-up migration when the source `.env` contains one non-empty, simple value. A missing key in the associated Gateway service snapshot is allowed because OpenClaw can fall back to the global `.env`; a same-name service value that differs from `.env` blocks migration because process environment takes precedence. `authHeader` is a boolean switch, not a secret field. CLI, logs, REST, and Web GUI never print full key values.
 
-API Key 仅写在 `.env` 托管块内；`openclaw.json` 的 `models.providers.*.apiKey` 写 `"${ENV_VAR}"`。OpenClaw 2026.6.8+ 不接受 oc-switch 旧版两字段 `{ "source": "env", "id": "..." }` 作为新写入格式。`authHeader` 是 boolean 开关，不保存密钥。CLI、日志、API 与 Web 界面均不回显完整密钥。
+API Key 仅写在 `.env` 托管块内；新建 Provider 时，`openclaw.json` 的 `models.providers.*.apiKey` 写 canonical SecretRef：`{ "source": "env", "provider": "default", "id": "ENV_VAR" }`。Providers 页会检查旧 `${ENV_VAR}`、`$ENV_VAR` 与两字段 EnvRef；源 `.env` 存在唯一、非空且语法简单的值时，用户可明确确认并在备份后迁移。已关联 Gateway 服务快照缺少该变量不阻止迁移，因为 OpenClaw 可回退读取全局 `.env`；若快照中存在同名但不同值，则因进程环境优先而阻止迁移。`authHeader` 是 boolean 开关，不保存密钥。CLI、日志、API 与 Web 界面均不回显完整密钥。
 
 ---
 

@@ -9,7 +9,17 @@ import { MergeCaseDuplicateDialog } from "../components/MergeCaseDuplicateDialog
 import { ProviderDiscoverDialog } from "../components/ProviderDiscoverDialog";
 import { ProviderModelsDialog } from "../components/ProviderModelsDialog";
 import { formatEnvWriteSuccess } from "../env-feedback";
-import type { ApiClient, ApiType, CaseDuplicateGroup, EnvWriteVerification, GatewayEnvSyncResult, ModelSummary, ProviderSummary } from "../api";
+import type {
+  ApiClient,
+  ApiType,
+  CaseDuplicateGroup,
+  EnvWriteVerification,
+  GatewayEnvSyncResult,
+  ModelSummary,
+  ProviderSecretRefMigrationBlocker,
+  ProviderSecretRefMigrationPreview,
+  ProviderSummary
+} from "../api";
 
 const EDITABLE_API_TYPES: ApiType[] = [
   "openai-completions",
@@ -55,16 +65,24 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
     confirmMigration?: boolean;
     confirmComplex?: boolean;
   } | null>(null);
+  const [secretRefMigrations, setSecretRefMigrations] = useState<ProviderSecretRefMigrationPreview | null>(null);
+  const [showSecretRefMigration, setShowSecretRefMigration] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [{ providers: list }, health] = await Promise.all([
+      const [{ providers: list }, health, migrationPreview] = await Promise.all([
         client.getProviders(),
-        client.getHealth().catch(() => null)
+        client.getHealth().catch(() => null),
+        client.getProviderSecretRefMigrations().catch(() => null)
       ]);
       setProviders(list);
       setDuplicateGroups(health?.caseDuplicateGroups ?? []);
+      setSecretRefMigrations(
+        migrationPreview?.summary && Array.isArray(migrationPreview.candidates)
+          ? migrationPreview
+          : null
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载失败");
     }
@@ -239,6 +257,37 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
     }
   }
 
+  async function confirmSecretRefMigration() {
+    const providerIds = secretRefMigrations?.candidates
+      .filter((candidate) => candidate.status === "ready")
+      .map((candidate) => candidate.providerId) ?? [];
+    if (providerIds.length === 0) return;
+    setError(null);
+    try {
+      const result = await client.migrateProviderSecretRefs(providerIds);
+      setShowSecretRefMigration(false);
+      setSuccessMessage(
+        `已将 ${result.migratedProviderIds.length} 个 Provider API Key 引用迁移为 SecretRef；请重启 Gateway 使运行时快照生效。`
+      );
+      await load();
+      onRefresh?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "SecretRef 迁移失败");
+      setShowSecretRefMigration(false);
+    }
+  }
+
+  function secretRefBlockerLabel(blocker: ProviderSecretRefMigrationBlocker): string {
+    switch (blocker) {
+      case "source-env-missing": return ".env 中缺少变量";
+      case "source-env-empty": return ".env 中的变量为空";
+      case "source-env-duplicate": return ".env 中存在重复变量";
+      case "source-env-complex": return ".env 值是复杂表达式";
+      case "gateway-target-unavailable": return "无法确认 Gateway 服务环境";
+      case "gateway-env-drift": return "Gateway 服务环境中的值与 .env 不一致";
+    }
+  }
+
   return (
     <section data-testid="providers-view">
       <div className="mb-4 flex items-center justify-between">
@@ -273,6 +322,25 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
         />
       ) : null}
       {successMessage ? <p className="mb-3 text-sm text-emerald-600 dark:text-emerald-400">{successMessage}</p> : null}
+      {secretRefMigrations && secretRefMigrations.summary.candidateCount > 0 ? (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-card px-4 py-3 text-sm">
+          <div>
+            <p className="font-medium text-foreground">
+              发现 {secretRefMigrations.summary.candidateCount} 个旧环境变量引用
+            </p>
+            <p className="text-muted-foreground">
+              {secretRefMigrations.summary.readyCount} 个可迁移，{secretRefMigrations.summary.blockedCount} 个需要先处理环境问题。
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowSecretRefMigration(true)}
+            className="rounded-md bg-primary px-3 py-1.5 font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            查看并迁移
+          </button>
+        </div>
+      ) : null}
 
       <DataTable
         rows={providers}
@@ -551,6 +619,26 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
         onCancel={() => setPendingEnvConfirm(null)}
         onConfirm={() => void confirmEnvMigration()}
       />
+
+      <ConfirmDialog
+        open={showSecretRefMigration}
+        title="迁移 Provider API Key 引用"
+        message="只修改 openclaw.json 中的引用格式，不改动 .env 中的 Key；写入前会创建备份。"
+        confirmLabel={`迁移 ${secretRefMigrations?.summary.readyCount ?? 0} 项`}
+        confirmDisabled={!secretRefMigrations?.summary.readyCount}
+        onCancel={() => setShowSecretRefMigration(false)}
+        onConfirm={() => void confirmSecretRefMigration()}
+      >
+        <ul className="space-y-2 text-sm">
+          {secretRefMigrations?.candidates.map((candidate) => (
+            <li key={candidate.providerId} className="rounded border border-border px-3 py-2 text-foreground">
+              {candidate.providerId} · {candidate.envVar} · {candidate.status === "ready"
+                ? "可迁移"
+                : candidate.blockers.map(secretRefBlockerLabel).join("；")}
+            </li>
+          ))}
+        </ul>
+      </ConfirmDialog>
 
       <MergeCaseDuplicateDialog
         open={Boolean(mergeTarget)}

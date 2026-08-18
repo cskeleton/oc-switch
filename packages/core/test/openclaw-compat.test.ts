@@ -3,7 +3,9 @@ import {
   defaultModelName,
   ensureModelName,
   formatEnvRefForOpenClaw,
+  inspectProviderSecretRefMigrations,
   isValidOpenClawEnvRef,
+  migrateProviderSecretRefs,
   parseEnvVarName,
   repairOpenClawCompatibility
 } from "../src/openclaw-compat";
@@ -20,7 +22,11 @@ describe("openclaw compatibility helpers", () => {
   });
 
   test("formats only OpenClaw-valid env names", () => {
-    expect(formatEnvRefForOpenClaw("NVIDIA_API_KEY")).toBe("${NVIDIA_API_KEY}");
+    expect(formatEnvRefForOpenClaw("NVIDIA_API_KEY")).toEqual({
+      source: "env",
+      provider: "default",
+      id: "NVIDIA_API_KEY"
+    });
     expect(() => formatEnvRefForOpenClaw("_NVIDIA_API_KEY")).toThrow("env var name");
   });
 
@@ -36,7 +42,7 @@ describe("openclaw compatibility helpers", () => {
     expect(ensureModelName({ id: "m", name: "Custom Name" }).name).toBe("Custom Name");
   });
 
-  test("repairs legacy env refs and missing model names", () => {
+  test("leaves Provider apiKey migration opt-in while repairing authHeader and model names", () => {
     const config = {
       models: {
         providers: {
@@ -56,9 +62,9 @@ describe("openclaw compatibility helpers", () => {
     expect(result.changed).toBe(true);
     const nvidia = result.config.models?.providers?.nvidia;
     const anthropicProxy = result.config.models?.providers?.anthropicproxy;
-    expect(nvidia?.apiKey).toBe("${NVIDIA_API_KEY}");
+    expect(nvidia?.apiKey).toEqual({ source: "env", id: "NVIDIA_API_KEY" });
     expect(nvidia?.models?.[0]?.name).toBe("Vendor Model A");
-    expect(anthropicProxy?.apiKey).toBe("${ANTHROPIC_API_KEY}");
+    expect(anthropicProxy?.apiKey).toEqual({ source: "env", provider: "default", id: "ANTHROPIC_API_KEY" });
     expect(anthropicProxy?.authHeader).toBe(true);
   });
 
@@ -108,7 +114,48 @@ describe("openclaw compatibility helpers", () => {
     });
   });
 
-  test("repairs legacy env refs whose id is wrapped in ${VAR}", () => {
+  test("reports only legacy Provider env references as SecretRef migration candidates", () => {
+    const config: OpenClawConfig = {
+      models: {
+        providers: {
+          shorthand: { apiKey: "${SHORTHAND_KEY}" },
+          dollar: { apiKey: "$DOLLAR_KEY" },
+          legacy: { apiKey: { source: "env", id: "LEGACY_KEY" } },
+          canonical: { apiKey: { source: "env", provider: "default", id: "CANONICAL_KEY" } },
+          literal: { apiKey: "sk-literal-secret" }
+        }
+      }
+    };
+
+    expect(inspectProviderSecretRefMigrations(config)).toEqual([
+      { providerId: "dollar", envVar: "DOLLAR_KEY", currentFormat: "env-shorthand" },
+      { providerId: "legacy", envVar: "LEGACY_KEY", currentFormat: "legacy-env-ref" },
+      { providerId: "shorthand", envVar: "SHORTHAND_KEY", currentFormat: "env-shorthand" }
+    ]);
+  });
+
+  test("migrates only the explicitly selected Provider references", () => {
+    const config: OpenClawConfig = {
+      models: {
+        providers: {
+          first: { apiKey: "${FIRST_KEY}" },
+          second: { apiKey: "${SECOND_KEY}" }
+        }
+      }
+    };
+
+    const result = migrateProviderSecretRefs(config, ["second"]);
+
+    expect(result.changed).toBe(true);
+    expect(result.config.models?.providers?.first?.apiKey).toBe("${FIRST_KEY}");
+    expect(result.config.models?.providers?.second?.apiKey).toEqual({
+      source: "env",
+      provider: "default",
+      id: "SECOND_KEY"
+    });
+  });
+
+  test("does not auto-migrate legacy env refs during compatibility repair", () => {
     const config = {
       models: {
         providers: {
@@ -121,7 +168,10 @@ describe("openclaw compatibility helpers", () => {
     } as OpenClawConfig;
 
     const result = repairOpenClawCompatibility(config);
-    expect(result.changed).toBe(true);
-    expect(result.config.models?.providers?.deepseek?.apiKey).toBe("${DEEPSEEK_API_KEY}");
+    expect(result.changed).toBe(false);
+    expect(result.config.models?.providers?.deepseek?.apiKey).toEqual({
+      source: "env",
+      id: "${DEEPSEEK_API_KEY}"
+    });
   });
 });

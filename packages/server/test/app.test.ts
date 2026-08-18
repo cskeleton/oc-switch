@@ -81,6 +81,28 @@ function createTestApp(
   });
 }
 
+function gatewayRuntimeDiscovery(ws: Workspace, gatewayPath: string): RuntimeDiscoveryProvider {
+  const serviceManager = process.platform === "darwin" ? "launchd" as const : "systemd" as const;
+  return () => ({
+    status: "resolved",
+    instances: [],
+    candidateGroups: [{
+      candidateId: "test:secret-ref-migration",
+      instanceId: "test:secret-ref-migration",
+      stateDir: ws.dir,
+      openclawPath: ws.paths.openclawPath,
+      envPath: ws.paths.envPath,
+      serviceEnvPath: gatewayPath,
+      serviceManager,
+      serviceId: serviceManager === "launchd" ? "ai.openclaw.gateway" : "openclaw-gateway.service",
+      pid: 42,
+      confidence: "strong",
+      evidence: [serviceManager === "launchd" ? "launchd-plist" : "systemd-unit"]
+    }],
+    diagnostics: []
+  });
+}
+
 async function jsonRequest(app: ReturnType<typeof createApp>, path: string, init: RequestInit = {}) {
   const response = await app.request(path, {
     ...init,
@@ -163,6 +185,135 @@ describe("server read endpoints", () => {
       apiKeyEnvManaged: false,
       apiKeyEnvStatus: "unmanaged"
     });
+  });
+
+  test("GET /api/providers/secret-ref-migrations reports ready legacy references without secret values", async () => {
+    const ws = workspace();
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    config.models.providers.nvidia.apiKey = "${NVIDIA_API_KEY}";
+    config.models.providers.DeepSeek.apiKey = { source: "env", provider: "default", id: "DEEPSEEK_API_KEY" };
+    writeFileSync(ws.paths.openclawPath, `${JSON.stringify(config, null, 2)}\n`);
+    writeFileSync(ws.paths.envPath, "NVIDIA_API_KEY=source-secret\n");
+    const gatewayPath = expectedGatewayEnvPath(ws.dir);
+    writeFileSync(gatewayPath, "NVIDIA_API_KEY=source-secret\n");
+    const app = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: gatewayRuntimeDiscovery(ws, gatewayPath)
+    });
+
+    const { response, json } = await jsonRequest(app, "/api/providers/secret-ref-migrations");
+
+    expect(response.status).toBe(200);
+    expect(json).toMatchObject({
+      summary: { candidateCount: 1, readyCount: 1, blockedCount: 0 },
+      candidates: [{
+        providerId: "nvidia",
+        envVar: "NVIDIA_API_KEY",
+        currentFormat: "env-shorthand",
+        status: "ready",
+        blockers: []
+      }]
+    });
+    expect(JSON.stringify(json)).not.toContain("source-secret");
+    expect(JSON.stringify(json)).not.toContain("gateway-secret");
+  });
+
+  test("POST /api/providers/secret-ref-migrations allows a missing Gateway env key", async () => {
+    const ws = workspace();
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    config.models.providers.nvidia.apiKey = "${NVIDIA_API_KEY}";
+    writeFileSync(ws.paths.openclawPath, `${JSON.stringify(config, null, 2)}\n`);
+    writeFileSync(ws.paths.envPath, "NVIDIA_API_KEY=source-secret\n");
+    const gatewayPath = expectedGatewayEnvPath(ws.dir);
+    writeFileSync(gatewayPath, "HTTP_PROXY=http://proxy\n");
+    const app = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: gatewayRuntimeDiscovery(ws, gatewayPath)
+    });
+
+    const { response, json } = await jsonRequest(app, "/api/providers/secret-ref-migrations", {
+      method: "POST",
+      body: JSON.stringify({ providerIds: ["nvidia"], confirm: true })
+    });
+
+    expect(response.status).toBe(200);
+    expect(json).toMatchObject({ ok: true, migratedProviderIds: ["nvidia"] });
+    const migrated = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(migrated.models.providers.nvidia.apiKey).toEqual({
+      source: "env",
+      provider: "default",
+      id: "NVIDIA_API_KEY"
+    });
+  });
+
+  test("POST /api/providers/secret-ref-migrations fails closed when Gateway env shadows .env with a different value", async () => {
+    const ws = workspace();
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    config.models.providers.nvidia.apiKey = "${NVIDIA_API_KEY}";
+    writeFileSync(ws.paths.openclawPath, `${JSON.stringify(config, null, 2)}\n`);
+    writeFileSync(ws.paths.envPath, "NVIDIA_API_KEY=source-secret\n");
+    const gatewayPath = expectedGatewayEnvPath(ws.dir);
+    writeFileSync(gatewayPath, "NVIDIA_API_KEY=stale-service-secret\n");
+    const before = readFileSync(ws.paths.openclawPath, "utf8");
+    const app = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: gatewayRuntimeDiscovery(ws, gatewayPath)
+    });
+
+    const { response, json } = await jsonRequest(app, "/api/providers/secret-ref-migrations", {
+      method: "POST",
+      body: JSON.stringify({ providerIds: ["nvidia"], confirm: true })
+    });
+
+    expect(response.status).toBe(400);
+    expect(String(json.error)).toContain("gateway-env-drift");
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+  });
+
+  test("GET /api/providers/secret-ref-migrations blocks empty source env values", async () => {
+    const ws = workspace();
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    config.models.providers.nvidia.apiKey = "${NVIDIA_API_KEY}";
+    config.models.providers.DeepSeek.apiKey = { source: "env", provider: "default", id: "DEEPSEEK_API_KEY" };
+    writeFileSync(ws.paths.openclawPath, `${JSON.stringify(config, null, 2)}\n`);
+    writeFileSync(ws.paths.envPath, "NVIDIA_API_KEY=\n");
+    const gatewayPath = expectedGatewayEnvPath(ws.dir);
+    writeFileSync(gatewayPath, "HTTP_PROXY=http://proxy\n");
+    const app = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: gatewayRuntimeDiscovery(ws, gatewayPath)
+    });
+
+    const { json } = await jsonRequest(app, "/api/providers/secret-ref-migrations");
+
+    expect(json).toMatchObject({
+      candidates: [{ providerId: "nvidia", status: "blocked", blockers: ["source-env-empty"] }]
+    });
+  });
+
+  test("POST /api/providers/secret-ref-migrations migrates confirmed ready references with a backup", async () => {
+    const ws = workspace();
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    config.models.providers.nvidia.apiKey = "${NVIDIA_API_KEY}";
+    writeFileSync(ws.paths.openclawPath, `${JSON.stringify(config, null, 2)}\n`);
+    writeFileSync(ws.paths.envPath, "NVIDIA_API_KEY=source-secret\n");
+    const gatewayPath = expectedGatewayEnvPath(ws.dir);
+    writeFileSync(gatewayPath, "NVIDIA_API_KEY=source-secret\n");
+    const app = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: gatewayRuntimeDiscovery(ws, gatewayPath)
+    });
+
+    const { response, json } = await jsonRequest(app, "/api/providers/secret-ref-migrations", {
+      method: "POST",
+      body: JSON.stringify({ providerIds: ["nvidia"], confirm: true })
+    });
+
+    expect(response.status).toBe(200);
+    expect(json).toMatchObject({ ok: true, migratedProviderIds: ["nvidia"], gatewayRestartRequired: true });
+    expect(typeof json.backupId).toBe("string");
+    const migrated = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(migrated.models.providers.nvidia.apiKey).toEqual({
+      source: "env",
+      provider: "default",
+      id: "NVIDIA_API_KEY"
+    });
+    expect(readFileSync(ws.paths.envPath, "utf8")).toBe("NVIDIA_API_KEY=source-secret\n");
   });
 
   test("GET /api/models lists allowlist models", async () => {
@@ -475,7 +626,7 @@ describe("server write endpoints", () => {
     expect(config.models.providers["custom-openai"]).toMatchObject({
       baseUrl: "https://api.custom.example/v1",
       api: "openai-completions",
-      apiKey: "${CUSTOM_OPENAI_API_KEY}"
+      apiKey: { source: "env", provider: "default", id: "CUSTOM_OPENAI_API_KEY" }
     });
     expect(config.agents.defaults.models["custom-openai/vendor/model-b"]).toEqual({ alias: "b" });
     expect(readFileSync(ws.paths.envPath, "utf8")).toContain("CUSTOM_OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456");
@@ -1276,7 +1427,7 @@ describe("server write endpoints", () => {
     expect(JSON.stringify(json)).not.toContain("sk-");
   });
 
-  test("POST /api/health/repair migrates legacy apiKey and fills model names", async () => {
+  test("POST /api/health/repair leaves apiKey migration opt-in and fills model names", async () => {
     const ws = workspace();
     const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
     config.models.providers.compat = {
@@ -1291,7 +1442,7 @@ describe("server write endpoints", () => {
     expect(unchanged.json.changed).toBe(true);
 
     const repaired = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
-    expect(repaired.models.providers.compat.apiKey).toBe("${COMPAT_API_KEY}");
+    expect(repaired.models.providers.compat.apiKey).toEqual({ source: "env", id: "COMPAT_API_KEY" });
     expect(repaired.models.providers.compat.models[0].name).toBe("Vendor Model A");
 
     const again = await jsonRequest(app, "/api/health/repair", { method: "POST" });

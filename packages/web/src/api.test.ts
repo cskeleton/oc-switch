@@ -219,3 +219,28 @@ test("getConfigStatus 请求 /api/config-status 并携带 Bearer auth", async ()
   expect(calls[0]?.url).toBe("http://localhost:7420/api/config-status");
   expect(calls[0]?.headers.get("Authorization")).toBe("Bearer secret");
 });
+
+test("Provider SecretRef migration API uses explicit preview and confirmed write endpoints", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const client = createApiClient({
+    baseUrl: "http://localhost:7420",
+    token: "secret-token",
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), ...(init ? { init } : {}) });
+      return new Response(JSON.stringify(
+        init?.method === "POST"
+          ? { ok: true, migratedProviderIds: ["nvidia"], gatewayRestartRequired: true }
+          : { candidates: [], summary: { candidateCount: 0, readyCount: 0, blockedCount: 0 } }
+      ));
+    }
+  });
+
+  await client.getProviderSecretRefMigrations();
+  await client.migrateProviderSecretRefs(["nvidia"]);
+
+  expect(calls[0]?.url).toBe("http://localhost:7420/api/providers/secret-ref-migrations");
+  expect(calls[0]?.init?.method).toBeUndefined();
+  expect(calls[1]?.url).toBe("http://localhost:7420/api/providers/secret-ref-migrations");
+  expect(calls[1]?.init?.method).toBe("POST");
+  expect(calls[1]?.init?.body).toBe(JSON.stringify({ providerIds: ["nvidia"], confirm: true }));
+});
