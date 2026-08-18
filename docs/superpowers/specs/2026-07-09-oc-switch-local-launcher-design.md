@@ -46,7 +46,7 @@
 |------|------|
 | `~/bin/oc-switch` | 固定指向本机仓库 CLI 入口；不复制业务逻辑 |
 | `serve` | `Bun.serve`：`/api/*` → Hono；其余 → `packages/web/dist` |
-| `start` / `stop` | 后台生命周期：PID 文件、持久 token、打开浏览器 |
+| `start` / `restart` / `stop` | 后台生命周期：PID 文件、持久 token、打开浏览器 |
 | `packages/web/dist` | 由 `bun run build` 产出；缺失则拒绝以「带 GUI」方式启动 |
 
 仓库内可提供可选安装脚本（如 `scripts/install-local-launcher.sh`），将包装脚本安装到 `~/bin/oc-switch`（若 `~/bin` 不存在则创建；并提示确保 `~/bin` 在 `PATH` 中）。
@@ -113,7 +113,7 @@
 
 ---
 
-## 5. `start` / `stop` 生命周期
+## 5. `start` / `restart` / `stop` 生命周期
 
 ### 5.1 状态文件
 
@@ -148,12 +148,18 @@
 5. 删除 `serve.pid`（在发信号前已清文件亦可；不得留下指向无关进程的 pid）。
 6. **仅**停止由本机制记录且校验通过的 PID；不扫描杀所有 bun 进程。
 
-### 5.4 与前台 `serve` 的交互
+### 5.4 `oc-switch restart`
+
+1. 先完整执行 `stop` 的 PID 所有权校验与安全停止逻辑；未运行、陈旧 PID 或非 oc-switch PID 均按 `stop` 既有语义处理，不误杀其他进程。
+2. 随后完整复用 `start` 的静态资源、端口、token、后台拉起与就绪检查逻辑，不维护第二套启动路径。
+3. 若旧进程未能退出而仍占用默认端口，`start` 的端口检查必须明确失败，不得启动第二个实例或误报成功。
+
+### 5.5 与前台 `serve` 的交互
 
 - 用户手动前台 `serve` 时**不**写 `serve.pid`（避免 `stop` 误杀交互会话——或：前台也不写 pid）。**首版约定：只有 `start` 写 pid；`stop` 只管理 `start` 拉起的进程。**
 - 若前台 `serve` 已占用 7420，`start` 失败并提示端口占用。
 
-### 5.5 日志
+### 5.6 日志
 
 - 后台 `start`：子进程 stdout/stderr 可追加到 `~/.oc-switch/serve.log`（可选但推荐，便于排错）；若实现，在 README 提及路径。
 - 不在日志中写入完整 API token 或 `.env` 密钥。
@@ -164,7 +170,7 @@
 
 实现完成后更新：
 
-- `README.md`：新增「本机快速启动」小节（安装 `~/bin`、build、start/stop）。
+- `README.md`：新增「本机快速启动」小节（安装 `~/bin`、build、start/restart/stop）。
 - `AGENTS.md` 规格索引表：增加本文件一行。
 - 可选：`scripts/install-local-launcher.sh` 与简短注释（中文）。
 
@@ -190,7 +196,7 @@
 | 改动 | 建议位置 |
 |------|----------|
 | 静态文件 + SPA fallback | `packages/server` 或 `packages/cli` 的 `serve` 装配处（优先在 serve 的 `fetch` 包装层，避免污染纯 API 的 `createApp` 单测；或 `createApp` 增加可选 `webDistDir`） |
-| `start` / `stop` | `packages/cli/src/commands/` 新文件 + `index.ts` 注册 |
+| `start` / `restart` / `stop` | `packages/cli/src/commands/` 新文件 + `index.ts` 注册 |
 | PID / 日志辅助 | `packages/core` 小模块或 cli 本地 helper（若仅 cli 使用可放 cli） |
 | 安装脚本 | `scripts/install-local-launcher.sh` |
 | 文档 | `README.md`、`AGENTS.md` 索引 |
@@ -203,7 +209,7 @@
 |------|------|
 | 全局启动方式 | `~/bin` 包装 → 源码 CLI（非 compile） |
 | Web 交付 | `serve` 托管 `web/dist`，单端口 |
-| 启停 UX | CLI `start` / `stop`；`start` 自动 `open` 浏览器 |
+| 启停 UX | CLI `start` / `restart` / `stop`；`start` 与 `restart` 自动 `open` 浏览器 |
 | 自定义端口（start） | 首版固定 7420；自定义用前台 `serve` |
 | ephemeral token | `start` 禁用；确保持久 token |
 | 无 dist | `start` 失败；前台 `serve` 仅 API + 警告 |

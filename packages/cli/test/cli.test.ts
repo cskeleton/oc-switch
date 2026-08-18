@@ -762,7 +762,7 @@ describe("cli provider models remove", () => {
   });
 });
 
-describe("cli start/stop", () => {
+describe("cli start/stop/restart", () => {
   test("start fails without web dist", async () => {
     const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-start-"));
     tempDirs.push(dir);
@@ -784,6 +784,29 @@ describe("cli start/stop", () => {
     const result = await runCli(["stop"], { HOME: dir });
     expect(result.code).toBe(0);
     expect(result.stdout + result.stderr).toMatch(/not running|未在运行|No server/i);
+  });
+
+  test("restart cleans a stale pid before reusing start validation", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-restart-"));
+    tempDirs.push(dir);
+    const emptyDist = mkdtempSync(join(tmpdir(), "oc-switch-empty-dist-"));
+    tempDirs.push(emptyDist);
+    const stateDir = join(dir, ".oc-switch");
+    mkdirSync(stateDir, { recursive: true });
+    const pidPath = join(stateDir, "serve.pid");
+    writeFileSync(pidPath, "2147483647\n");
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, "{}\n");
+
+    const result = await runCli(["restart"], {
+      HOME: dir,
+      OPENCLAW_CONFIG_PATH: configPath,
+      OC_SWITCH_WEB_DIST: emptyDist
+    });
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr + result.stdout).toMatch(/build/i);
+    expect(existsSync(pidPath)).toBe(false);
   });
 });
 

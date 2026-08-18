@@ -11,4 +11,4 @@ exec bun run "${ROOT}/packages/cli/src/index.ts" "\$@"
 EOF
 chmod +x "${TARGET}"
 echo "Installed: ${TARGET}"
-echo "Ensure ${BIN_DIR} is on PATH, then: oc-switch start"
+echo "Ensure ${BIN_DIR} is on PATH, then: oc-switch start (or restart/stop)"

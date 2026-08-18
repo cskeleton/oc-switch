@@ -85,6 +85,7 @@ Then:
 
 ```bash
 oc-switch start    # background serve + Web GUI / 后台启动
+oc-switch restart  # restart background process / 重启后台进程
 oc-switch stop     # stop background process / 停止后台进程
 ```
 
@@ -169,6 +170,7 @@ oc-switch token rotate
 ```bash
 # Server / 服务
 oc-switch start                    # background local launcher / 本机后台启动
+oc-switch restart                  # restart background launcher / 重启后台服务
 oc-switch stop                     # stop background launcher / 停止后台服务
 oc-switch serve [--port 7420] [--host 127.0.0.1] [--token <secret>]
 oc-switch token rotate

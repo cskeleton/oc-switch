@@ -117,7 +117,7 @@ bun run test:e2e                      # Playwright（需先 build）
 bun run packages/cli/src/index.ts     # 直接调用 CLI
 ```
 
-本机快速启动：先 `bun run build`，再 `./scripts/install-local-launcher.sh` 安装 `~/bin/oc-switch` 薄包装；任意目录 `oc-switch start` / `stop`（日志 `~/.oc-switch/serve.log`）。
+本机快速启动：先 `bun run build`，再 `./scripts/install-local-launcher.sh` 安装 `~/bin/oc-switch` 薄包装；任意目录 `oc-switch start` / `restart` / `stop`（日志 `~/.oc-switch/serve.log`）。
 
 本地开发 Web：`bun run cli -- serve`（API，默认 `127.0.0.1:7420`）+ `bun run --cwd packages/web dev`（默认 `127.0.0.1:5173`）。API token 可持久化于 `~/.oc-switch/token.json`（`oc-switch token rotate`）。
 
@@ -150,7 +150,7 @@ bun run packages/cli/src/index.ts     # 直接调用 CLI
 - 每 Provider 本地已添加模型硬上限按 **50** 设计；主要顾虑 OpenClaw 侧维护成本，而非 oc-switch UI 渲染；存量可超过但禁止再增，需批量清理。
 - `anthropic-messages` 应支持模型发现；`google-generative-ai` 保持 unsupported（官方 API 仍在演进、第三方少用）。
 - 本地目录膨胀时需要批量删除 /「只保留已启用」，避免逐条删。
-- 本机日常启动优先 `oc-switch start` / `stop`（`~/bin` 薄包装），不优先 `bun compile` 独立二进制；无需为 macOS 单独拆包或仓库。
+- 本机日常启动优先 `oc-switch start` / `restart` / `stop`（`~/bin` 薄包装），不优先 `bun compile` 独立二进制；无需为 macOS 单独拆包或仓库。
 - Dashboard 备份差异 Changelog：P0 为 Provider 增删与 Key/Credentials 变更；P1 为停用/启用、模型增删、非密钥参数与主模型切换。
 - 关注 OpenClaw `doctor`/`secrets audit` 对 `apiKey` 格式的告警；新写入宜优先 canonical SecretRef 以减少被判 plaintext 的噪音。
 
