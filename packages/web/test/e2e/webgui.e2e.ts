@@ -392,9 +392,9 @@ test.describe("Runtime discovery (mocked API)", () => {
       await expect(statusNode).toBeVisible();
       const className = await statusNode.getAttribute("class");
       if (item.amber) {
-        expect(className ?? "").toMatch(/amber/);
+        expect(className ?? "").toMatch(/warning/);
       } else {
-        expect(className ?? "").not.toMatch(/amber/);
+        expect(className ?? "").not.toMatch(/warning/);
       }
       await expect(page.locator("body")).not.toContainText(FIXTURE_SECRET);
     }

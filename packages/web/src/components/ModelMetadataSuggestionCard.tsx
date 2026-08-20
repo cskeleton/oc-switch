@@ -5,6 +5,7 @@ import type {
   ModelMetadataSuggestion,
   ModelMetadataMatchKind
 } from "../api";
+import { Button } from "./ui/button";
 
 /**
  * 参考模型建议卡。
@@ -141,13 +142,13 @@ export function ModelMetadataSuggestionCard({
           </dl>
 
           {selected.confidence === "low" ? (
-            <p className="text-xs font-medium text-amber-600 dark:text-amber-400">
+            <p className="text-xs font-medium text-warning">
               低置信匹配：仅根据模型 ID 唯一性推断，请人工核对后再应用。
             </p>
           ) : null}
 
           {staleSource ? (
-            <p className="text-xs font-medium text-amber-600 dark:text-amber-400">
+            <p className="text-xs font-medium text-warning">
               该候选来自缓存快照（目录刷新失败），数据可能已过期。
             </p>
           ) : null}
@@ -166,8 +167,9 @@ export function ModelMetadataSuggestionCard({
       ) : null}
 
       <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
+        <Button
+          variant="outline"
+          size="sm"
           disabled={model?.contextWindow === undefined}
           onClick={() => {
             if (model?.contextWindow !== undefined) onApplyContextWindow(model.contextWindow);
@@ -177,12 +179,12 @@ export function ModelMetadataSuggestionCard({
               ? `应用建议的原生上下文 ${model.contextWindow}`
               : "应用建议的原生上下文"
           }
-          className="rounded border border-input bg-background px-2 py-1 text-xs font-medium hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-40"
         >
           应用上下文{model?.contextWindow !== undefined ? ` ${model.contextWindow}` : ""}
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
           disabled={model?.maxTokens === undefined}
           onClick={() => {
             if (model?.maxTokens !== undefined) onApplyMaxTokens(model.maxTokens);
@@ -190,19 +192,18 @@ export function ModelMetadataSuggestionCard({
           aria-label={
             model?.maxTokens !== undefined ? `应用建议的最大输出 ${model.maxTokens}` : "应用建议的最大输出"
           }
-          className="rounded border border-input bg-background px-2 py-1 text-xs font-medium hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-40"
         >
           应用最大输出{model?.maxTokens !== undefined ? ` ${model.maxTokens}` : ""}
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
           disabled={model === undefined || (model.contextWindow === undefined && model.maxTokens === undefined)}
           onClick={applyAll}
           aria-label="全部应用建议值"
-          className="rounded border border-input bg-background px-2 py-1 text-xs font-medium hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-40"
         >
           全部应用
-        </button>
+        </Button>
       </div>
       <p className="text-xs text-muted-foreground">“全部应用”只写入原生上下文与最大输出，不会修改运行上下文预算。</p>
     </div>

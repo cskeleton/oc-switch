@@ -1,10 +1,15 @@
-import { Edit3, Plus, RefreshCw, Search, Star, Trash2 } from "lucide-react";
+import { Edit3, Inbox, Plus, RefreshCw, Search, Star, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState, useMemo } from "react";
 import { DataTable } from "../components/DataTable";
+import { EmptyState } from "../components/EmptyState";
 import { ModelDialog } from "../components/ModelDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { useToast } from "../components/Toast";
 import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { Pill } from "../components/ui/pill";
 import { Switch } from "../components/ui/switch";
+import { cn } from "../lib/utils";
 import type { ApiClient, CaseDuplicateGroup, ModelSummary, ProviderModelInput, ProviderSummary } from "../api";
 
 interface ModelsViewProps {
@@ -12,6 +17,7 @@ interface ModelsViewProps {
 }
 
 export function ModelsView({ client }: ModelsViewProps) {
+  const toast = useToast();
   const [models, setModels] = useState<ModelSummary[]>([]);
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
   const [duplicateGroups, setDuplicateGroups] = useState<CaseDuplicateGroup[]>([]);
@@ -58,9 +64,10 @@ export function ModelsView({ client }: ModelsViewProps) {
     setBusy(ref);
     try {
       await client.setPrimary(ref);
+      toast.success(`已切换主模型为 ${ref}`);
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "设置主模型失败");
+      toast.error(err instanceof Error ? err.message : "设置主模型失败");
     } finally {
       setBusy(null);
     }
@@ -70,9 +77,10 @@ export function ModelsView({ client }: ModelsViewProps) {
     setBusy(ref);
     try {
       await client.patchModel(ref, !enabled);
+      toast.success(!enabled ? `已启用 ${ref}` : `已禁用 ${ref}`);
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "更新模型状态失败");
+      toast.error(err instanceof Error ? err.message : "更新模型状态失败");
     } finally {
       setBusy(null);
     }
@@ -83,9 +91,10 @@ export function ModelsView({ client }: ModelsViewProps) {
     try {
       await client.createModel(providerId, model);
       setCreating(false);
+      toast.success(`已添加模型 ${providerId}/${model.id}`);
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "操作失败");
+      toast.error(err instanceof Error ? err.message : "操作失败");
     }
   }
 
@@ -95,9 +104,10 @@ export function ModelsView({ client }: ModelsViewProps) {
     try {
       await client.updateModel(editTarget.ref, model);
       setEditTarget(null);
+      toast.success(`模型 ${editTarget.ref} 已更新`);
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "操作失败");
+      toast.error(err instanceof Error ? err.message : "操作失败");
     }
   }
 
@@ -109,24 +119,30 @@ export function ModelsView({ client }: ModelsViewProps) {
   async function confirmDelete() {
     if (!deleteTarget) return;
     if (deleteTarget.isPrimary && !newPrimary) {
-      setError("删除当前主模型前请选择新的主模型");
+      toast.error("删除当前主模型前请选择新的主模型");
       return;
     }
     setError(null);
     try {
       await client.deleteModel(deleteTarget.ref, deleteTarget.isPrimary ? { newPrimary } : {});
       setDeleteTarget(null);
+      toast.success(`已删除模型 ${deleteTarget.ref}`);
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "操作失败");
+      toast.error(err instanceof Error ? err.message : "操作失败");
     }
   }
 
+  // 左侧 Provider 导航：启用在前、已关闭沉底，组内按 id localeCompare
   const providerIds = useMemo(() => {
-    return [...new Set([
+    const ids = [...new Set([
       ...providers.map((p) => p.id),
       ...models.map((m) => m.providerId)
-    ])].sort((a, b) => a.localeCompare(b));
+    ])];
+    const disabledIds = new Set(providers.filter((p) => p.disabled).map((p) => p.id));
+    const enabled = ids.filter((id) => !disabledIds.has(id)).sort((a, b) => a.localeCompare(b));
+    const disabled = ids.filter((id) => disabledIds.has(id)).sort((a, b) => a.localeCompare(b));
+    return [...enabled, ...disabled];
   }, [providers, models]);
 
   const dupIdInfo = useMemo(() => {
@@ -162,8 +178,15 @@ export function ModelsView({ client }: ModelsViewProps) {
     });
   }, [models, selectedProviderId, query]);
 
-  const activeEnabledModels = useMemo(() => activeModels.filter(m => m.enabled), [activeModels]);
-  const activeDisabledModels = useMemo(() => activeModels.filter(m => !m.enabled), [activeModels]);
+  // 两个区段各自按 ref 排序（区段本身固定，不提供表头排序）
+  const activeEnabledModels = useMemo(
+    () => activeModels.filter(m => m.enabled).slice().sort((a, b) => a.ref.localeCompare(b.ref)),
+    [activeModels]
+  );
+  const activeDisabledModels = useMemo(
+    () => activeModels.filter(m => !m.enabled).slice().sort((a, b) => a.ref.localeCompare(b.ref)),
+    [activeModels]
+  );
 
   const activeProvider = providers.find(p => p.id === selectedProviderId);
   const activeProviderDisabled = Boolean(activeProvider?.disabled);
@@ -181,14 +204,13 @@ export function ModelsView({ client }: ModelsViewProps) {
               header: "引用",
               render: (row) => (
                 <div className="flex items-center gap-2">
-                  <span className={row.isPrimary ? "font-semibold text-amber-500 dark:text-amber-400" : "font-medium"}>
+                  {row.isPrimary ? (
+                    <Star aria-label="当前主模型" className="h-3.5 w-3.5 shrink-0 fill-brand text-brand" />
+                  ) : null}
+                  <span className={row.isPrimary ? "font-semibold" : "font-medium"}>
                     {row.ref}
                   </span>
-                  {row.isPrimary ? (
-                    <Badge variant="outline" className="border-amber-500 text-amber-600 dark:border-amber-500/50 dark:text-amber-200 py-0 text-[10px]">
-                      当前主模型
-                    </Badge>
-                  ) : null}
+                  {row.isPrimary ? <Pill variant="brand">当前主模型</Pill> : null}
                 </div>
               )
             },
@@ -203,15 +225,16 @@ export function ModelsView({ client }: ModelsViewProps) {
               className: "w-40 text-right pr-4",
               render: (row) => (
                 <div className="flex items-center justify-end gap-1.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150">
-                  <button
-                    type="button"
+                  <Button
+                    variant="ghost"
+                    size="icon"
                     disabled={busy === row.ref}
                     onClick={() => { if (!row.isPrimary) void handleSetPrimary(row.ref); }}
                     aria-label={`设为主模型 ${row.ref}`}
-                    className={`rounded p-1 hover:bg-accent transition-colors ${row.isPrimary ? "text-amber-500 pointer-events-none" : "text-muted-foreground hover:text-foreground"}`}
+                    className={row.isPrimary ? "pointer-events-none text-brand" : "text-muted-foreground hover:text-foreground"}
                   >
-                    <Star className={`h-3.5 w-3.5 ${row.isPrimary ? "fill-current" : "fill-none"}`} />
-                  </button>
+                    <Star className={`h-3.5 w-3.5 ${row.isPrimary ? "fill-brand" : "fill-none"}`} />
+                  </Button>
                   <Switch
                     checked={row.enabled}
                     disabled={busy === row.ref || activeProviderDisabled}
@@ -219,22 +242,24 @@ export function ModelsView({ client }: ModelsViewProps) {
                     aria-label={`${row.enabled ? "禁用" : "启用"} ${row.ref}`}
                     title={activeProviderDisabled ? "该 Provider 已关闭，请先恢复 Provider 后再启用模型" : undefined}
                   />
-                  <button
-                    type="button"
+                  <Button
+                    variant="ghost"
+                    size="icon"
                     onClick={() => setEditTarget(row)}
                     aria-label={`编辑模型 ${row.ref}`}
-                    className="rounded p-1 hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                    className="text-muted-foreground hover:text-foreground"
                   >
                     <Edit3 className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
                     onClick={() => openDelete(row)}
                     aria-label={`删除模型 ${row.ref}`}
-                    className="rounded p-1 hover:bg-accent text-muted-foreground hover:text-destructive transition-colors"
+                    className="text-muted-foreground hover:text-destructive"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  </Button>
                 </div>
               )
             }
@@ -250,14 +275,14 @@ export function ModelsView({ client }: ModelsViewProps) {
       <div className="w-full md:w-[260px] shrink-0 border-b md:border-b-0 md:border-r border-border pb-4 md:pb-0 md:pr-4">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Providers</h2>
-          <button
-            type="button"
+          <Button
+            variant="outline"
+            size="icon"
             aria-label="刷新"
             onClick={() => void load()}
-            className="rounded p-1.5 hover:bg-accent text-muted-foreground hover:text-foreground border border-border"
           >
             <RefreshCw className="h-3.5 w-3.5" />
-          </button>
+          </Button>
         </div>
         <div className="relative mb-3">
           <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
@@ -272,25 +297,31 @@ export function ModelsView({ client }: ModelsViewProps) {
         <nav className="space-y-1">
           {filteredProviderIds.map((pId) => {
             const isSelected = pId === selectedProviderId;
+            const isDisabled = Boolean(providers.find((provider) => provider.id === pId)?.disabled);
             return (
               <button
                 key={pId}
                 type="button"
                 onClick={() => setSelectedProviderId(pId)}
-                className={`flex w-full items-center justify-between rounded-md px-3 py-1.5 text-sm font-medium transition-all ${
+                className={cn(
+                  "relative flex w-full items-center justify-between rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
                   isSelected
-                    ? "bg-primary/10 text-primary border-l-2 border-primary pl-2.5"
-                    : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-                }`}
+                    ? "bg-brand/10 text-brand"
+                    : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                  isDisabled && "opacity-60"
+                )}
               >
+                {isSelected ? (
+                  <span className="absolute left-0.5 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-brand" />
+                ) : null}
                 <span className="flex items-center gap-1">
                   {pId}
                   {dupIdInfo.has(pId) ? (
-                    <span className={`text-[10px] ${dupIdInfo.get(pId)!.isCanonical ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}`}>
+                    <span className={`text-[10px] ${dupIdInfo.get(pId)!.isCanonical ? "text-success" : "text-warning"}`}>
                       {dupIdInfo.get(pId)!.isCanonical ? `（推荐）` : `（重复）`}
                     </span>
                   ) : null}
-                  {providers.find((provider) => provider.id === pId)?.disabled ? (
+                  {isDisabled ? (
                     <span className="text-[10px] text-muted-foreground">（已关闭）</span>
                   ) : null}
                 </span>
@@ -316,17 +347,16 @@ export function ModelsView({ client }: ModelsViewProps) {
               ) : null}
             </h1>
           </div>
-          <button
-            type="button"
+          <Button
+            size="sm"
             aria-label="添加模型"
             disabled={activeProviderDisabled}
             title={activeProviderDisabled ? "该 Provider 已关闭，请先恢复 Provider 后再启用模型" : undefined}
             onClick={() => setCreating(true)}
-            className="inline-flex items-center gap-1 rounded bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 shadow-sm disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Plus className="h-4 w-4" />
             添加模型
-          </button>
+          </Button>
         </div>
 
         {error ? <p className="text-sm font-medium text-destructive">{error}</p> : null}
@@ -350,12 +380,12 @@ export function ModelsView({ client }: ModelsViewProps) {
             </div>
 
             {activeModels.length === 0 ? (
-              <p className="text-sm text-muted-foreground">没有匹配的模型</p>
+              <EmptyState icon={Inbox} title="没有匹配的模型" />
             ) : (
               <div className="space-y-6">
                 {activeEnabledModels.length > 0 && (
                   <div className="space-y-2">
-                    <h3 className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">
+                    <h3 className="text-xs font-semibold text-success uppercase tracking-wider">
                       已启用 ({activeEnabledModels.length})
                     </h3>
                     {renderModelTable(activeEnabledModels)}

@@ -1,4 +1,4 @@
-import { Cpu, Edit3, Plus, Power, PowerOff, RefreshCw, Search, Trash2 } from "lucide-react";
+import { Cpu, Edit3, MoreHorizontal, Plus, Power, PowerOff, RefreshCw, Search, Star, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { GatewayApplyBanner } from "../components/GatewayApplyBanner";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -8,6 +8,25 @@ import { EnvMigrationConfirmDialog } from "../components/EnvMigrationConfirmDial
 import { MergeCaseDuplicateDialog } from "../components/MergeCaseDuplicateDialog";
 import { ProviderDiscoverDialog } from "../components/ProviderDiscoverDialog";
 import { ProviderModelsDialog } from "../components/ProviderModelsDialog";
+import { useToast } from "../components/Toast";
+import { Button } from "../components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from "../components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from "../components/ui/dropdown-menu";
+import { Input } from "../components/ui/input";
+import { Pill } from "../components/ui/pill";
 import { formatEnvWriteSuccess } from "../env-feedback";
 import type {
   ApiClient,
@@ -36,21 +55,23 @@ interface ProvidersViewProps {
   onRefresh?: () => void;
 }
 
-/** Provider 列表与管理 */
+/** Provider 列表与管理：搜索 + 排序（已关闭沉底）+ 操作收敛为 2+1 */
 export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
+  const toast = useToast();
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
   const [duplicateGroups, setDuplicateGroups] = useState<CaseDuplicateGroup[]>([]);
   const [mergeTarget, setMergeTarget] = useState<CaseDuplicateGroup | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
   const [addingProvider, setAddingProvider] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ProviderSummary | null>(null);
   const [editTarget, setEditTarget] = useState<ProviderSummary | null>(null);
   const [editBaseUrl, setEditBaseUrl] = useState("");
   const [editApi, setEditApi] = useState("");
   const [editApiKey, setEditApiKey] = useState("");
+  const [editError, setEditError] = useState<string | null>(null);
   const [newPrimaryCandidates, setNewPrimaryCandidates] = useState<ModelSummary[]>([]);
   const [selectedNewPrimary, setSelectedNewPrimary] = useState("");
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [gatewayApply, setGatewayApply] = useState<{
     envWrite: EnvWriteVerification;
     gatewayEnvSync?: GatewayEnvSyncResult;
@@ -94,13 +115,21 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
     return map;
   }, [duplicateGroups]);
 
+  // 客户端搜索：匹配 Provider ID 与 baseUrl
+  const filteredProviders = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return providers;
+    return providers.filter(
+      (row) => row.id.toLowerCase().includes(q) || (row.baseUrl ?? "").toLowerCase().includes(q)
+    );
+  }, [providers, query]);
+
   useEffect(() => {
     void load();
   }, [load]);
 
   async function openDelete(row: ProviderSummary) {
     setError(null);
-    setSuccessMessage(null);
     setDeleteTarget(row);
     setNewPrimaryCandidates([]);
     setSelectedNewPrimary("");
@@ -118,7 +147,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
   async function confirmDelete() {
     if (!deleteTarget) return;
     if (deleteTarget.containsPrimary && !selectedNewPrimary) {
-      setError("删除包含 primary 的 Provider 前请选择新的主模型");
+      toast.error("删除包含 primary 的 Provider 前请选择新的主模型");
       return;
     }
     try {
@@ -128,21 +157,29 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
       setDeleteTarget(null);
       setNewPrimaryCandidates([]);
       setSelectedNewPrimary("");
+      toast.success(`Provider ${deleteTarget.id} 已删除`);
       await load();
       onRefresh?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "删除失败");
+      toast.error(err instanceof Error ? err.message : "删除失败");
       setDeleteTarget(null);
     }
   }
 
   function openEdit(row: ProviderSummary) {
     setError(null);
-    setSuccessMessage(null);
+    setEditError(null);
     setEditTarget(row);
     setEditBaseUrl(row.baseUrl ?? "");
     setEditApi(row.api ?? "openai-completions");
     setEditApiKey("");
+  }
+
+  function closeEdit() {
+    setEditTarget(null);
+    setEditApi("");
+    setEditApiKey("");
+    setEditError(null);
   }
 
   function showGatewayApply(result: { envWrite?: EnvWriteVerification | undefined; gatewayEnvSync?: GatewayEnvSyncResult }) {
@@ -158,12 +195,10 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
 
   async function submitProviderUpdate(providerId: string, changes: { baseUrl?: string; api?: ApiType; apiKey?: string; confirmMigration?: boolean; confirmComplex?: boolean }) {
     const result = await client.updateProvider(providerId, changes);
-    setEditTarget(null);
-    setEditApi("");
-    setEditApiKey("");
+    closeEdit();
     setPendingEnvConfirm(null);
     if (changes.apiKey) {
-      setSuccessMessage(formatEnvWriteSuccess({
+      toast.success(formatEnvWriteSuccess({
         label: `Provider ${providerId} 的 API Key`,
         envWrite: result.envWrite,
         gatewayEnvSync: result.gatewayEnvSync,
@@ -176,7 +211,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
       showGatewayApply(result);
     } else {
       setGatewayApply(null);
-      setSuccessMessage(`Provider ${providerId} 已更新`);
+      toast.success(`Provider ${providerId} 已更新`);
     }
     await load();
     onRefresh?.();
@@ -190,18 +225,17 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
     const currentApi = editTarget.api ?? "openai-completions";
     if (editApi !== currentApi) {
       if (!isEditableApiType(editApi)) {
-        setError("请选择支持的 API 类型");
+        setEditError("请选择支持的 API 类型");
         return;
       }
       changes.api = editApi;
     }
     if (editApiKey) changes.apiKey = editApiKey;
     if (!changes.baseUrl && !changes.api && !changes.apiKey) {
-      setError("请输入 baseUrl、API 类型或 API Key 新值");
+      setEditError("请输入 baseUrl、API 类型或 API Key 新值");
       return;
     }
-    setError(null);
-    setSuccessMessage(null);
+    setEditError(null);
     try {
       if (changes.apiKey) {
         const preview = await client.previewUpdateProvider(editTarget.id, {
@@ -223,7 +257,8 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
       }
       await submitProviderUpdate(editTarget.id, changes);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "保存失败");
+      // 表单内错误留在弹窗中展示
+      setEditError(err instanceof Error ? err.message : "保存失败");
     }
   }
 
@@ -237,7 +272,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
         ...(pendingEnvConfirm.confirmComplex ? { confirmComplex: true } : {})
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "保存失败");
+      toast.error(err instanceof Error ? err.message : "保存失败");
       setPendingEnvConfirm(null);
     }
   }
@@ -249,10 +284,11 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
       // stateTarget.disabled 为 true 时恢复（enabled: true），为 false 时关闭（enabled: false）
       await client.patchProviderState(stateTarget.id, stateTarget.disabled);
       setStateTarget(null);
+      toast.success(stateTarget.disabled ? `Provider ${stateTarget.id} 已恢复` : `Provider ${stateTarget.id} 已关闭`);
       await load();
       onRefresh?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "更新 Provider 状态失败");
+      toast.error(err instanceof Error ? err.message : "更新 Provider 状态失败");
       setStateTarget(null);
     }
   }
@@ -266,13 +302,13 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
     try {
       const result = await client.migrateProviderSecretRefs(providerIds);
       setShowSecretRefMigration(false);
-      setSuccessMessage(
+      toast.success(
         `已将 ${result.migratedProviderIds.length} 个 Provider API Key 引用迁移为 SecretRef；请重启 Gateway 使运行时快照生效。`
       );
       await load();
       onRefresh?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "SecretRef 迁移失败");
+      toast.error(err instanceof Error ? err.message : "SecretRef 迁移失败");
       setShowSecretRefMigration(false);
     }
   }
@@ -290,29 +326,34 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
 
   return (
     <section data-testid="providers-view">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Providers</h1>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={() => setAddingProvider(true)}
-            className="inline-flex items-center gap-1 rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90"
-          >
+      {/* 页头：标题 + 描述，右侧操作 */}
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-xl font-semibold">Providers</h1>
+          <p className="mt-0.5 text-sm text-muted-foreground">管理 OpenClaw Provider 连接与 API 密钥</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              aria-label="搜索 Provider"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索 ID / Base URL"
+              className="h-8 w-44 pl-8 text-xs sm:w-52"
+            />
+          </div>
+          <Button size="sm" onClick={() => setAddingProvider(true)}>
             <Plus className="h-4 w-4" />
             添加 Provider
-          </button>
-          <button
-            type="button"
-            aria-label="刷新"
-            onClick={() => void load()}
-            className="rounded-md border border-input p-2 hover:bg-accent hover:text-foreground"
-          >
+          </Button>
+          <Button variant="outline" size="icon" aria-label="刷新" onClick={() => void load()}>
             <RefreshCw className="h-4 w-4" />
-          </button>
+          </Button>
         </div>
       </div>
 
-      {error ? <p className="mb-3 text-destructive">{error}</p> : null}
+      {error ? <p className="mb-3 text-sm text-destructive">{error}</p> : null}
       {gatewayApply ? (
         <GatewayApplyBanner
           client={client}
@@ -321,7 +362,6 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
           onDismiss={() => setGatewayApply(null)}
         />
       ) : null}
-      {successMessage ? <p className="mb-3 text-sm text-emerald-600 dark:text-emerald-400">{successMessage}</p> : null}
       {secretRefMigrations && secretRefMigrations.summary.candidateCount > 0 ? (
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-card px-4 py-3 text-sm">
           <div>
@@ -332,30 +372,34 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
               {secretRefMigrations.summary.readyCount} 个可迁移，{secretRefMigrations.summary.blockedCount} 个需要先处理环境问题。
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => setShowSecretRefMigration(true)}
-            className="rounded-md bg-primary px-3 py-1.5 font-medium text-primary-foreground hover:bg-primary/90"
-          >
+          <Button size="sm" onClick={() => setShowSecretRefMigration(true)}>
             查看并迁移
-          </button>
+          </Button>
         </div>
       ) : null}
 
       <DataTable
-        rows={providers}
+        rows={filteredProviders}
         rowKey={(row) => row.id}
+        emptyMessage={query ? "没有匹配的 Provider" : "暂无 Provider"}
+        pinnedBottom={(row) => row.disabled}
+        defaultSort={{ key: "id" }}
+        rowClassName={(row) => (row.disabled ? "opacity-60" : undefined)}
         columns={[
           {
             key: "id",
             header: "ID",
+            sortable: true,
+            sortValue: (row) => row.id,
             render: (row) => (
-              <span className={row.containsPrimary ? "font-medium text-amber-500 dark:text-amber-400" : ""}>
-                {row.id}
-                {row.containsPrimary ? " ★" : ""}
+              <span className="inline-flex items-center gap-1.5">
+                {row.containsPrimary ? (
+                  <Star aria-label="包含当前主模型" className="h-3.5 w-3.5 fill-brand text-brand" />
+                ) : null}
+                <span className={row.containsPrimary ? "font-medium" : undefined}>{row.id}</span>
                 {groupByProviderId.has(row.id) ? (
-                  <span className="ml-2 inline-flex items-center gap-2">
-                    <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">⚠ 重复</span>
+                  <span className="ml-1 inline-flex items-center gap-2">
+                    <Pill variant="warning">⚠ 重复</Pill>
                     {(() => {
                       const group = groupByProviderId.get(row.id)!;
                       return group.mergeable ? (
@@ -377,73 +421,84 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
             )
           },
           { key: "api", header: "API 类型", render: (row) => row.api ?? "—" },
-          { key: "baseUrl", header: "Base URL", render: (row) => row.baseUrl ?? "—" },
+          {
+            key: "baseUrl",
+            header: "Base URL",
+            render: (row) => <span className="font-mono text-xs">{row.baseUrl ?? "—"}</span>
+          },
           {
             key: "models",
-            header: "模型 / 已启用",
-            render: (row) => `${row.modelCount} / ${row.enabledModelCount}`
+            header: "模型数",
+            sortable: true,
+            sortValue: (row) => row.modelCount,
+            align: "right",
+            render: (row) => row.modelCount
+          },
+          {
+            key: "enabled",
+            header: "已启用",
+            align: "right",
+            render: (row) => row.enabledModelCount
           },
           {
             key: "status",
             header: "状态",
-            render: (row) => row.disabled ? (
-              <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">已关闭</span>
-            ) : (
-              <span className="rounded bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-600 dark:text-emerald-400">已启用</span>
-            )
+            sortable: true,
+            // 升序时已启用(0)在前、已关闭(1)在后
+            sortValue: (row) => (row.disabled ? 1 : 0),
+            render: (row) =>
+              row.disabled ? <Pill variant="muted">已关闭</Pill> : <Pill variant="success">已启用</Pill>
           },
           {
             key: "actions",
             header: "操作",
             render: (row) => (
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="icon"
                   aria-label={`管理模型 ${row.id}`}
+                  title="模型"
                   onClick={() => setModelTarget(row)}
-                  className="inline-flex items-center gap-1 rounded border border-input px-2 py-1 text-xs hover:bg-accent hover:text-foreground"
                 >
-                  <Cpu className="h-3 w-3" />
-                  模型
-                </button>
-                <button
-                  type="button"
+                  <Cpu className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
                   aria-label={`${row.disabled ? "恢复" : "关闭"} Provider ${row.id}`}
                   disabled={!row.disabled && row.containsPrimary}
-                  title={!row.disabled && row.containsPrimary ? "该 Provider 包含当前主模型，请先切换主模型后再关闭" : undefined}
+                  title={!row.disabled && row.containsPrimary ? "该 Provider 包含当前主模型，请先切换主模型后再关闭" : row.disabled ? "恢复" : "关闭"}
                   onClick={() => setStateTarget(row)}
-                  className="inline-flex items-center gap-1 rounded border border-input px-2 py-1 text-xs hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  {row.disabled ? <Power className="h-3 w-3" /> : <PowerOff className="h-3 w-3" />}
-                  {row.disabled ? "恢复" : "关闭"}
-                </button>
-                <button
-                  type="button"
-                  aria-label={`编辑 ${row.id}`}
-                  onClick={() => openEdit(row)}
-                  className="inline-flex items-center gap-1 rounded border border-input px-2 py-1 text-xs hover:bg-accent hover:text-foreground"
-                >
-                  <Edit3 className="h-3 w-3" />
-                  编辑
-                </button>
-                <button
-                  type="button"
-                  aria-label={`发现模型 ${row.id}`}
-                  onClick={() => setDiscoverTarget(row)}
-                  className="inline-flex items-center gap-1 rounded border border-primary/50 px-2 py-1 text-xs text-primary hover:bg-primary/10"
-                >
-                  <Search className="h-3 w-3" />
-                  发现模型
-                </button>
-                <button
-                  type="button"
-                  aria-label={`删除 ${row.id}`}
-                  onClick={() => void openDelete(row)}
-                  className="inline-flex items-center gap-1 rounded border border-destructive/50 px-2 py-1 text-xs text-destructive hover:bg-destructive hover:text-destructive-foreground"
-                >
-                  <Trash2 className="h-3 w-3" />
-                  删除
-                </button>
+                  {row.disabled ? <Power className="h-4 w-4" /> : <PowerOff className="h-4 w-4" />}
+                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon" aria-label={`更多操作 ${row.id}`}>
+                      <MoreHorizontal className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem aria-label={`编辑 ${row.id}`} onSelect={() => openEdit(row)}>
+                      <Edit3 className="mr-2 h-3.5 w-3.5" />
+                      编辑
+                    </DropdownMenuItem>
+                    <DropdownMenuItem aria-label={`发现模型 ${row.id}`} onSelect={() => setDiscoverTarget(row)}>
+                      <Search className="mr-2 h-3.5 w-3.5" />
+                      发现模型
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      aria-label={`删除 ${row.id}`}
+                      className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                      onSelect={() => void openDelete(row)}
+                    >
+                      <Trash2 className="mr-2 h-3.5 w-3.5" />
+                      删除
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             )
           }
@@ -469,7 +524,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
         onCancel={() => setDiscoverTarget(null)}
         onAdded={({ addedCount, enabled }) => {
           setDiscoverTarget(null);
-          setSuccessMessage(
+          toast.success(
             enabled
               ? `已添加并启用 ${addedCount} 个模型`
               : `已添加 ${addedCount} 个模型`
@@ -485,7 +540,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
         onCancel={() => setAddingProvider(false)}
         onSaved={(result) => {
           setAddingProvider(false);
-          setSuccessMessage(formatEnvWriteSuccess({
+          toast.success(formatEnvWriteSuccess({
             label: `Provider ${result.providerId} 的 API Key`,
             envWrite: result.envWrite,
             gatewayEnvSync: result.gatewayEnvSync,
@@ -540,75 +595,61 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
         onConfirm={() => void confirmProviderStateChange()}
       />
 
-      {editTarget ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true">
-          <div className="w-full max-w-md rounded-lg border border-border bg-card p-4 shadow-xl">
-            <h2 className="text-lg font-semibold text-foreground">编辑 Provider</h2>
-            <p className="mt-1 break-all text-xs text-muted-foreground">{editTarget.id}</p>
-            <div className="mt-4 space-y-3">
-              <label className="block text-sm">
-                <span className="mb-1 block text-muted-foreground">baseUrl</span>
-                <input
-                  aria-label="Provider baseUrl"
-                  value={editBaseUrl}
-                  onChange={(event) => setEditBaseUrl(event.target.value)}
-                  className="w-full rounded border border-input bg-background px-3 py-2 text-foreground"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="mb-1 block text-muted-foreground">API 类型</span>
-                <select
-                  aria-label="Provider API 类型"
-                  value={editApi}
-                  onChange={(event) => setEditApi(event.target.value)}
-                  className="w-full rounded border border-input bg-background px-3 py-2 text-foreground"
-                >
-                  {editTarget.api && !isEditableApiType(editTarget.api) ? (
-                    <option value={editTarget.api}>{editTarget.api}（当前值）</option>
-                  ) : null}
-                  {EDITABLE_API_TYPES.map((api) => <option key={api} value={api}>{api}</option>)}
-                </select>
-              </label>
-              <label className="block text-sm">
-                <span className="mb-1 block text-muted-foreground">API Key 新值</span>
-                <input
-                  type="password"
-                  aria-label="Provider API Key 新值"
-                  value={editApiKey}
-                  onChange={(event) => setEditApiKey(event.target.value)}
-                  className="w-full rounded border border-input bg-background px-3 py-2 text-foreground"
-                  autoComplete="off"
-                />
-              </label>
-              {editTarget.apiKeyEnvStatus === "unmanaged" && editTarget.apiKeyEnv ? (
-                <p className="text-sm text-amber-500">
-                  {editTarget.apiKeyEnv} 当前在托管块外；保存新 API Key 时会迁移到 oc-switch 托管区。
-                </p>
-              ) : null}
-            </div>
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setEditTarget(null);
-                  setEditApi("");
-                  setEditApiKey("");
-                }}
-                className="rounded-md border border-input px-3 py-1.5 text-sm text-foreground hover:bg-accent"
+      {/* 编辑 Provider：统一使用 Radix Dialog */}
+      <Dialog open={Boolean(editTarget)} onOpenChange={(val) => { if (!val) closeEdit(); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>编辑 Provider</DialogTitle>
+            <DialogDescription className="break-all">{editTarget?.id}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <label className="block text-sm">
+              <span className="mb-1 block text-muted-foreground">baseUrl</span>
+              <Input
+                aria-label="Provider baseUrl"
+                value={editBaseUrl}
+                onChange={(event) => setEditBaseUrl(event.target.value)}
+              />
+            </label>
+            <label className="block text-sm">
+              <span className="mb-1 block text-muted-foreground">API 类型</span>
+              <select
+                aria-label="Provider API 类型"
+                value={editApi}
+                onChange={(event) => setEditApi(event.target.value)}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
               >
-                取消
-              </button>
-              <button
-                type="button"
-                onClick={() => void confirmEdit()}
-                className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90"
-              >
-                保存 Provider
-              </button>
-            </div>
+                {editTarget?.api && !isEditableApiType(editTarget.api) ? (
+                  <option value={editTarget.api}>{editTarget.api}（当前值）</option>
+                ) : null}
+                {EDITABLE_API_TYPES.map((api) => <option key={api} value={api}>{api}</option>)}
+              </select>
+            </label>
+            <label className="block text-sm">
+              <span className="mb-1 block text-muted-foreground">API Key 新值</span>
+              <Input
+                type="password"
+                aria-label="Provider API Key 新值"
+                value={editApiKey}
+                onChange={(event) => setEditApiKey(event.target.value)}
+                autoComplete="off"
+              />
+            </label>
+            {editTarget?.apiKeyEnvStatus === "unmanaged" && editTarget.apiKeyEnv ? (
+              <p className="text-sm text-warning">
+                {editTarget.apiKeyEnv} 当前在托管块外；保存新 API Key 时会迁移到 oc-switch 托管区。
+              </p>
+            ) : null}
+            {editError ? <p className="text-sm text-destructive">{editError}</p> : null}
           </div>
-        </div>
-      ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={closeEdit}>
+              取消
+            </Button>
+            <Button onClick={() => void confirmEdit()}>保存 Provider</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <EnvMigrationConfirmDialog
         open={Boolean(pendingEnvConfirm)}

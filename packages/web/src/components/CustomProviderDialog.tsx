@@ -402,7 +402,7 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
                   <Input aria-label="API Key env 名" value={apiKeyEnv} onChange={(event) => { setApiKeyEnvTouched(true); setApiKeyEnv(event.target.value); }} />
                 </div>
                 {envPreview?.requiresConfirmation ? (
-                  <p className="md:col-span-2 text-sm text-amber-500">
+                  <p className="md:col-span-2 text-sm text-warning">
                     {apiKeyEnv} 当前在托管块外或存在复杂语法；确认添加后将迁移到 oc-switch 托管区。
                   </p>
                 ) : null}
@@ -593,7 +593,7 @@ function CustomProviderDiscoverDialog({
           <DialogDescription>基于当前表单凭证临时拉取模型，勾选后仅回填表单，不会写入配置。</DialogDescription>
         </DialogHeader>
         {error ? <p className="text-sm font-medium text-destructive">{error}</p> : null}
-        {unsupportedReason ? <p className="text-sm text-amber-600 dark:text-amber-400">{unsupportedReason}</p> : null}
+        {unsupportedReason ? <p className="text-sm text-warning">{unsupportedReason}</p> : null}
         <div className="flex items-center gap-2">
           <button
             type="button"

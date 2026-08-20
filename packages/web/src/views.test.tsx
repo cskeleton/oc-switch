@@ -7,6 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { App } from "./App";
 import { DiffSummary } from "./components/DiffSummary";
 import { ModelDialog } from "./components/ModelDialog";
+import { ToastProvider } from "./components/Toast";
 import {
   createApiClient,
   type ApiClient,
@@ -39,6 +40,60 @@ function mockClient(overrides: Partial<ApiClient> = {}): ApiClient {
     fetchImpl: async () => new Response(JSON.stringify({ ok: true }), { status: 200 })
   });
   return { ...base, ...overrides };
+}
+
+/** ProvidersView 的操作反馈走 toast（useToast 需要 ToastProvider），测试统一包裹 */
+function renderProvidersView(client: ApiClient) {
+  return render(
+    <ToastProvider>
+      <ProvidersView client={client} />
+    </ToastProvider>
+  );
+}
+
+/** ModelsView 的操作反馈走 toast，测试统一包裹 */
+function renderModelsView(client: ApiClient) {
+  return render(
+    <ToastProvider>
+      <ModelsView client={client} />
+    </ToastProvider>
+  );
+}
+
+/** BackupsView 的操作反馈走 toast，测试统一包裹 */
+function renderBackupsView(client: ApiClient) {
+  return render(
+    <ToastProvider>
+      <BackupsView client={client} />
+    </ToastProvider>
+  );
+}
+
+/** PresetsView 的操作反馈走 toast，测试统一包裹 */
+function renderPresetsView(client: ApiClient) {
+  return render(
+    <ToastProvider>
+      <PresetsView client={client} />
+    </ToastProvider>
+  );
+}
+
+/** SettingsView 的操作反馈走 toast，测试统一包裹 */
+function renderSettingsView(client: ApiClient, baseUrl = "http://127.0.0.1:7420") {
+  return render(
+    <ToastProvider>
+      <SettingsView baseUrl={baseUrl} client={client} />
+    </ToastProvider>
+  );
+}
+
+/** rerender 也需保持同一棵包裹树 */
+function settingsViewTree(client: ApiClient, baseUrl = "http://127.0.0.1:7420") {
+  return (
+    <ToastProvider>
+      <SettingsView baseUrl={baseUrl} client={client} />
+    </ToastProvider>
+  );
 }
 
 describe("Dashboard", () => {
@@ -126,7 +181,7 @@ describe("ModelsView", () => {
       ]
     }));
 
-    const { findByLabelText } = render(<ModelsView client={mockClient({ getModels, getProviders, setPrimary })} />);
+    const { findByLabelText } = renderModelsView(mockClient({ getModels, getProviders, setPrimary }));
 
     await userEvent.click(await findByLabelText("设为主模型 nvidia/deepseek-ai/deepseek-v4-flash"));
 
@@ -142,7 +197,7 @@ describe("ModelsView", () => {
       ]
     }));
 
-    const { findByLabelText } = render(<ModelsView client={mockClient({ getModels, getProviders, patchModel })} />);
+    const { findByLabelText } = renderModelsView(mockClient({ getModels, getProviders, patchModel }));
 
     await userEvent.click(await findByLabelText("禁用 a/b/c"));
 
@@ -177,7 +232,7 @@ describe("ModelsView", () => {
     }));
     const client = mockClient({ getProviders, getModels });
 
-    const searchView = render(<ModelsView client={client} />);
+    const searchView = renderModelsView(client);
     expect(await searchView.findByText("当前主模型")).toBeTruthy();
     await userEvent.click(await searchView.findByText("nvidia"));
     await userEvent.type(await searchView.findByLabelText("搜索模型"), "deepseek");
@@ -185,7 +240,7 @@ describe("ModelsView", () => {
     await waitFor(() => expect(searchView.queryByText("minimax-portal/MiniMax-M3")).toBeNull());
     searchView.unmount();
 
-    const filterView = render(<ModelsView client={client} />);
+    const filterView = renderModelsView(client);
     await userEvent.click(await filterView.findByText("nvidia"));
     expect(await filterView.findByText("nvidia/llama-3")).toBeTruthy();
     await userEvent.click(await filterView.findByText("minimax-portal"));
@@ -206,10 +261,10 @@ describe("ModelsView", () => {
       ]
     }));
 
-    const { container, findByLabelText, findByRole } = render(<ModelsView client={mockClient({ getModels, getProviders })} />);
+    const { container, findByLabelText, findByRole } = renderModelsView(mockClient({ getModels, getProviders }));
 
     await findByRole("button", { name: "添加模型" });
-    expect(container.querySelector("nav button")?.className).toContain("bg-primary/10");
+    expect(container.querySelector("nav button")?.className).toContain("bg-brand/10");
     expect(container.querySelector(".opacity-60")).toBeTruthy();
     expect(container.querySelector(".grayscale-\\[0\\.2\\]")).toBeTruthy();
     expect((await findByLabelText("设为主模型 nvidia/enabled-model")).parentElement?.className).toContain("group-focus-within:opacity-100");
@@ -224,9 +279,7 @@ describe("ModelsView", () => {
     }));
     const getModels = mock(async () => ({ models: [] }));
 
-    const { findByLabelText, findByRole, findByText, getByText } = render(
-      <ModelsView client={mockClient({ getModels, getProviders, createModel })} />
-    );
+    const { findByLabelText, findByRole, findByText, getByText } = renderModelsView(mockClient({ getModels, getProviders, createModel }));
 
     await userEvent.click(await findByText("添加模型"));
     await userEvent.selectOptions(await findByLabelText("Provider"), "nvidia");
@@ -273,9 +326,7 @@ describe("ModelsView", () => {
       ]
     }));
 
-    const { findByLabelText, getByText } = render(
-      <ModelsView client={mockClient({ getModels, getProviders, updateModel })} />
-    );
+    const { findByLabelText, getByText } = renderModelsView(mockClient({ getModels, getProviders, updateModel }));
 
     await userEvent.click(await findByLabelText("编辑模型 nvidia/deepseek-ai/deepseek-v4-flash"));
     const modelIdInput = await findByLabelText("Model ID");
@@ -314,9 +365,7 @@ describe("ModelsView", () => {
       ]
     }));
 
-    const { findByLabelText, getByText } = render(
-      <ModelsView client={mockClient({ getModels, getProviders, updateModel })} />
-    );
+    const { findByLabelText, getByText } = renderModelsView(mockClient({ getModels, getProviders, updateModel }));
 
     await userEvent.click(await findByLabelText("编辑模型 nvidia/deepseek-ai/deepseek-v4-flash"));
     const aliasInput = await findByLabelText("Alias");
@@ -348,9 +397,7 @@ describe("ModelsView", () => {
       ]
     }));
 
-    const { findByLabelText, getByText } = render(
-      <ModelsView client={mockClient({ getModels, getProviders, updateModel })} />
-    );
+    const { findByLabelText, getByText } = renderModelsView(mockClient({ getModels, getProviders, updateModel }));
 
     await userEvent.click(await findByLabelText("编辑模型 nvidia/deepseek-ai/deepseek-v4-flash"));
     await userEvent.click(await findByLabelText("Reasoning"));
@@ -370,9 +417,7 @@ describe("ModelsView", () => {
     }));
     const getModels = mock(async () => ({ models: [] }));
 
-    const { findByLabelText, findByText, getByText } = render(
-      <ModelsView client={mockClient({ getModels, getProviders, createModel })} />
-    );
+    const { findByLabelText, findByText, getByText } = renderModelsView(mockClient({ getModels, getProviders, createModel }));
 
     await userEvent.click(await findByText("添加模型"));
     await userEvent.type(await findByLabelText("Model ID"), "bad-window");
@@ -400,7 +445,7 @@ describe("ModelsView", () => {
       }],
       summary: { duplicateGroupCount: 1, affectedProviderCount: 2, affectedAllowlistCount: 1 }
     }));
-    const { findByText } = render(<ModelsView client={mockClient({ getProviders, getModels, getHealth })} />);
+    const { findByText } = renderModelsView(mockClient({ getProviders, getModels, getHealth }));
     expect(await findByText("（推荐）")).toBeTruthy();
     expect(await findByText("（重复）")).toBeTruthy();
   });
@@ -423,9 +468,7 @@ describe("ModelsView", () => {
       ]
     }));
 
-    const { findByLabelText, findAllByText } = render(
-      <ModelsView client={mockClient({ getProviders, getModels, patchModel })} />
-    );
+    const { findByLabelText, findAllByText } = renderModelsView(mockClient({ getProviders, getModels, patchModel }));
 
     expect((await findAllByText(/已关闭/)).length).toBeGreaterThan(0);
     expect((await findByLabelText("启用 nvidia/llama-3") as HTMLButtonElement).disabled).toBe(true);
@@ -466,7 +509,7 @@ describe("ProvidersView", () => {
       migrateProviderSecretRefs
     });
 
-    const { findByText, getByText } = render(<ProvidersView client={client} />);
+    const { findByText, getByText } = renderProvidersView(client);
 
     expect(await findByText("发现 2 个旧环境变量引用")).toBeTruthy();
     await userEvent.click(getByText("查看并迁移"));
@@ -478,9 +521,7 @@ describe("ProvidersView", () => {
   });
 
   test("shows provider id, api type, counts, and primary marker", async () => {
-    const { findAllByText, findByText } = render(
-      <ProvidersView
-        client={mockClient({
+    const { findByLabelText, findByText } = renderProvidersView(mockClient({
           getProviders: async () => ({
             providers: [
               providerSummary({
@@ -491,13 +532,13 @@ describe("ProvidersView", () => {
               })
             ]
           })
-        })}
-      />
-    );
+        }));
 
-    expect(await findByText("nvidia ★")).toBeTruthy();
+    expect(await findByText("nvidia", { exact: true })).toBeTruthy();
+    expect(await findByLabelText("包含当前主模型")).toBeTruthy();
     expect(await findByText("openai-completions")).toBeTruthy();
-    expect(await findByText("2 / 1")).toBeTruthy();
+    expect(await findByText("2")).toBeTruthy();
+    expect(await findByText("1")).toBeTruthy();
   });
 
   test("requires a new primary instead of forcing deletion for provider containing primary", async () => {
@@ -528,10 +569,9 @@ describe("ProvidersView", () => {
       ]
     }));
 
-    const { findByLabelText, getByText } = render(
-      <ProvidersView client={mockClient({ getProviders, getModels, deleteProvider })} />
-    );
+    const { findByLabelText, getByText } = renderProvidersView(mockClient({ getProviders, getModels, deleteProvider }));
 
+    await userEvent.click(await findByLabelText("更多操作 minimax-portal"));
     await userEvent.click(await findByLabelText("删除 minimax-portal"));
     await userEvent.selectOptions(await findByLabelText("新主模型"), "nvidia/deepseek-ai/deepseek-v4-flash");
     await userEvent.click(getByText("确认"));
@@ -562,9 +602,7 @@ describe("ProvidersView", () => {
       ]
     }));
 
-    const { findByLabelText, findByText, getByText } = render(
-      <ProvidersView client={mockClient({ getProviders, getModels, createModel })} />
-    );
+    const { findByLabelText, findByText, getByText } = renderProvidersView(mockClient({ getProviders, getModels, createModel }));
 
     await userEvent.click(await findByLabelText("管理模型 nvidia"));
     expect(await findByText("nvidia 模型")).toBeTruthy();
@@ -608,9 +646,7 @@ describe("ProvidersView", () => {
       ]
     }));
 
-    const { findByLabelText, getByText } = render(
-      <ProvidersView client={mockClient({ getProviders, getModels, deleteModel })} />
-    );
+    const { findByLabelText, getByText } = renderProvidersView(mockClient({ getProviders, getModels, deleteModel }));
 
     await userEvent.click(await findByLabelText("管理模型 nvidia"));
     await userEvent.click(await findByLabelText("删除模型 nvidia/deepseek-ai/deepseek-v4-flash"));
@@ -654,9 +690,7 @@ describe("ProvidersView", () => {
       ]
     }));
 
-    const { findByLabelText, findAllByLabelText } = render(
-      <ProvidersView client={mockClient({ getProviders, getModels })} />
-    );
+    const { findByLabelText, findAllByLabelText } = renderProvidersView(mockClient({ getProviders, getModels }));
 
     await userEvent.click(await findByLabelText("管理模型 nvidia"));
     const checkboxes = await findAllByLabelText(/^选择本地模型 /);
@@ -695,9 +729,7 @@ describe("ProvidersView", () => {
       ]
     }));
 
-    const { findByLabelText, getByText } = render(
-      <ProvidersView client={mockClient({ getProviders, getModels, batchRemoveProviderModels })} />
-    );
+    const { findByLabelText, getByText } = renderProvidersView(mockClient({ getProviders, getModels, batchRemoveProviderModels }));
 
     await userEvent.click(await findByLabelText("管理模型 nvidia"));
     await userEvent.click(await findByLabelText("选择本地模型 vendor/model-b"));
@@ -738,9 +770,7 @@ describe("ProvidersView", () => {
       ]
     }));
 
-    const { findByLabelText, findByText, getByText } = render(
-      <ProvidersView client={mockClient({ getProviders, getModels, batchRemoveProviderModels })} />
-    );
+    const { findByLabelText, findByText, getByText } = renderProvidersView(mockClient({ getProviders, getModels, batchRemoveProviderModels }));
 
     await userEvent.click(await findByLabelText("管理模型 nvidia"));
     await userEvent.click(await findByLabelText("只保留已启用模型"));
@@ -782,9 +812,7 @@ describe("ProvidersView", () => {
       ]
     }));
 
-    const { findByLabelText, getByText } = render(
-      <ProvidersView client={mockClient({ getProviders, getModels, batchRemoveProviderModels })} />
-    );
+    const { findByLabelText, getByText } = renderProvidersView(mockClient({ getProviders, getModels, batchRemoveProviderModels }));
 
     await userEvent.click(await findByLabelText("管理模型 nvidia"));
     const keepEnabled = await findByLabelText("只保留已启用模型");
@@ -837,9 +865,7 @@ describe("ProvidersView", () => {
       ]
     }));
 
-    const { findByLabelText, findByRole, findByText, getByText, queryByText } = render(
-      <ProvidersView client={mockClient({ getProviders, previewCustomProvider, addCustomProvider })} />
-    );
+    const { findByLabelText, findByRole, findByText, getByText, queryByText } = renderProvidersView(mockClient({ getProviders, previewCustomProvider, addCustomProvider }));
 
     await userEvent.click(await findByRole("button", { name: "添加 Provider" }));
     expect(await findByLabelText("模型 ID 1")).toBeTruthy();
@@ -910,9 +936,7 @@ describe("ProvidersView", () => {
       ]
     }));
 
-    const { findByLabelText, findByRole, findByText, getByText } = render(
-      <ProvidersView client={mockClient({ getProviders })} />
-    );
+    const { findByLabelText, findByRole, findByText, getByText } = renderProvidersView(mockClient({ getProviders }));
 
     await userEvent.click(await findByRole("button", { name: "添加 Provider" }));
     const keyInput = await findByLabelText("API Key", { exact: true }) as HTMLInputElement;
@@ -936,9 +960,7 @@ describe("ProvidersView", () => {
       ]
     }));
 
-    const { findByLabelText, findByRole, findByText, queryByText, getByText } = render(
-      <ProvidersView client={mockClient({ getProviders })} />
-    );
+    const { findByLabelText, findByRole, findByText, queryByText, getByText } = renderProvidersView(mockClient({ getProviders }));
 
     await userEvent.click(await findByRole("button", { name: "添加 Provider" }));
     await userEvent.type(await findByLabelText("供应商名称"), "Escape Test");
@@ -960,9 +982,7 @@ describe("ProvidersView", () => {
       ]
     }));
 
-    const { findByRole, findByText, queryByText, getByText } = render(
-      <ProvidersView client={mockClient({ getProviders })} />
-    );
+    const { findByRole, findByText, queryByText, getByText } = renderProvidersView(mockClient({ getProviders }));
 
     await userEvent.click(await findByRole("button", { name: "添加 Provider" }));
     expect(await findByText("填写自定义 Provider 信息，确认前会预览配置差异。")).toBeTruthy();
@@ -982,9 +1002,7 @@ describe("ProvidersView", () => {
       ]
     }));
 
-    const { findByLabelText, findByRole, queryByLabelText } = render(
-      <ProvidersView client={mockClient({ getProviders })} />
-    );
+    const { findByLabelText, findByRole, queryByLabelText } = renderProvidersView(mockClient({ getProviders }));
 
     await userEvent.click(await findByRole("button", { name: "添加 Provider" }));
     expect(await findByLabelText("模型 ID 1")).toBeTruthy();
@@ -1016,9 +1034,7 @@ describe("ProvidersView", () => {
         })
       ]
     }));
-    const { findByLabelText, findByRole, getByText } = render(
-      <ProvidersView client={mockClient({ getProviders, discoverProviderPreview })} />
-    );
+    const { findByLabelText, findByRole, getByText } = renderProvidersView(mockClient({ getProviders, discoverProviderPreview }));
 
     await userEvent.click(await findByRole("button", { name: "添加 Provider" }));
     await userEvent.type(await findByLabelText("请求地址"), "https://api.custom.example");
@@ -1089,10 +1105,9 @@ describe("ProvidersView", () => {
       ]
     }));
 
-    const { findByLabelText, findByText, getByText, queryByText } = render(
-      <ProvidersView client={mockClient({ getProviders, previewUpdateProvider, updateProvider })} />
-    );
+    const { findByLabelText, findByText, getByText, queryByText } = renderProvidersView(mockClient({ getProviders, previewUpdateProvider, updateProvider }));
 
+    await userEvent.click(await findByLabelText("更多操作 nvidia"));
     await userEvent.click(await findByLabelText("编辑 nvidia"));
     const baseUrlInput = await findByLabelText("Provider baseUrl");
     await userEvent.clear(baseUrlInput);
@@ -1127,10 +1142,9 @@ describe("ProvidersView", () => {
       ]
     }));
 
-    const { findByLabelText, getByText } = render(
-      <ProvidersView client={mockClient({ getProviders, updateProvider })} />
-    );
+    const { findByLabelText, getByText } = renderProvidersView(mockClient({ getProviders, updateProvider }));
 
+    await userEvent.click(await findByLabelText("更多操作 future-api"));
     await userEvent.click(await findByLabelText("编辑 future-api"));
     expect((await findByLabelText("Provider API 类型") as HTMLSelectElement).value).toBe("openai-responses");
     const baseUrlInput = await findByLabelText("Provider baseUrl");
@@ -1194,10 +1208,9 @@ describe("ProvidersView", () => {
       ]
     }));
 
-    const { findByLabelText, findByTestId, findByText, getByText } = render(
-      <ProvidersView client={mockClient({ getProviders, previewUpdateProvider, updateProvider, restartGateway })} />
-    );
+    const { findByLabelText, findByTestId, findByText, getByText } = renderProvidersView(mockClient({ getProviders, previewUpdateProvider, updateProvider, restartGateway }));
 
+    await userEvent.click(await findByLabelText("更多操作 nvidia"));
     await userEvent.click(await findByLabelText("编辑 nvidia"));
     await userEvent.type(await findByLabelText("Provider API Key 新值"), "sk-abcdefghijklmnopqrstuvwxyz123456");
     await userEvent.click(getByText("保存 Provider"));
@@ -1229,7 +1242,7 @@ describe("ProvidersView", () => {
     }));
     const updateProvider = mock(async () => ({ ok: true }));
 
-    const { findByLabelText, findByText, getByText } = render(<ProvidersView client={mockClient({
+    const { findByLabelText, findByText, getByText } = renderProvidersView(mockClient({
       getProviders: async () => ({ providers: [{
         id: "nvidia",
         api: "openai-completions",
@@ -1245,8 +1258,9 @@ describe("ProvidersView", () => {
       getHealth: async () => ({ caseDuplicateGroups: [], summary: { duplicateGroupCount: 0, affectedProviderCount: 0, affectedAllowlistCount: 0 } }),
       previewUpdateProvider,
       updateProvider
-    })} />);
+    }));
 
+    await userEvent.click(await findByLabelText("更多操作 nvidia"));
     await userEvent.click(await findByLabelText("编辑 nvidia"));
     expect(await findByText(/NVIDIA_API_KEY.*托管块外/)).toBeTruthy();
     await userEvent.type(await findByLabelText("Provider API Key 新值"), "new-secret");
@@ -1288,10 +1302,9 @@ describe("ProvidersView", () => {
       ]
     }));
 
-    const { findByLabelText, findByText, getByText } = render(
-      <ProvidersView client={mockClient({ getProviders, discoverProvider, batchAddProviderModels })} />
-    );
+    const { findByLabelText, findByText, getByText } = renderProvidersView(mockClient({ getProviders, discoverProvider, batchAddProviderModels }));
 
+    await userEvent.click(await findByLabelText("更多操作 nvidia"));
     await userEvent.click(await findByLabelText("发现模型 nvidia"));
     expect(discoverProvider).toHaveBeenCalledWith("nvidia");
     expect(await findByText("remote-model-a")).toBeTruthy();
@@ -1322,7 +1335,7 @@ describe("ProvidersView", () => {
       }],
       summary: { duplicateGroupCount: 1, affectedProviderCount: 2, affectedAllowlistCount: 0 }
     }));
-    const { findAllByText, findAllByLabelText } = render(<ProvidersView client={mockClient({ getProviders, getHealth })} />);
+    const { findAllByText, findAllByLabelText } = renderProvidersView(mockClient({ getProviders, getHealth }));
     expect((await findAllByText("⚠ 重复")).length).toBeGreaterThanOrEqual(1);
     expect((await findAllByLabelText("合并 deepseek")).length).toBeGreaterThanOrEqual(1);
   });
@@ -1340,11 +1353,10 @@ describe("ProvidersView", () => {
       ]
     }));
 
-    const { findByLabelText, findByText, getByText } = render(
-      <ProvidersView client={mockClient({ getProviders, patchProviderState })} />
-    );
+    const { findAllByText, findByLabelText, findByText, getByText } = renderProvidersView(mockClient({ getProviders, patchProviderState }));
 
-    expect(await findByText("已启用")).toBeTruthy();
+    // 「已启用」同时是列头与状态 Pill 文案
+    expect((await findAllByText("已启用")).length).toBeGreaterThan(0);
     await userEvent.click(await findByLabelText("关闭 Provider nvidia"));
     expect(await findByText("关闭 nvidia？")).toBeTruthy();
     await userEvent.click(getByText("确认"));
@@ -1373,9 +1385,7 @@ describe("ProvidersView", () => {
       ]
     }));
 
-    const { findByLabelText, findByText, getByText } = render(
-      <ProvidersView client={mockClient({ getProviders, patchProviderState })} />
-    );
+    const { findByLabelText, findByText, getByText } = renderProvidersView(mockClient({ getProviders, patchProviderState }));
 
     expect(await findByText("已关闭")).toBeTruthy();
     await userEvent.click(await findByLabelText("恢复 Provider nvidia"));
@@ -1420,9 +1430,7 @@ describe("PresetsView", () => {
     }));
     const getDiff = mock(async () => { throw new Error("getDiff should not be used for preset preview"); });
 
-    const { findByLabelText, findByText, getByText, queryByText } = render(
-      <PresetsView client={mockClient({ getPresets, getDiff, previewAddProvider, addProvider })} />
-    );
+    const { findByLabelText, findByText, getByText, queryByText } = renderPresetsView(mockClient({ getPresets, getDiff, previewAddProvider, addProvider }));
 
     const keyInput = await findByLabelText("API Key");
     await userEvent.type(keyInput, "sk-abcdefghijklmnopqrstuvwxyz123456");
@@ -1439,9 +1447,7 @@ describe("PresetsView", () => {
 
 describe("BackupsView", () => {
   test("lists backups and restore asks confirmation", async () => {
-    const { findByText, getByLabelText, getByText, queryByText } = render(
-      <BackupsView
-        client={mockClient({
+    const { findByText, getByLabelText, getByText, queryByText } = renderBackupsView(mockClient({
           getBackups: async () => ({
             backups: [{
               id: "2024-01-01T00-00-00",
@@ -1452,9 +1458,7 @@ describe("BackupsView", () => {
               pathMatchesActive: true
             }]
           })
-        })}
-      />
-    );
+        }));
 
     await findByText("test write");
     await userEvent.click(getByLabelText("恢复备份 2024-01-01T00-00-00"));
@@ -1465,9 +1469,7 @@ describe("BackupsView", () => {
 
   test("offers restore target choices when backup paths differ from active paths", async () => {
     const restoreBackup = mock(async () => ({ ok: true, id: "backup-a" }));
-    const { findByLabelText, getAllByText, getByLabelText, getByText } = render(
-      <BackupsView
-        client={mockClient({
+    const { findByLabelText, getAllByText, getByLabelText, getByText } = renderBackupsView(mockClient({
           getBackups: async () => ({
             backups: [{
               id: "backup-a",
@@ -1479,9 +1481,7 @@ describe("BackupsView", () => {
             }]
           }),
           restoreBackup
-        })}
-      />
-    );
+        }));
 
     await userEvent.click(await findByLabelText("恢复备份 backup-a"));
     expect(getByText(/备份路径与当前路径不一致/)).toBeTruthy();
@@ -1498,9 +1498,7 @@ describe("BackupsView", () => {
       gatewayRestartRequired: true,
       gatewayEnvSync: { ok: true, syncedKeys: ["RESTORED_KEY"], removedKeys: ["CURRENT_KEY"], warnings: [] }
     }));
-    const { findByLabelText, findByText, getAllByText } = render(
-      <BackupsView
-        client={mockClient({
+    const { findByLabelText, findByText, getAllByText } = renderBackupsView(mockClient({
           getBackups: async () => ({
             backups: [{
               id: "backup-a",
@@ -1512,9 +1510,7 @@ describe("BackupsView", () => {
             }]
           }),
           restoreBackup
-        })}
-      />
-    );
+        }));
 
     await userEvent.click(await findByLabelText("恢复备份 backup-a"));
     await userEvent.click(getAllByText("恢复").at(-1)!);
@@ -1533,9 +1529,7 @@ describe("BackupsView", () => {
         warnings: ["No runtime candidate group uniquely matches"]
       }
     }));
-    const { findByLabelText, findByText, getAllByText, queryByText } = render(
-      <BackupsView
-        client={mockClient({
+    const { findByLabelText, findByText, getAllByText, queryByText } = renderBackupsView(mockClient({
           getBackups: async () => ({
             backups: [{
               id: "backup-b",
@@ -1547,9 +1541,7 @@ describe("BackupsView", () => {
             }]
           }),
           restoreBackup
-        })}
-      />
-    );
+        }));
 
     await userEvent.click(await findByLabelText("恢复备份 backup-b"));
     await userEvent.click(getAllByText("恢复").at(-1)!);
@@ -1636,10 +1628,7 @@ describe("SettingsView", () => {
   };
 
   test("shows non-secret settings", async () => {
-    const { findAllByText, findByText } = render(
-      <SettingsView
-        baseUrl="http://127.0.0.1:7420"
-        client={mockClient({
+    const { findAllByText, findByText } = renderSettingsView(mockClient({
           getSettings: async () => ({
             configPath: "~/.openclaw/openclaw.json",
             bindAddress: "127.0.0.1",
@@ -1650,9 +1639,7 @@ describe("SettingsView", () => {
           }),
           getPathSettings: async () => defaultPathSettings,
           getEnvIndex: async () => ({ variables: [], warnings: [] })
-        })}
-      />
-    );
+        }), "http://127.0.0.1:7420");
 
     expect(await findByText(/openclaw\.json/)).toBeTruthy();
     expect((await findAllByText("/default/.env")).length).toBeGreaterThan(0);
@@ -1700,10 +1687,7 @@ describe("SettingsView", () => {
         evidence: ["launchd-plist" as const]
       }
     ];
-    const { findByLabelText, findByText, getByText } = render(
-      <SettingsView
-        baseUrl="http://127.0.0.1:7420"
-        client={mockClient({
+    const { findByLabelText, findByText, getByText } = renderSettingsView(mockClient({
           getSettings: async () => ({
             configPath: "/default/openclaw.json",
             envPath: "/default/.env",
@@ -1734,9 +1718,7 @@ describe("SettingsView", () => {
           }),
           getEnvIndex: async () => ({ variables: [], warnings: [] }),
           applyGateway
-        })}
-      />
-    );
+        }), "http://127.0.0.1:7420");
 
     expect(await findByText("同步并重启 Gateway")).toBeTruthy();
     await userEvent.click(getByText("同步并重启 Gateway"));
@@ -1750,10 +1732,7 @@ describe("SettingsView", () => {
 
   test("can clean orphan env keys from settings", async () => {
     const cleanupOrphanEnvKeys = mock(async () => ({ ok: true, removedKeys: ["OLD_API_KEY"] }));
-    const { findByText, getByText } = render(
-      <SettingsView
-        baseUrl="http://127.0.0.1:7420"
-        client={mockClient({
+    const { findByText, getByText } = renderSettingsView(mockClient({
           getSettings: async () => ({
             configPath: "~/.openclaw/openclaw.json",
             bindAddress: "127.0.0.1",
@@ -1765,9 +1744,7 @@ describe("SettingsView", () => {
           getPathSettings: async () => defaultPathSettings,
           getEnvIndex: async () => ({ variables: [], warnings: [] }),
           cleanupOrphanEnvKeys
-        })}
-      />
-    );
+        }), "http://127.0.0.1:7420");
 
     expect(await findByText("OLD_API_KEY")).toBeTruthy();
     await userEvent.click(getByText("清理 orphan keys"));
@@ -1776,10 +1753,7 @@ describe("SettingsView", () => {
 
   test("shows path candidates and switches selected paths", async () => {
     const putPaths = mock(async () => ({ ok: true, paths: { openclawPath: "/next/openclaw.json", envPath: "/next/.env", stateDir: "/state" } }));
-    const { findByText, getByLabelText, getByText } = render(
-      <SettingsView
-        baseUrl="http://127.0.0.1:7420"
-        client={mockClient({
+    const { findByText, getByLabelText, getByText } = renderSettingsView(mockClient({
           getSettings: async () => ({
             configPath: "/default/openclaw.json",
             envPath: "/default/.env",
@@ -1796,9 +1770,7 @@ describe("SettingsView", () => {
           }),
           updatePathSettings: putPaths,
           getEnvIndex: async () => ({ variables: [], warnings: [] })
-        })}
-      />
-    );
+        }), "http://127.0.0.1:7420");
 
     await userEvent.click(await findByText("路径"));
     expect(await findByText(/\/next\/openclaw\.json/)).toBeTruthy();
@@ -1810,10 +1782,7 @@ describe("SettingsView", () => {
 
   test("allows manual path entry and explains when no running instance is found", async () => {
     const putPaths = mock(async () => ({ ok: true, paths: { openclawPath: "/manual/openclaw.json", envPath: "/manual/.env", stateDir: "/state" } }));
-    const { findByLabelText, findByText, getByText } = render(
-      <SettingsView
-        baseUrl="http://127.0.0.1:7420"
-        client={mockClient({
+    const { findByLabelText, findByText, getByText } = renderSettingsView(mockClient({
           getSettings: async () => ({
             configPath: "/default/openclaw.json",
             envPath: "/default/.env",
@@ -1836,9 +1805,7 @@ describe("SettingsView", () => {
           }),
           updatePathSettings: putPaths,
           getEnvIndex: async () => ({ variables: [], warnings: [] })
-        })}
-      />
-    );
+        }), "http://127.0.0.1:7420");
 
     await userEvent.click(await findByText("路径"));
     expect(await findByText(/未检测到运行中的 Gateway/)).toBeTruthy();
@@ -1867,10 +1834,7 @@ describe("SettingsView", () => {
       confidence: "strong" as const,
       evidence: ["launchd-plist" as const]
     };
-    const { findByLabelText, findByText, getByText, queryByText, rerender } = render(
-      <SettingsView
-        baseUrl="http://127.0.0.1:7420"
-        client={mockClient({
+    const { findByLabelText, findByText, getByText, queryByText, rerender } = renderSettingsView(mockClient({
           getSettings: async () => ({
             configPath: "/default/openclaw.json",
             envPath: "/default/.env",
@@ -1904,9 +1868,7 @@ describe("SettingsView", () => {
           }),
           updatePathSettings: putPaths,
           getEnvIndex: async () => ({ variables: [], warnings: [] })
-        })}
-      />
-    );
+        }), "http://127.0.0.1:7420");
 
     await userEvent.click(await findByText("路径"));
     expect(await findByText("已确认管理源")).toBeTruthy();
@@ -1976,23 +1938,20 @@ describe("SettingsView", () => {
         }),
         getEnvIndex: async () => ({ variables: [], warnings: [] })
       });
-      rerender(<SettingsView baseUrl="http://127.0.0.1:7420" client={client} />);
+      rerender(settingsViewTree(client));
       await userEvent.click(await findByText("路径"));
       const statusNode = await findByText(item.expectText);
       expect(statusNode).toBeTruthy();
       if (item.amber) {
-        expect(statusNode.className).toMatch(/amber/);
+        expect(statusNode.className).toMatch(/warning/);
       } else {
-        expect(statusNode.className).not.toMatch(/amber/);
+        expect(statusNode.className).not.toMatch(/warning/);
       }
     }
   });
 
   test("renders env variables without secret values", async () => {
-    const { findByText, queryByText } = render(
-      <SettingsView
-        baseUrl="http://127.0.0.1:7420"
-        client={mockClient({
+    const { findByText, queryByText } = renderSettingsView(mockClient({
           getSettings: async () => ({
             configPath: "/default/openclaw.json",
             envPath: "/default/.env",
@@ -2022,9 +1981,7 @@ describe("SettingsView", () => {
             }],
             warnings: []
           })
-        })}
-      />
-    );
+        }), "http://127.0.0.1:7420");
 
     await userEvent.click(await findByText("环境变量"));
     expect(await findByText("NVIDIA_API_KEY")).toBeTruthy();
@@ -2032,10 +1989,7 @@ describe("SettingsView", () => {
   });
 
   test("advanced env section is collapsed by default", async () => {
-    const { findByText, queryByText } = render(
-      <SettingsView
-        baseUrl="http://127.0.0.1:7420"
-        client={mockClient({
+    const { findByText, queryByText } = renderSettingsView(mockClient({
           getSettings: async () => ({
             configPath: "/default/openclaw.json",
             envPath: "/default/.env",
@@ -2061,9 +2015,7 @@ describe("SettingsView", () => {
             }],
             warnings: []
           })
-        })}
-      />
-    );
+        }), "http://127.0.0.1:7420");
 
     await userEvent.click(await findByText("环境变量"));
     expect(await findByText(/高级：额外托管变量/)).toBeTruthy();
@@ -2110,10 +2062,7 @@ describe("SettingsView", () => {
       warnings: []
     }));
 
-    const { findByText, findByLabelText, getByText, queryByText } = render(
-      <SettingsView
-        baseUrl="http://127.0.0.1:7420"
-        client={mockClient({
+    const { findByText, findByLabelText, getByText, queryByText } = renderSettingsView(mockClient({
           getSettings: async () => ({
             configPath: "/default/openclaw.json",
             envPath: "/default/.env",
@@ -2127,9 +2076,7 @@ describe("SettingsView", () => {
           getEnvIndex,
           previewEnvVar,
           updateEnvVar
-        })}
-      />
-    );
+        }), "http://127.0.0.1:7420");
 
     await userEvent.click(await findByText("环境变量"));
     const input = await findByLabelText("NVIDIA_API_KEY 新值");
@@ -2157,10 +2104,7 @@ describe("SettingsView", () => {
     }));
     const updateEnvVar = mock(async () => ({ ok: true as const, affectedKeys: ["NVIDIA_API_KEY"] }));
 
-    const { findByLabelText, findByText, getByText } = render(
-      <SettingsView
-        baseUrl="http://127.0.0.1:7420"
-        client={mockClient({
+    const { findByLabelText, findByText, getByText } = renderSettingsView(mockClient({
           getSettings: async () => ({
             configPath: "/default/openclaw.json",
             envPath: "/default/.env",
@@ -2188,9 +2132,7 @@ describe("SettingsView", () => {
           }),
           previewEnvVar,
           updateEnvVar
-        })}
-      />
-    );
+        }), "http://127.0.0.1:7420");
 
     await userEvent.click(await findByText("环境变量"));
     await userEvent.type(await findByLabelText("NVIDIA_API_KEY 新值"), "new-secret");
@@ -2221,10 +2163,7 @@ describe("SettingsView", () => {
       gatewayEnvSync: { ok: true, syncedKeys: ["SOME_MCP_EPID_NEXT"], removedKeys: ["SOME_MCP_EPID"], warnings: [] }
     }));
 
-    const { findByLabelText, findByText, getByText, queryByText } = render(
-      <SettingsView
-        baseUrl="http://127.0.0.1:7420"
-        client={mockClient({
+    const { findByLabelText, findByText, getByText, queryByText } = renderSettingsView(mockClient({
           getSettings: async () => ({
             configPath: "/default/openclaw.json",
             envPath: "/default/.env",
@@ -2253,9 +2192,7 @@ describe("SettingsView", () => {
           }),
           previewEnvVar,
           renameEnvVar
-        })}
-      />
-    );
+        }), "http://127.0.0.1:7420");
 
     await userEvent.click(await findByText("环境变量"));
     await userEvent.click(getByText("展开"));
@@ -2765,9 +2702,7 @@ describe("ModelDialog 参考参数建议", () => {
     const getProviders = mock(async () => ({ providers: [providerSummary({ id: "nvidia" })] }));
     const getModels = mock(async () => ({ models: [] }));
 
-    const { findByLabelText, findByText } = render(
-      <ModelsView client={mockClient({ getModels, getProviders, getModelMetadataSuggestions })} />
-    );
+    const { findByLabelText, findByText } = renderModelsView(mockClient({ getModels, getProviders, getModelMetadataSuggestions }));
 
     await userEvent.click(await findByText("添加模型"));
     await userEvent.type(await findByLabelText("Model ID"), "openai/gpt-5.2");
@@ -2782,9 +2717,7 @@ describe("ModelDialog 参考参数建议", () => {
     const getProviders = mock(async () => ({ providers: [providerSummary({ id: "nvidia" })] }));
     const getModels = mock(async () => ({ models: [] }));
 
-    const { findByLabelText, findByText } = render(
-      <ProvidersView client={mockClient({ getModels, getProviders, getModelMetadataSuggestions })} />
-    );
+    const { findByLabelText, findByText } = renderProvidersView(mockClient({ getModels, getProviders, getModelMetadataSuggestions }));
 
     await userEvent.click(await findByLabelText("管理模型 nvidia"));
     await userEvent.click(await findByText("添加模型"));

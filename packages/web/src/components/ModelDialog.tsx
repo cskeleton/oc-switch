@@ -9,6 +9,7 @@ import type {
   ProviderSummary
 } from "../api";
 import { ModelMetadataSuggestionCard } from "./ModelMetadataSuggestionCard";
+import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
@@ -336,15 +337,16 @@ export function ModelDialog({
               <span className="text-sm text-muted-foreground">
                 可从 Models.dev 查询参考参数；查询不会发送 Provider、Model ID 或密钥。
               </span>
-              <button
-                type="button"
+              <Button
+                variant="outline"
+                size="sm"
                 aria-label="查询参考参数"
                 disabled={!lookupReady || lookupLoading}
                 onClick={() => void lookupMetadata()}
-                className="shrink-0 rounded border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                className="shrink-0"
               >
                 {lookupLoading ? "查询中…" : "查询参考参数"}
-              </button>
+              </Button>
             </div>
 
             {lookupStatus !== "idle" && lookupMessage ? (
@@ -354,7 +356,7 @@ export function ModelDialog({
                   lookupStatus === "error"
                     ? "text-sm font-medium text-destructive"
                     : lookupStatus === "stale"
-                      ? "text-sm font-medium text-amber-600 dark:text-amber-400"
+                      ? "text-sm font-medium text-warning"
                       : "text-sm text-muted-foreground"
                 }
               >
@@ -495,12 +497,12 @@ export function ModelDialog({
         </div>
 
         <DialogFooter>
-          <button type="button" onClick={onCancel} className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground">
+          <Button variant="outline" onClick={onCancel}>
             取消
-          </button>
-          <button type="button" disabled={saving} onClick={() => void submit()} className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
+          </Button>
+          <Button disabled={saving} onClick={() => void submit()}>
             保存模型
-          </button>
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

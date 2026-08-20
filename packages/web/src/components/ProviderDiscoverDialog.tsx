@@ -2,8 +2,10 @@ import { ChevronDown, ChevronRight, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { ApiClient, ProviderSummary, RemoteModelInfo } from "../api";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
+import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
+import { Pill } from "./ui/pill";
 import { Switch } from "./ui/switch";
 
 /** 与 core MAX_PROVIDER_MODELS 对齐（spec §5.1 / §9.2） */
@@ -191,7 +193,7 @@ export function ProviderDiscoverDialog({
         </DialogHeader>
 
         {truncated ? (
-          <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
+          <p className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning">
             远端列表可能不完整（已达拉取上限）
           </p>
         ) : null}
@@ -262,11 +264,7 @@ export function ProviderDiscoverDialog({
                                     {model.name ? (
                                       <span className="ml-2 text-muted-foreground">{model.name}</span>
                                     ) : null}
-                                    {added ? (
-                                      <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                                        已添加
-                                      </span>
-                                    ) : null}
+                                    {added ? <Pill variant="muted" className="ml-2">已添加</Pill> : null}
                                   </span>
                                 </label>
                               </li>
@@ -304,26 +302,17 @@ export function ProviderDiscoverDialog({
             </div>
           </div>
           {provider.disabled ? (
-            <p className="text-sm text-amber-600 dark:text-amber-400">
+            <p className="text-sm text-warning">
               该 Provider 已关闭，仅可浏览；请先恢复后再添加模型。
             </p>
           ) : null}
           <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={onCancel}
-              className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
-            >
+            <Button variant="outline" onClick={onCancel}>
               关闭
-            </button>
-            <button
-              type="button"
-              disabled={!canSubmit}
-              onClick={() => void handleSubmit()}
-              className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
-            >
+            </Button>
+            <Button disabled={!canSubmit} onClick={() => void handleSubmit()}>
               {submitting ? "添加中…" : "添加到配置"}
-            </button>
+            </Button>
           </div>
         </DialogFooter>
       </DialogContent>

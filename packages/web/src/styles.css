@@ -22,6 +22,13 @@
   --color-card-foreground: var(--card-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+  /* 品牌强调色与状态色：供 text-brand / bg-success/10 等工具类使用 */
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
@@ -48,15 +55,22 @@
     --ring: #94a3b8; /* slate-400 */
     --destructive: #ef4444; /* red-500 */
     --destructive-foreground: #ffffff;
-    --radius: 0.5rem;
+    /* 品牌色（OpenClaw 龙虾红，crimson 系）；状态色（emerald / amber 系） */
+    --brand: #be123c;
+    --brand-foreground: #ffffff;
+    --success: #059669;
+    --success-foreground: #ffffff;
+    --warning: #d97706;
+    --warning-foreground: #ffffff;
+    --radius: 0.625rem;
   }
   .dark {
     --background: #020617; /* slate-950 */
     --foreground: #f1f5f9; /* slate-100 */
-    --card: rgba(15, 23, 42, 0.6); /* slate-900/60 */
-    --card-foreground: #f8fafc;
+    --card: #0f172a; /* slate-900 实色 */
+    --card-foreground: #f1f5f9;
     --popover: #0f172a;
-    --popover-foreground: #f8fafc;
+    --popover-foreground: #f1f5f9;
     --primary: #f8fafc;
     --primary-foreground: #0f172a;
     --secondary: #1e293b; /* slate-800 */
@@ -70,6 +84,13 @@
     --ring: #cbd5e1; /* slate-300 */
     --destructive: #f87171; /* red-400 */
     --destructive-foreground: #0f172a;
+    /* 深色下品牌与状态色换亮阶，前景近黑保证对比度 */
+    --brand: #fb7185;
+    --brand-foreground: #0f172a;
+    --success: #34d399;
+    --success-foreground: #0f172a;
+    --warning: #fbbf24;
+    --warning-foreground: #0f172a;
   }
 }
 
@@ -79,10 +100,27 @@
   }
   body {
     background-color: var(--background);
+    /* 顶部品牌色微光点缀，仅作质感、不干扰阅读 */
+    background-image: radial-gradient(
+      ellipse 80% 50% at 50% -20%,
+      color-mix(in srgb, var(--brand) 6%, transparent),
+      transparent
+    );
+    background-repeat: no-repeat;
     color: var(--foreground);
     min-height: 100vh;
     margin: 0;
     font-family: ui-sans-serif, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  .dark body {
+    /* 深色下渐变稍强一点 */
+    background-image: radial-gradient(
+      ellipse 80% 50% at 50% -20%,
+      color-mix(in srgb, var(--brand) 8%, transparent),
+      transparent
+    );
   }
 }
 

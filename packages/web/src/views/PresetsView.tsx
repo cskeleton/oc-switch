@@ -4,6 +4,9 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DataTable } from "../components/DataTable";
 import { DiffSummary } from "../components/DiffSummary";
 import { EnvMigrationConfirmDialog } from "../components/EnvMigrationConfirmDialog";
+import { useToast } from "../components/Toast";
+import { Button } from "../components/ui/button";
+import { Pill } from "../components/ui/pill";
 import { formatEnvWriteSuccess } from "../env-feedback";
 import type { ApiClient, ConfigDiffSummary, EnvPreview, PresetEntry } from "../api";
 
@@ -14,6 +17,7 @@ interface PresetsViewProps {
 
 /** 预设管理：从预设添加 Provider、导入/导出 */
 export function PresetsView({ client, onRefresh }: PresetsViewProps) {
+  const toast = useToast();
   const [presets, setPresets] = useState<PresetEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [selectedPreset, setSelectedPreset] = useState<string>("");
@@ -21,7 +25,6 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
   const [diff, setDiff] = useState<ConfigDiffSummary | null>(null);
   const [envPreview, setEnvPreview] = useState<EnvPreview | null>(null);
   const [confirmAdd, setConfirmAdd] = useState(false);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [submittedKey, setSubmittedKey] = useState("");
 
   const load = useCallback(async () => {
@@ -40,25 +43,23 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
   }, [load]);
 
   async function handleImport() {
-    setSuccessMessage(null);
     try {
       await client.importPresets();
-      setSuccessMessage("当前配置已导入为自定义预设。");
+      toast.success("当前配置已导入为自定义预设。");
       await load();
       onRefresh?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "导入失败");
+      toast.error(err instanceof Error ? err.message : "导入失败");
     }
   }
 
   async function handleExport(providerId: string) {
-    setSuccessMessage(null);
     try {
       await client.exportPreset(providerId);
-      setSuccessMessage(`Provider ${providerId} 已导出为自定义预设。`);
+      toast.success(`Provider ${providerId} 已导出为自定义预设。`);
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "导出失败");
+      toast.error(err instanceof Error ? err.message : "导出失败");
     }
   }
 
@@ -68,7 +69,6 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
       return;
     }
     setError(null);
-    setSuccessMessage(null);
     try {
       const currentDiff = await client.previewAddProvider(selectedPreset);
       setDiff(currentDiff);
@@ -87,7 +87,7 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
       setApiKeyInput("");
       setConfirmAdd(false);
       setEnvPreview(null);
-      setSuccessMessage(formatEnvWriteSuccess({
+      toast.success(formatEnvWriteSuccess({
         label: `Provider ${selectedPreset} 的 API Key`,
         envWrite: result.envWrite,
         gatewayEnvSync: result.gatewayEnvSync,
@@ -96,7 +96,7 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
       await load();
       onRefresh?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "添加失败");
+      toast.error(err instanceof Error ? err.message : "添加失败");
     }
   }
 
@@ -112,37 +112,27 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
     <section data-testid="presets-view">
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <h1 className="text-xl font-semibold">预设</h1>
-        <span
-          className="rounded border border-amber-600/50 bg-amber-950/40 px-2 py-0.5 text-xs font-medium text-amber-200"
+        <Pill
+          variant="warning"
           title="预设流程计划重构：迁移与共享优先使用导入/导出与备份"
         >
           待改进
-        </span>
+        </Pill>
       </div>
       <p className="mb-4 text-sm text-muted-foreground">
         列表来自内置/自定义模板文件，不是当前 openclaw.json 的实时镜像。日常管理请用 Providers 与模型页；迁移与共享请优先使用「导入当前配置」或备份恢复。
       </p>
       <div className="mb-4 flex flex-wrap items-center justify-end gap-2">
-          <button
-            type="button"
-            onClick={() => void handleImport()}
-            className="inline-flex items-center gap-1 rounded border border-input px-3 py-1.5 text-sm hover:bg-accent hover:text-foreground"
-          >
+          <Button variant="outline" size="sm" onClick={() => void handleImport()}>
             <Upload className="h-4 w-4" />
             导入当前配置
-          </button>
-          <button
-            type="button"
-            aria-label="刷新"
-            onClick={() => void load()}
-            className="rounded-md border border-input p-2 hover:bg-accent hover:text-foreground"
-          >
+          </Button>
+          <Button variant="outline" size="icon" aria-label="刷新" onClick={() => void load()}>
             <RefreshCw className="h-4 w-4" />
-          </button>
+          </Button>
       </div>
 
-      {error ? <p className="mb-3 text-destructive">{error}</p> : null}
-      {successMessage ? <p className="mb-3 text-sm text-emerald-600 dark:text-emerald-400">{successMessage}</p> : null}
+      {error ? <p className="mb-3 text-sm text-destructive">{error}</p> : null}
 
       <div className="mb-6 rounded-lg border border-border bg-muted/40 p-4">
         <h2 className="mb-3 text-sm font-medium text-foreground">从预设添加 Provider</h2>
@@ -172,14 +162,10 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
               aria-label="API Key"
             />
           </label>
-          <button
-            type="button"
-            onClick={() => void previewAdd()}
-            className="inline-flex items-center justify-center gap-1 rounded bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90"
-          >
+          <Button onClick={() => void previewAdd()}>
             <Plus className="h-4 w-4" />
             预览并添加
-          </button>
+          </Button>
         </div>
         {submittedKey ? <p data-testid="leaked-key">{submittedKey}</p> : null}
       </div>
@@ -197,15 +183,16 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
             header: "导出",
             render: (row) =>
               row.source === "custom" ? (
-                <button
-                  type="button"
+                <Button
+                  variant="ghost"
+                  size="sm"
                   aria-label={`导出 ${row.id}`}
                   onClick={() => void handleExport(row.id)}
-                  className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                  className="text-brand hover:text-brand"
                 >
                   <Download className="h-3 w-3" />
                   导出
-                </button>
+                </Button>
               ) : (
                 "—"
               )

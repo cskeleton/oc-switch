@@ -27,7 +27,8 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 ### 常见踩坑
 
 - **`repoRoot`**：`packages/cli/src/command-context.ts` 导出，须自 `packages/cli/src` **上溯三级**至 monorepo 根（测试脚本定位等用途）。
-- **Web 主题**：双主题用 `styles.css` 的 `@theme inline` + `:root` / `.dark` token。禁止硬编码 `slate-*` / `sky-*` / `red-*`——Tailwind v4 会静默丢弃未声明 token 的工具类且不报错。
+- **Web 主题**：双主题用 `styles.css` 的 `@theme inline` + `:root` / `.dark` token。禁止硬编码 `slate-*` / `sky-*` / `red-*`——Tailwind v4 会静默丢弃未声明 token 的工具类且不报错。`brand` / `success` / `warning` / `danger` 等语义色 token 已在 `styles.css` 声明，同样禁止硬编码 `amber-*` / `emerald-*`。
+- **Web 共享组件**：`Button` / `Pill` / `Toast`（`ToastProvider` + `useToast`）/ `EmptyState` / `Skeleton` / `DataTable`（支持列排序）位于 `packages/web/src/components(/ui)`，新代码应直接使用，不得再内联拼 class。
 - **共享类型**：不新建 shared contracts 包；core 类型由 server/cli/web 各自引用。
 
 ## 领域约定

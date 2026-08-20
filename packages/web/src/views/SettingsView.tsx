@@ -10,8 +10,12 @@ import type {
   SettingsResponse
 } from "../api";
 import { formatEnvWriteSuccess, formatGatewayServiceEnvLabel, nextStepHintForGatewayEnvSync } from "../env-feedback";
+import { DataTable } from "../components/DataTable";
 import { EnvMigrationConfirmDialog } from "../components/EnvMigrationConfirmDialog";
 import { GatewayApplyBanner } from "../components/GatewayApplyBanner";
+import { useToast } from "../components/Toast";
+import { Button } from "../components/ui/button";
+import { Pill } from "../components/ui/pill";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../components/ui/card";
 
@@ -34,6 +38,7 @@ interface PendingEnvAction {
 
 /** 非敏感服务器与配置设置展示 */
 export function SettingsView({ baseUrl, client }: SettingsViewProps) {
+  const toast = useToast();
   let host = "127.0.0.1";
   let port = 7420;
   try {
@@ -60,12 +65,10 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
   const [newExtraValue, setNewExtraValue] = useState("");
   const [newExtraNote, setNewExtraNote] = useState("");
   const [pendingAction, setPendingAction] = useState<PendingEnvAction | null>(null);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [gatewayApply, setGatewayApply] = useState<{
     envWrite: EnvWriteVerification;
     gatewayEnvSync?: GatewayEnvSyncResult;
   } | null>(null);
-  const [gatewayManualMessage, setGatewayManualMessage] = useState<string | null>(null);
   const [gatewayManualLoading, setGatewayManualLoading] = useState(false);
   const [gatewayApplyCandidateId, setGatewayApplyCandidateId] = useState<string | null>(null);
 
@@ -126,7 +129,6 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
 
   async function handleManualGatewayApply() {
     setGatewayManualLoading(true);
-    setGatewayManualMessage(null);
     setError(null);
     try {
       const groups = pathSettings?.runtimeCandidateGroups ?? [];
@@ -138,7 +140,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
         ?? (groups.length === 1 ? groups[0]?.candidateId : undefined);
       const result = await client.applyGateway(candidateId);
       if (!result.ok) throw new Error(result.restart.message);
-      setGatewayManualMessage(`已同步托管块到 ${formatGatewayServiceEnvLabel(result.sync)} 并重启 Gateway。`);
+      toast.success(`已同步托管块到 ${formatGatewayServiceEnvLabel(result.sync)} 并重启 Gateway。`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Gateway 操作失败");
     } finally {
@@ -152,7 +154,6 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
       return;
     }
     setError(null);
-    setSuccessMessage(null);
     try {
       const preview = await client.previewEnvVar({ type: "upsert", envVar, ...(note ? { note } : {}) });
       const summary = envIndex?.variables.find((item) => item.envVar === envVar);
@@ -172,7 +173,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
       }
       const result = await client.updateEnvVar({ type: "upsert", envVar, value, ...(note ? { note } : {}) });
       setValueInputs((prev) => ({ ...prev, [envVar]: "" }));
-      setSuccessMessage(formatEnvWriteSuccess({
+      toast.success(formatEnvWriteSuccess({
         label: envVar,
         envWrite: result.envWrite,
         gatewayEnvSync: result.gatewayEnvSync,
@@ -187,7 +188,6 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
 
   async function submitEnvDelete(envVar: string) {
     setError(null);
-    setSuccessMessage(null);
     try {
       const preview = await client.previewEnvVar({ type: "delete", envVar });
       const summary = envIndex?.variables.find((item) => item.envVar === envVar);
@@ -202,7 +202,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
         return;
       }
       const result = await client.deleteEnvVar({ type: "delete", envVar });
-      setSuccessMessage(withGatewayHint(`${envVar} 已删除`, result));
+      toast.success(withGatewayHint(`${envVar} 已删除`, result));
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "删除失败");
@@ -215,7 +215,6 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
       return;
     }
     setError(null);
-    setSuccessMessage(null);
     try {
       const nextName = toEnvVar.trim();
       const preview = await client.previewEnvVar({ type: "rename", fromEnvVar, toEnvVar: nextName, ...(note ? { note } : {}) });
@@ -234,7 +233,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
       }
       const result = await client.renameEnvVar({ type: "rename", fromEnvVar, toEnvVar: nextName, ...(note ? { note } : {}) });
       setRenameInputs((prev) => ({ ...prev, [fromEnvVar]: "" }));
-      setSuccessMessage(withGatewayHint(`${fromEnvVar} 已重命名为 ${nextName}`, result));
+      toast.success(withGatewayHint(`${fromEnvVar} 已重命名为 ${nextName}`, result));
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "重命名失败");
@@ -244,7 +243,6 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
   async function confirmPendingAction() {
     if (!pendingAction) return;
     setError(null);
-    setSuccessMessage(null);
     try {
       if (pendingAction.type === "upsert" && pendingAction.value && pendingAction.envVar) {
         const envVar = pendingAction.envVar;
@@ -257,7 +255,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
           ...(pendingAction.confirmComplex ? { confirmComplex: true } : {})
         });
         setValueInputs((prev) => ({ ...prev, [envVar]: "" }));
-        setSuccessMessage(formatEnvWriteSuccess({
+        toast.success(formatEnvWriteSuccess({
           label: envVar,
           envWrite: result.envWrite,
           gatewayEnvSync: result.gatewayEnvSync,
@@ -274,7 +272,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
           envVar: pendingAction.envVar,
           ...(pendingAction.confirmComplex ? { confirmComplex: true } : {})
         });
-        setSuccessMessage(withGatewayHint(`${pendingAction.envVar} 已删除`, result));
+        toast.success(withGatewayHint(`${pendingAction.envVar} 已删除`, result));
       } else if (pendingAction.type === "rename" && pendingAction.fromEnvVar && pendingAction.toEnvVar) {
         const fromEnvVar = pendingAction.fromEnvVar;
         const result = await client.renameEnvVar({
@@ -285,7 +283,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
           ...(pendingAction.confirmComplex ? { confirmComplex: true } : {})
         });
         setRenameInputs((prev) => ({ ...prev, [fromEnvVar]: "" }));
-        setSuccessMessage(withGatewayHint(`${fromEnvVar} 已重命名为 ${pendingAction.toEnvVar}`, result));
+        toast.success(withGatewayHint(`${fromEnvVar} 已重命名为 ${pendingAction.toEnvVar}`, result));
       }
       setPendingAction(null);
       if (pendingAction.type === "upsert" && pendingAction.envVar === newExtraVar) {
@@ -301,9 +299,8 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
 
   async function handleCleanupOrphans() {
     try {
-      setSuccessMessage(null);
-      await client.cleanupOrphanEnvKeys();
-      setSuccessMessage("orphan keys 已清理");
+        await client.cleanupOrphanEnvKeys();
+      toast.success("orphan keys 已清理");
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "清理失败");
@@ -312,8 +309,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
 
   async function handleSwitchPaths() {
     try {
-      setSuccessMessage(null);
-      const matchedCandidateId =
+        const matchedCandidateId =
         selectedCandidateId &&
         (pathSettings?.runtimeCandidateGroups ?? []).some(
           (group) =>
@@ -333,7 +329,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
         await client.updatePathSettings(selectedOpenClawPath, selectedEnvPath);
       }
       await load();
-      setSuccessMessage("路径已切换");
+      toast.success("路径已切换");
     } catch (err) {
       setError(err instanceof Error ? err.message : "切换路径失败");
     }
@@ -355,7 +351,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
 
   function runtimeStatusCopy(settings: PathSettingsResponse): {
     text: string;
-    tone: "neutral" | "amber" | "none";
+    tone: "neutral" | "warning" | "none";
   } | null {
     const status = settings.runtimeDiscovery?.status;
     if (!status) return null;
@@ -378,7 +374,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
     if (status === "gateway-detected-path-unresolved") {
       return {
         text: "检测到 Gateway，但无法确认其管理源 .env",
-        tone: "amber"
+        tone: "warning"
       };
     }
     if (status === "gateway-not-detected") {
@@ -390,10 +386,10 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
     return null;
   }
 
-  function renderStatus(item: EnvVariableSummary) {
-    if (item.missing) return "缺失";
-    if (item.managed) return "托管";
-    return "未托管";
+  function renderStatusPill(item: EnvVariableSummary) {
+    if (item.missing) return <Pill variant="warning">缺失</Pill>;
+    if (item.managed) return <Pill variant="success">托管</Pill>;
+    return <Pill variant="muted">未托管</Pill>;
   }
 
   function renderRisk(item: EnvVariableSummary) {
@@ -434,7 +430,6 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
           onDismiss={() => setGatewayApply(null)}
         />
       ) : null}
-      {successMessage ? <p className="text-sm font-medium text-emerald-600 dark:text-emerald-400">{successMessage}</p> : null}
 
       <Tabs defaultValue="general" className="w-full">
         <TabsList className="mb-4">
@@ -496,34 +491,28 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
                   ))}
                 </div>
               ) : null}
-              {gatewayManualMessage ? (
-                <p className="text-sm text-emerald-600 dark:text-emerald-400">{gatewayManualMessage}</p>
-              ) : null}
-              <button
-                type="button"
+              <Button
                 disabled={gatewayManualLoading}
                 onClick={() => void handleManualGatewayApply()}
-                className="inline-flex h-9 items-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
                 {gatewayManualLoading ? "处理中…" : "同步并重启 Gateway"}
-              </button>
+              </Button>
             </CardContent>
           </Card>
 
           {effective.orphanEnvKeys.length > 0 && (
-            <Card className="border-amber-500/50">
+            <Card className="border-warning/50">
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                 <div className="space-y-1">
-                  <CardTitle className="text-amber-500">Orphan env keys</CardTitle>
+                  <CardTitle className="text-warning">Orphan env keys</CardTitle>
                   <CardDescription>发现未关联任何 Provider 的环境变量。</CardDescription>
                 </div>
-                <button
-                  type="button"
+                <Button
                   onClick={() => void handleCleanupOrphans()}
-                  className="inline-flex h-9 items-center justify-center rounded-md bg-amber-600 px-4 py-2 text-sm font-medium text-primary-foreground shadow transition-colors hover:bg-amber-600/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="bg-warning text-warning-foreground hover:bg-warning/90"
                 >
                   清理 orphan keys
-                </button>
+                </Button>
               </CardHeader>
               <CardContent>
                 <ul className="list-inside list-disc space-y-1 text-sm text-muted-foreground">
@@ -550,8 +539,8 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
                   return (
                     <p
                       className={
-                        statusCopy.tone === "amber"
-                          ? "mb-4 text-sm font-medium text-amber-600 dark:text-amber-400"
+                        statusCopy.tone === "warning"
+                          ? "mb-4 text-sm font-medium text-warning"
                           : "mb-4 text-sm text-muted-foreground"
                       }
                     >
@@ -674,13 +663,9 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
                         className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
                       />
                     </div>
-                    <button
-                      type="button"
-                      onClick={applyManualPaths}
-                      className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                    >
+                    <Button variant="outline" onClick={applyManualPaths}>
                       使用手动路径
-                    </button>
+                    </Button>
                   </div>
                   {!selectedCandidateId ? (
                     <p className="text-sm text-muted-foreground">
@@ -690,13 +675,9 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
                 </div>
 
                 <div className="mt-6">
-                  <button
-                    type="button"
-                    onClick={() => void handleSwitchPaths()}
-                    className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  >
+                  <Button onClick={() => void handleSwitchPaths()}>
                     切换路径
-                  </button>
+                  </Button>
                 </div>
               </CardContent>
             </Card>
@@ -716,50 +697,56 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
                     不显示旧值；备份会包含 .env 明文。
                   </CardDescription>
                 </CardHeader>
-                <CardContent className="p-0">
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-sm">
-                      <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
-                        <tr>
-                          <th className="px-4 py-3 font-medium">变量</th>
-                          <th className="px-4 py-3 font-medium">Provider</th>
-                          <th className="px-4 py-3 font-medium">状态</th>
-                          <th className="px-4 py-3 font-medium">风险</th>
-                          <th className="px-4 py-3 font-medium">新值</th>
-                          <th className="px-4 py-3 font-medium">操作</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y">
-                        {providerVars.map((item) => (
-                          <tr key={item.envVar} className="hover:bg-muted/50">
-                            <td className="px-4 py-3 font-mono text-xs">{item.envVar}</td>
-                            <td className="px-4 py-3 text-muted-foreground">{item.providerIds.join(", ")}</td>
-                            <td className="px-4 py-3 text-muted-foreground">{renderStatus(item)}</td>
-                            <td className="px-4 py-3 text-muted-foreground">{renderRisk(item)}</td>
-                            <td className="px-4 py-3">
-                              <input
-                                type="password"
-                                aria-label={`${item.envVar} 新值`}
-                                value={valueInputs[item.envVar] ?? ""}
-                                onChange={(event) => setInputValue(item.envVar, event.target.value)}
-                                className="flex h-8 w-full min-w-[8rem] rounded-md border border-input bg-transparent px-3 py-1 font-mono text-xs shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                autoComplete="off"
-                              />
-                            </td>
-                            <td className="px-4 py-3">
-                              <button
-                                type="button"
-                                onClick={() => void submitEnvUpsert(item.envVar, valueInputs[item.envVar] ?? "")}
-                                className="inline-flex h-8 items-center justify-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground shadow transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                              >
-                                {item.missing ? "填写" : "重填"}
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                <CardContent>
+                  <DataTable
+                    rows={providerVars}
+                    rowKey={(item) => item.envVar}
+                    emptyMessage="暂无 Provider 环境变量"
+                    columns={[
+                      {
+                        key: "envVar",
+                        header: "变量",
+                        render: (item) => <span className="font-mono text-xs">{item.envVar}</span>
+                      },
+                      {
+                        key: "provider",
+                        header: "Provider",
+                        render: (item) => <span className="text-muted-foreground">{item.providerIds.join(", ")}</span>
+                      },
+                      { key: "status", header: "状态", render: renderStatusPill },
+                      {
+                        key: "risk",
+                        header: "风险",
+                        render: (item) => <span className="text-muted-foreground">{renderRisk(item)}</span>
+                      },
+                      {
+                        key: "value",
+                        header: "新值",
+                        render: (item) => (
+                          <input
+                            type="password"
+                            aria-label={`${item.envVar} 新值`}
+                            value={valueInputs[item.envVar] ?? ""}
+                            onChange={(event) => setInputValue(item.envVar, event.target.value)}
+                            className="flex h-8 w-full min-w-[8rem] rounded-md border border-input bg-transparent px-3 py-1 font-mono text-xs shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                            autoComplete="off"
+                          />
+                        )
+                      },
+                      {
+                        key: "actions",
+                        header: "操作",
+                        render: (item) => (
+                          <Button
+                            size="sm"
+                            onClick={() => void submitEnvUpsert(item.envVar, valueInputs[item.envVar] ?? "")}
+                          >
+                            {item.missing ? "填写" : "重填"}
+                          </Button>
+                        )
+                      }
+                    ]}
+                  />
                 </CardContent>
               </Card>
 
@@ -770,84 +757,95 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
                       <CardTitle>高级：额外托管变量</CardTitle>
                       <CardDescription>管理未绑定特定 Provider 的系统级或额外环境变量。</CardDescription>
                     </div>
-                    <button
-                      type="button"
+                    <Button
+                      variant="outline"
                       aria-expanded={advancedOpen}
                       onClick={() => setAdvancedOpen((open) => !open)}
-                      className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >
                       {advancedOpen ? "收起" : "展开"}
-                    </button>
+                    </Button>
                   </div>
                 </CardHeader>
                 {advancedOpen && (
                   <CardContent className="space-y-6 pt-0">
-                    <div className="overflow-hidden rounded-md border">
-                      <table className="w-full text-left text-sm">
-                        <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
-                          <tr>
-                            <th className="px-4 py-3 font-medium">变量</th>
-                            <th className="px-4 py-3 font-medium">状态</th>
-                            <th className="px-4 py-3 font-medium">备注</th>
-                            <th className="px-4 py-3 font-medium">新值</th>
-                            <th className="px-4 py-3 font-medium">重命名为</th>
-                            <th className="px-4 py-3 font-medium text-right">操作</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y">
-                          {extraVars.map((item) => (
-                            <tr key={item.envVar} className="hover:bg-muted/50">
-                              <td className="px-4 py-3 font-mono text-xs">{item.envVar}</td>
-                              <td className="px-4 py-3 text-muted-foreground">{renderRisk(item)}</td>
-                              <td className="px-4 py-3 text-muted-foreground">{item.note ?? "—"}</td>
-                              <td className="px-4 py-3">
-                                <input
-                                  type="password"
-                                  aria-label={`${item.envVar} 新值`}
-                                  value={valueInputs[item.envVar] ?? ""}
-                                  onChange={(event) => setInputValue(item.envVar, event.target.value)}
-                                  className="flex h-8 w-full min-w-[6rem] rounded-md border border-input bg-transparent px-3 py-1 font-mono text-xs shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                  autoComplete="off"
-                                />
-                              </td>
-                              <td className="px-4 py-3">
-                                <input
-                                  aria-label={`${item.envVar} 新变量名`}
-                                  value={renameInputs[item.envVar] ?? ""}
-                                  onChange={(event) => setRenameValue(item.envVar, event.target.value)}
-                                  className="flex h-8 w-full min-w-[6rem] rounded-md border border-input bg-transparent px-3 py-1 font-mono text-xs shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                />
-                              </td>
-                              <td className="px-4 py-3 text-right">
-                                <div className="flex justify-end gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => void submitEnvUpsert(item.envVar, valueInputs[item.envVar] ?? "", item.note)}
-                                    className="inline-flex h-8 items-center justify-center rounded-md border border-input bg-background px-3 text-xs font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground"
-                                  >
-                                    重填
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => void submitEnvRename(item.envVar, renameInputs[item.envVar] ?? "", item.note)}
-                                    className="inline-flex h-8 items-center justify-center rounded-md border border-input bg-background px-3 text-xs font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground"
-                                  >
-                                    重命名
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => void submitEnvDelete(item.envVar)}
-                                    className="inline-flex h-8 items-center justify-center rounded-md bg-destructive px-3 text-xs font-medium text-destructive-foreground shadow-sm hover:bg-destructive/90"
-                                  >
-                                    删除
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                    <DataTable
+                      rows={extraVars}
+                      rowKey={(item) => item.envVar}
+                      emptyMessage="暂无额外托管变量"
+                      columns={[
+                        {
+                          key: "envVar",
+                          header: "变量",
+                          render: (item) => <span className="font-mono text-xs">{item.envVar}</span>
+                        },
+                        {
+                          key: "risk",
+                          header: "状态",
+                          render: (item) => <span className="text-muted-foreground">{renderRisk(item)}</span>
+                        },
+                        {
+                          key: "note",
+                          header: "备注",
+                          render: (item) => <span className="text-muted-foreground">{item.note ?? "—"}</span>
+                        },
+                        {
+                          key: "value",
+                          header: "新值",
+                          render: (item) => (
+                            <input
+                              type="password"
+                              aria-label={`${item.envVar} 新值`}
+                              value={valueInputs[item.envVar] ?? ""}
+                              onChange={(event) => setInputValue(item.envVar, event.target.value)}
+                              className="flex h-8 w-full min-w-[6rem] rounded-md border border-input bg-transparent px-3 py-1 font-mono text-xs shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                              autoComplete="off"
+                            />
+                          )
+                        },
+                        {
+                          key: "rename",
+                          header: "重命名为",
+                          render: (item) => (
+                            <input
+                              aria-label={`${item.envVar} 新变量名`}
+                              value={renameInputs[item.envVar] ?? ""}
+                              onChange={(event) => setRenameValue(item.envVar, event.target.value)}
+                              className="flex h-8 w-full min-w-[6rem] rounded-md border border-input bg-transparent px-3 py-1 font-mono text-xs shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                            />
+                          )
+                        },
+                        {
+                          key: "actions",
+                          header: "操作",
+                          align: "right",
+                          render: (item) => (
+                            <div className="flex justify-end gap-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => void submitEnvUpsert(item.envVar, valueInputs[item.envVar] ?? "", item.note)}
+                              >
+                                重填
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => void submitEnvRename(item.envVar, renameInputs[item.envVar] ?? "", item.note)}
+                              >
+                                重命名
+                              </Button>
+                              <Button
+                                variant="destructive"
+                                size="sm"
+                                onClick={() => void submitEnvDelete(item.envVar)}
+                              >
+                                删除
+                              </Button>
+                            </div>
+                          )
+                        }
+                      ]}
+                    />
 
                     <div className="rounded-lg border bg-muted/50 p-4">
                       <h4 className="mb-3 text-sm font-medium">新增额外变量</h4>
@@ -875,13 +873,11 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
                           onChange={(event) => setNewExtraNote(event.target.value)}
                           className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         />
-                        <button
-                          type="button"
+                        <Button
                           onClick={() => void submitEnvUpsert(newExtraVar.trim(), newExtraValue, newExtraNote.trim() || undefined)}
-                          className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         >
                           新增托管变量
-                        </button>
+                        </Button>
                       </div>
                     </div>
                   </CardContent>

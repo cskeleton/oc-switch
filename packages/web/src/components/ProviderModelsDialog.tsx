@@ -4,8 +4,11 @@ import type { ApiClient, ModelSummary, ProviderModelInput, ProviderSummary } fro
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DataTable } from "./DataTable";
 import { ModelDialog } from "./ModelDialog";
+import { useToast } from "./Toast";
+import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "./ui/dialog";
 import { Label } from "./ui/label";
+import { Pill } from "./ui/pill";
 
 interface ProviderModelsDialogProps {
   open: boolean;
@@ -25,6 +28,7 @@ export function sortLocalModels(a: ModelSummary, b: ModelSummary): number {
 
 /** Provider 专属模型管理弹窗 */
 export function ProviderModelsDialog({ open, provider, providers, client, onCancel, onChanged }: ProviderModelsDialogProps) {
+  const toast = useToast();
   const [models, setModels] = useState<ModelSummary[]>([]);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<ModelSummary | null>(null);
@@ -83,6 +87,7 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
   async function saveCreate(providerId: string, model: ProviderModelInput) {
     await client.createModel(providerId, model);
     setCreating(false);
+    toast.success(`已添加模型 ${providerId}/${model.id}`);
     await load();
     onChanged();
   }
@@ -91,6 +96,7 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
     if (!editing) return;
     await client.updateModel(editing.ref, model);
     setEditing(null);
+    toast.success(`模型 ${editing.ref} 已更新`);
     await load();
     onChanged();
   }
@@ -98,13 +104,18 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
   async function confirmDelete() {
     if (!deleteTarget) return;
     if (deleteTarget.isPrimary && !newPrimary) {
-      setError("删除当前主模型前请选择新的主模型");
+      toast.error("删除当前主模型前请选择新的主模型");
       return;
     }
-    await client.deleteModel(deleteTarget.ref, deleteTarget.isPrimary ? { newPrimary } : {});
-    setDeleteTarget(null);
-    await load();
-    onChanged();
+    try {
+      await client.deleteModel(deleteTarget.ref, deleteTarget.isPrimary ? { newPrimary } : {});
+      setDeleteTarget(null);
+      toast.success(`已删除模型 ${deleteTarget.ref}`);
+      await load();
+      onChanged();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "删除模型失败");
+    }
   }
 
   async function runBatchRemove(body: { modelIds: string[] } | { keepEnabledOnly: true }) {
@@ -112,14 +123,15 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
     setBatchBusy(true);
     setError(null);
     try {
-      await client.batchRemoveProviderModels(provider.id, body);
+      const result = await client.batchRemoveProviderModels(provider.id, body);
       setSelectedModelIds(new Set());
       setConfirmBatchDelete(false);
       setConfirmKeepEnabledOnly(false);
+      toast.success(`已从目录删除 ${result.removedModelIds.length} 个模型`);
       await load();
       onChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "批量删除失败");
+      toast.error(err instanceof Error ? err.message : "批量删除失败");
       setConfirmBatchDelete(false);
       setConfirmKeepEnabledOnly(false);
     } finally {
@@ -147,38 +159,37 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
                 </DialogDescription>
               </div>
               <div className="flex flex-wrap gap-2 mr-6">
-                <button
-                  type="button"
+                <Button
+                  variant="destructive"
+                  size="sm"
                   aria-label="删除所选模型"
                   disabled={selectedCount === 0 || batchBusy}
                   title="关闭状态下仍可批量清理目录（不可新增/启用）"
                   onClick={() => setConfirmBatchDelete(true)}
-                  className="inline-flex items-center gap-1 rounded border border-destructive/30 bg-destructive/5 px-3 py-1.5 text-sm text-destructive hover:bg-destructive hover:text-destructive-foreground font-medium shadow-sm disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Trash2 className="h-4 w-4" />
                   删除所选{selectedCount > 0 ? ` (${selectedCount})` : ""}
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
                   aria-label="只保留已启用模型"
                   disabled={batchBusy || scopedModels.length === 0}
                   title="关闭状态下仍可清理未启用模型，便于目录降到上限以内"
                   onClick={() => setConfirmKeepEnabledOnly(true)}
-                  className="inline-flex items-center gap-1 rounded border border-input bg-background px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground font-medium shadow-sm disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   只保留已启用
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <Button
+                  size="sm"
                   aria-label="添加模型"
                   disabled={provider.disabled}
                   title={provider.disabled ? "该 Provider 已关闭，请先恢复 Provider 后再启用模型" : undefined}
                   onClick={() => setCreating(true)}
-                  className="inline-flex items-center gap-1 rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 font-medium shadow-sm disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Plus className="h-4 w-4" />
                   添加模型
-                </button>
+                </Button>
               </div>
             </DialogHeader>
 
@@ -212,23 +223,31 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
                     key: "enabled",
                     header: "状态",
                     render: (row) => {
-                      if (row.isPrimary) return "主模型";
-                      return row.enabled ? "已启用" : "已禁用";
+                      if (row.isPrimary) return <Pill variant="brand">主模型</Pill>;
+                      return row.enabled
+                        ? <Pill variant="success">已启用</Pill>
+                        : <Pill variant="muted">已禁用</Pill>;
                     }
                   },
                   {
                     key: "actions",
                     header: "操作",
                     render: (row) => (
-                      <div className="flex flex-wrap gap-2">
-                        <button type="button" aria-label={`编辑模型 ${row.ref}`} onClick={() => setEditing(row)} className="inline-flex items-center gap-1 rounded border border-input bg-background px-2 py-1 text-xs hover:bg-accent hover:text-accent-foreground font-medium shadow-sm">
+                      <div className="flex flex-wrap gap-1.5">
+                        <Button variant="outline" size="sm" aria-label={`编辑模型 ${row.ref}`} onClick={() => setEditing(row)}>
                           <Edit3 className="h-3 w-3" />
                           编辑
-                        </button>
-                        <button type="button" aria-label={`删除模型 ${row.ref}`} onClick={() => openDelete(row)} className="inline-flex items-center gap-1 rounded border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive hover:bg-destructive hover:text-destructive-foreground font-medium shadow-sm">
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-label={`删除模型 ${row.ref}`}
+                          onClick={() => openDelete(row)}
+                          className="text-destructive hover:text-destructive"
+                        >
                           <Trash2 className="h-3 w-3" />
                           删除
-                        </button>
+                        </Button>
                       </div>
                     )
                   }
@@ -237,9 +256,9 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
             </div>
 
             <DialogFooter>
-              <button type="button" onClick={onCancel} className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground">
+              <Button variant="outline" onClick={onCancel}>
                 关闭
-              </button>
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

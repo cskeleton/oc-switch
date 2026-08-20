@@ -2,6 +2,8 @@ import { RefreshCw, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DataTable } from "../components/DataTable";
+import { useToast } from "../components/Toast";
+import { Button } from "../components/ui/button";
 import type { ApiClient, BackupEntry } from "../api";
 
 interface BackupsViewProps {
@@ -9,11 +11,11 @@ interface BackupsViewProps {
   onRefresh?: () => void;
 }
 
-/** 备份时间线与回滚 */
+/** 备份时间线与回滚（默认按时间倒序） */
 export function BackupsView({ client, onRefresh }: BackupsViewProps) {
+  const toast = useToast();
   const [backups, setBackups] = useState<BackupEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [restoreTarget, setRestoreTarget] = useState<BackupEntry | null>(null);
   const [restoreMode, setRestoreMode] = useState<"backup" | "current">("backup");
 
@@ -37,14 +39,13 @@ export function BackupsView({ client, onRefresh }: BackupsViewProps) {
       const result = await client.restoreBackup(restoreTarget.id, restoreTarget.pathMatchesActive ? undefined : restoreMode);
       setRestoreTarget(null);
       setRestoreMode("backup");
-      setSuccessMessage(result.gatewayEnvSync?.ok
+      toast.success(result.gatewayEnvSync?.ok
         ? "备份已恢复，Gateway 环境已同步；请重启 Gateway 使运行中进程加载恢复后的密钥。"
         : "备份已恢复。");
       await load();
       onRefresh?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "恢复失败");
-      setSuccessMessage(null);
+      toast.error(err instanceof Error ? err.message : "恢复失败");
       setRestoreTarget(null);
     }
   }
@@ -53,26 +54,27 @@ export function BackupsView({ client, onRefresh }: BackupsViewProps) {
     <section data-testid="backups-view">
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-xl font-semibold">备份</h1>
-        <button
-          type="button"
-          aria-label="刷新"
-          onClick={() => void load()}
-          className="rounded-md border border-input p-2 hover:bg-accent hover:text-foreground"
-        >
+        <Button variant="outline" size="icon" aria-label="刷新" onClick={() => void load()}>
           <RefreshCw className="h-4 w-4" />
-        </button>
+        </Button>
       </div>
 
-      {error ? <p className="mb-3 text-destructive">{error}</p> : null}
-      {successMessage ? <p className="mb-3 text-sm text-emerald-600 dark:text-emerald-400">{successMessage}</p> : null}
+      {error ? <p className="mb-3 text-sm text-destructive">{error}</p> : null}
 
       <DataTable
         rows={backups}
         rowKey={(row) => row.id}
         emptyMessage="尚无备份记录"
+        defaultSort={{ key: "createdAt", dir: "desc" }}
         columns={[
           { key: "id", header: "ID", render: (row) => row.id },
-          { key: "createdAt", header: "时间", render: (row) => row.createdAt },
+          {
+            key: "createdAt",
+            header: "时间",
+            sortable: true,
+            sortValue: (row) => row.createdAt,
+            render: (row) => row.createdAt
+          },
           { key: "reason", header: "原因", render: (row) => row.reason },
           { key: "openclawPath", header: "openclaw.json", render: (row) => row.openclawPath },
           { key: "envPath", header: ".env", render: (row) => row.envPath },
@@ -80,18 +82,19 @@ export function BackupsView({ client, onRefresh }: BackupsViewProps) {
             key: "actions",
             header: "操作",
             render: (row) => (
-              <button
-                type="button"
+              <Button
+                variant="outline"
+                size="sm"
                 aria-label={`恢复备份 ${row.id}`}
                 onClick={() => {
                   setRestoreTarget(row);
                   setRestoreMode(row.pathMatchesActive ? "current" : "backup");
                 }}
-                className="inline-flex items-center gap-1 rounded border border-amber-600/50 px-2 py-1 text-xs text-amber-200 hover:bg-amber-900/30"
+                className="border-warning/50 text-warning hover:bg-warning/10 hover:text-warning"
               >
                 <RotateCcw className="h-3 w-3" />
                 恢复
-              </button>
+              </Button>
             )
           }
         ]}

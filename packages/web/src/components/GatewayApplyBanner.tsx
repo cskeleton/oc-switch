@@ -49,9 +49,9 @@ export function GatewayApplyBanner({ client, envWrite, gatewayEnvSync, onDismiss
   return (
     <div
       data-testid="gateway-apply-banner"
-      className="mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-4 text-sm"
+      className="mb-3 rounded-md border border-warning/40 bg-warning/10 p-4 text-sm"
     >
-      <p className="font-medium text-amber-700 dark:text-amber-300">
+      <p className="font-medium text-warning">
         {!canAct
           ? "密钥已写入托管块，但未能确定唯一 Gateway 运行实例。请到设置中选择运行实例后再同步/重启。"
           : alreadySynced
@@ -66,20 +66,20 @@ export function GatewayApplyBanner({ client, envWrite, gatewayEnvSync, onDismiss
         </ul>
       ) : null}
       {error ? <p className="mt-2 text-destructive">{error}</p> : null}
-      {message ? <p className="mt-2 text-emerald-600 dark:text-emerald-400">{message}</p> : null}
+      {message ? <p className="mt-2 text-success">{message}</p> : null}
       <div className="mt-3 flex flex-wrap gap-2">
         {canAct ? (
           <button
             type="button"
             disabled={loading}
             onClick={() => void handleApply()}
-            className="inline-flex h-9 items-center gap-2 rounded-md bg-amber-600 px-4 text-sm font-medium text-primary-foreground hover:bg-amber-600/90 disabled:opacity-50"
+            className="inline-flex h-9 items-center gap-2 rounded-md bg-warning px-4 text-sm font-medium text-warning-foreground hover:bg-warning/90 disabled:opacity-50"
           >
             <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
             {loading ? "处理中…" : alreadySynced ? "重启 Gateway" : "同步并重启 Gateway"}
           </button>
         ) : (
-          <p className="text-sm text-amber-800 dark:text-amber-200">
+          <p className="text-sm text-warning">
             请先确认目标并同步/重启 Gateway（设置 → 路径 / Gateway 环境）。
           </p>
         )}

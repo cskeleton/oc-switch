@@ -1,9 +1,12 @@
-import { RefreshCw } from "lucide-react";
+import { Box, Cpu, ListChecks, RefreshCw, Star } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { ApiClient, CaseDuplicateGroup, ConfigDiffSummary, ConfigHealthReport, StatusResponse } from "../api";
 import { countDiffChangelogEntries, DiffChangelog } from "../components/DiffChangelog";
 import { MergeCaseDuplicateDialog } from "../components/MergeCaseDuplicateDialog";
+import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import { Skeleton } from "../components/ui/skeleton";
+import { cn } from "../lib/utils";
 
 interface DashboardProps {
   client: ApiClient;
@@ -56,25 +59,28 @@ export function Dashboard({ client }: DashboardProps) {
     <section data-testid="dashboard-view">
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-2xl font-bold tracking-tight">仪表盘</h1>
-        <button
-          type="button"
-          aria-label="刷新"
-          onClick={() => void load()}
-          className="inline-flex items-center justify-center rounded-md border border-input bg-background p-2 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
+        <Button variant="outline" size="icon" aria-label="刷新" onClick={() => void load()}>
           <RefreshCw className="h-4 w-4" />
-        </button>
+        </Button>
       </div>
 
-      {loading ? <p className="text-sm text-muted-foreground">加载中…</p> : null}
+      {loading ? (
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5" aria-label="加载中">
+          <Skeleton className="h-28 lg:col-span-2" />
+          <Skeleton className="h-28" />
+          <Skeleton className="h-28" />
+          <Skeleton className="h-28" />
+          <Skeleton className="h-32 md:col-span-2 lg:col-span-5" />
+        </div>
+      ) : null}
       {error ? <p className="text-sm font-medium text-destructive">{error}</p> : null}
 
       {status ? (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
-          <StatCard label="主模型" value={status.primaryModel ?? "未设置"} className="lg:col-span-2" />
-          <StatCard label="Provider 数量" value={String(status.providerCount)} />
-          <StatCard label="Provider 模型" value={String(status.providerModelCount)} />
-          <StatCard label="Allowlist 模型" value={String(status.allowlistModelCount)} />
+          <StatCard label="主模型" value={status.primaryModel ?? "未设置"} icon={Star} className="lg:col-span-2" />
+          <StatCard label="Provider 数量" value={String(status.providerCount)} icon={Box} />
+          <StatCard label="Provider 模型" value={String(status.providerModelCount)} icon={Cpu} />
+          <StatCard label="Allowlist 模型" value={String(status.allowlistModelCount)} icon={ListChecks} />
           <HealthCard diff={diff} unavailable={diffUnavailable} className="md:col-span-2 lg:col-span-5" />
           <CaseDuplicateCard
             groups={health?.caseDuplicateGroups ?? []}
@@ -95,14 +101,15 @@ export function Dashboard({ client }: DashboardProps) {
   );
 }
 
-function StatCard({ label, value, className }: { label: string; value: string; className?: string }) {
+function StatCard({ label, value, icon: Icon, className }: { label: string; value: string; icon: typeof Star; className?: string }) {
   return (
-    <Card className={className}>
+    <Card className={cn("transition hover:-translate-y-0.5 hover:shadow-md", className)}>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
         <CardTitle className="text-sm font-medium text-muted-foreground">{label}</CardTitle>
+        <Icon className="h-4 w-4 text-muted-foreground" />
       </CardHeader>
       <CardContent>
-        <div className="break-all text-2xl font-bold">{value}</div>
+        <div className="break-all text-2xl font-semibold tabular-nums">{value}</div>
       </CardContent>
     </Card>
   );
@@ -136,7 +143,7 @@ function HealthCard({ diff, unavailable, className }: { diff: ConfigDiffSummary 
         <CardTitle className="text-sm font-medium text-muted-foreground">配置健康</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className={`text-xl font-bold ${count > 0 ? "text-destructive" : "text-foreground"}`}>
+        <div className={`text-xl font-semibold tabular-nums ${count > 0 ? "text-destructive" : "text-foreground"}`}>
           {summary}
         </div>
         {diff && count > 0 ? <DiffChangelog diff={diff} /> : null}
@@ -154,28 +161,28 @@ function CaseDuplicateCard({ groups, onMerge, className }: { groups: CaseDuplica
         <CardTitle className="text-sm font-medium text-muted-foreground">Provider 大小写重复</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="text-xl font-bold text-amber-500">{`发现 ${groups.length} 组 Provider 大小写重复（${names}）`}</div>
+        <div className="text-xl font-semibold text-warning">{`发现 ${groups.length} 组 Provider 大小写重复（${names}）`}</div>
         <ul className="mt-3 space-y-3 text-sm">
           {groups.map((group) => (
             <li key={group.groupKey} className="border-t border-border pt-2">
               <div className="flex items-center justify-between gap-2">
                 <span className="break-all">建议保留 <strong>{group.canonicalId}</strong>，合并并删除 {group.duplicateIds.join(", ")}</span>
                 {group.mergeable ? (
-                  <button
-                    type="button"
+                  <Button
+                    size="sm"
                     aria-label={`合并 ${group.groupKey}`}
                     onClick={() => onMerge(group)}
-                    className="shrink-0 rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+                    className="shrink-0"
                   >
                     合并
-                  </button>
+                  </Button>
                 ) : (
                   <span className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground">需人工核对</span>
                 )}
               </div>
               <ul className="mt-1 list-inside list-disc text-muted-foreground">
                 {group.reasons.map((reason) => <li key={reason} className="break-all">{reason}</li>)}
-                {group.mergeBlockers.map((blocker) => <li key={blocker} className="break-all text-amber-500">{blocker}</li>)}
+                {group.mergeBlockers.map((blocker) => <li key={blocker} className="break-all text-warning">{blocker}</li>)}
               </ul>
             </li>
           ))}

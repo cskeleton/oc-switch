@@ -1,14 +1,16 @@
 import { Moon, Sun, Laptop } from "lucide-react";
 import { useEffect, useState } from "react";
+import { cn } from "../lib/utils";
 
 export type Theme = "light" | "dark" | "system";
 
 type ThemeToggleProps = {
-  /** 嵌入侧边栏底部时使用，非 viewport 悬浮定位 */
+  /** 嵌入布局（顶栏/侧边栏）时使用，非 viewport 悬浮定位 */
   embedded?: boolean;
+  className?: string;
 };
 
-export function ThemeToggle({ embedded = false }: ThemeToggleProps) {
+export function ThemeToggle({ embedded = false, className }: ThemeToggleProps) {
   const [theme, setTheme] = useState<Theme>(() => {
     if (typeof window !== "undefined" && window.localStorage) {
       return (window.localStorage.getItem("theme") as Theme) || "system";
@@ -49,11 +51,12 @@ export function ThemeToggle({ embedded = false }: ThemeToggleProps) {
 
   return (
     <div
-      className={
+      className={cn(
         embedded
           ? "flex w-full items-center justify-center gap-0.5 rounded-full border border-border bg-background/60 p-1 backdrop-blur-md shadow-sm"
-          : "fixed bottom-4 left-4 z-50 flex items-center gap-0.5 rounded-full border border-border bg-background/60 p-1 backdrop-blur-md shadow-sm"
-      }
+          : "fixed bottom-4 left-4 z-50 flex items-center gap-0.5 rounded-full border border-border bg-background/60 p-1 backdrop-blur-md shadow-sm",
+        className
+      )}
     >
       <button
         type="button"

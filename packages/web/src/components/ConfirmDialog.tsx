@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 
 interface ConfirmDialogProps {
@@ -46,23 +47,16 @@ export function ConfirmDialog({
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">{children}</div>
         ) : null}
         <DialogFooter className={scrollableBody ? "shrink-0 border-t border-border px-6 pb-6 pt-4" : undefined}>
-          <button
-            type="button"
-            onClick={onCancel}
-            className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
-          >
+          <Button variant="outline" onClick={onCancel}>
             {cancelLabel}
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant={danger ? "destructive" : "primary"}
             onClick={onConfirm}
             disabled={confirmDisabled}
-            className={`inline-flex items-center justify-center rounded-md px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50 ${
-              danger ? "bg-destructive hover:bg-destructive/90 text-destructive-foreground" : "bg-primary hover:bg-primary/90"
-            }`}
           >
             {confirmLabel}
-          </button>
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

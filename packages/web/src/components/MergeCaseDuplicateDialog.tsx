@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ApiClient, CaseDuplicateGroup, ConfigDiffSummary, ModelSummary } from "../api";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { Button } from "./ui/button";
 
 interface MergeCaseDuplicateDialogProps {
   open: boolean;
@@ -125,9 +126,9 @@ export function MergeCaseDuplicateDialog({ open, group, client, onCancel, onMerg
           </div>
         </div>
 
-        <button type="button" onClick={() => void preview()} className="justify-self-start rounded-md border border-input px-3 py-1.5 text-sm hover:bg-accent">
+        <Button variant="outline" size="sm" className="justify-self-start" onClick={() => void preview()}>
           预览改动
-        </button>
+        </Button>
         {diff ? (
           <ul className="max-h-48 list-inside list-disc space-y-1 overflow-y-auto rounded-md border border-border p-2 text-muted-foreground">
             {diff.providersRemoved.map((p) => <li key={p} className="break-all">删除 Provider {p}</li>)}

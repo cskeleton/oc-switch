@@ -15,6 +15,11 @@ import { PresetsView } from "./views/PresetsView";
 import { ProvidersView } from "./views/ProvidersView";
 import { SettingsView } from "./views/SettingsView";
 import { ThemeToggle } from "./components/ThemeToggle";
+import { ToastProvider } from "./components/Toast";
+import { Button } from "./components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./components/ui/card";
+import { Input } from "./components/ui/input";
+import { cn } from "./lib/utils";
 
 const TOKEN_KEY = "oc-switch-token";
 const BASE_URL_KEY = "oc-switch-base-url";
@@ -22,14 +27,22 @@ const DEFAULT_BASE_URL = "http://127.0.0.1:7420";
 
 export type AppRoute = "dashboard" | "providers" | "models" | "presets" | "backups" | "settings";
 
-const NAV: Array<{ id: AppRoute; label: string; icon: typeof LayoutDashboard }> = [
+interface NavItem {
+  id: AppRoute;
+  label: string;
+  icon: typeof LayoutDashboard;
+}
+
+// 主导航；「预设」为遗留入口，在桌面侧栏底部单独分区
+const NAV_MAIN: NavItem[] = [
   { id: "dashboard", label: "仪表盘", icon: LayoutDashboard },
   { id: "providers", label: "Providers", icon: Box },
   { id: "models", label: "模型", icon: Cpu },
   { id: "backups", label: "备份", icon: Archive },
-  { id: "settings", label: "设置", icon: Settings },
-  { id: "presets", label: "预设", icon: Layers }
+  { id: "settings", label: "设置", icon: Settings }
 ];
+
+const NAV_LEGACY: NavItem[] = [{ id: "presets", label: "预设", icon: Layers }];
 
 function readSession(key: string): string {
   try {
@@ -54,7 +67,22 @@ function defaultBaseUrl(): string {
   return DEFAULT_BASE_URL;
 }
 
-/** 应用主壳：连接配置 + 响应式导航 */
+/** 品牌区：渐变方块 logo + 字标 */
+function BrandMark() {
+  return (
+    <div className="flex items-center gap-2.5">
+      <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-brand to-brand/75 text-white shadow-sm">
+        <Box className="h-4 w-4" />
+      </span>
+      <div className="leading-tight">
+        <p className="text-sm font-semibold text-foreground">oc-switch</p>
+        <p className="text-[11px] text-muted-foreground">OpenClaw 配置管理</p>
+      </div>
+    </div>
+  );
+}
+
+/** 应用主壳：顶栏 + 响应式导航（桌面侧栏 / 移动端横滚 tab） */
 export function App() {
   const [token, setToken] = useState(() => readSession(TOKEN_KEY));
   const [baseUrl, setBaseUrl] = useState(() => readSession(BASE_URL_KEY) || defaultBaseUrl());
@@ -69,6 +97,15 @@ export function App() {
   );
 
   const refresh = useCallback(() => setTick((n) => n + 1), []);
+
+  // 顶栏展示的连接 host（mono 字体 + 状态点）
+  const hostLabel = useMemo(() => {
+    try {
+      return new URL(baseUrl).host;
+    } catch {
+      return baseUrl;
+    }
+  }, [baseUrl]);
 
   async function handleConnect(e: FormEvent) {
     e.preventDefault();
@@ -97,34 +134,41 @@ export function App() {
   if (!connected) {
     return (
       <div className="flex min-h-screen items-center justify-center p-4">
-        <form onSubmit={(e) => void handleConnect(e)} className="w-full max-w-md space-y-4 rounded-lg border border-border bg-card p-6">
-          <h1 className="text-xl font-semibold text-foreground">oc-switch</h1>
-          <p className="text-sm text-muted-foreground">输入 API 地址与 Token 以连接本地服务</p>
-          <label className="block text-sm">
-            <span className="mb-1 block text-muted-foreground">API 地址</span>
-            <input
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-              className="w-full rounded border border-input bg-background px-3 py-2 text-foreground"
-              placeholder={DEFAULT_BASE_URL}
-              aria-label="API 地址"
-            />
-          </label>
-          <label className="block text-sm">
-            <span className="mb-1 block text-muted-foreground">Token</span>
-            <input
-              type="password"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              className="w-full rounded border border-input bg-background px-3 py-2 text-foreground"
-              autoComplete="off"
-            />
-          </label>
-          {connectError ? <p className="text-sm text-destructive">{connectError}</p> : null}
-          <button type="submit" className="w-full rounded bg-primary py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
-            连接
-          </button>
-        </form>
+        <Card className="w-full max-w-md">
+          <CardHeader>
+            <span className="mb-2 flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-brand to-brand/75 text-white shadow-sm">
+              <Box className="h-5 w-5" />
+            </span>
+            <CardTitle className="text-xl">oc-switch</CardTitle>
+            <CardDescription>输入 API 地址与 Token 以连接本地服务</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={(e) => void handleConnect(e)} className="space-y-4">
+              <label className="block text-sm">
+                <span className="mb-1 block text-muted-foreground">API 地址</span>
+                <Input
+                  value={baseUrl}
+                  onChange={(e) => setBaseUrl(e.target.value)}
+                  placeholder={DEFAULT_BASE_URL}
+                  aria-label="API 地址"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="mb-1 block text-muted-foreground">Token</span>
+                <Input
+                  type="password"
+                  value={token}
+                  onChange={(e) => setToken(e.target.value)}
+                  autoComplete="off"
+                />
+              </label>
+              {connectError ? <p className="text-sm text-destructive">{connectError}</p> : null}
+              <Button type="submit" className="w-full">
+                连接
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
       </div>
     );
   }
@@ -149,62 +193,105 @@ export function App() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col md:flex-row">
-      <div className="md:hidden">
-        <ThemeToggle />
+    <ToastProvider>
+      <div className="flex min-h-screen flex-col">
+        {/* 顶栏：全宽，移动端同样保留 */}
+        <header className="sticky top-0 z-40 border-b border-border bg-card/80 backdrop-blur-md">
+          <div className="flex items-center justify-between gap-3 px-4 py-2.5 md:px-6">
+            <BrandMark />
+            <div className="flex items-center gap-2 md:gap-3">
+              <span className="hidden items-center gap-1.5 font-mono text-xs text-muted-foreground sm:flex">
+                <span className="h-1.5 w-1.5 rounded-full bg-success" />
+                {hostLabel}
+              </span>
+              <ThemeToggle embedded className="w-auto" />
+              <Button variant="ghost" size="sm" onClick={handleDisconnect}>
+                断开
+              </Button>
+            </div>
+          </div>
+          {/* 移动端：横滚 tab，选中为 brand 下划线 */}
+          <nav className="flex overflow-x-auto px-2 md:hidden">
+            {[...NAV_MAIN, ...NAV_LEGACY].map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setRoute(id)}
+                className={cn(
+                  "flex shrink-0 items-center gap-1 border-b-2 px-3 py-2 text-xs transition-colors",
+                  route === id
+                    ? "border-brand font-medium text-brand"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <Icon className="h-3.5 w-3.5" />
+                {label}
+              </button>
+            ))}
+          </nav>
+        </header>
+
+        <div className="flex flex-1">
+          {/* 桌面侧栏：选中态为 brand 左竖条 + bg-brand/10 圆角块；底部为遗留分区 */}
+          <aside className="hidden w-56 shrink-0 border-r border-border bg-card md:block">
+            <nav className="flex min-h-full flex-col gap-1 p-3">
+              {NAV_MAIN.map(({ id, label, icon: Icon }) => {
+                const active = route === id;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setRoute(id)}
+                    className={cn(
+                      "relative flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
+                      active
+                        ? "bg-brand/10 font-medium text-brand"
+                        : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                    )}
+                  >
+                    {active ? (
+                      <span className="absolute left-0.5 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-brand" />
+                    ) : null}
+                    <Icon className="h-4 w-4" />
+                    {label}
+                  </button>
+                );
+              })}
+              <div className="mt-auto border-t border-border pt-3">
+                <p className="px-3 pb-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                  遗留
+                </p>
+                {NAV_LEGACY.map(({ id, label, icon: Icon }) => {
+                  const active = route === id;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => setRoute(id)}
+                      className={cn(
+                        "relative flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
+                        active
+                          ? "bg-brand/10 font-medium text-brand"
+                          : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                      )}
+                    >
+                      {active ? (
+                        <span className="absolute left-0.5 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-brand" />
+                      ) : null}
+                      <Icon className="h-4 w-4" />
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </nav>
+          </aside>
+
+          <main className="flex-1 overflow-auto p-4 md:p-6">
+            <div className="mx-auto w-full max-w-6xl">{renderRoute()}</div>
+          </main>
+        </div>
       </div>
-      <header className="border-b border-border bg-card md:hidden">
-        <div className="flex items-center justify-between px-4 py-3">
-          <span className="font-semibold text-foreground">oc-switch</span>
-          <button type="button" onClick={handleDisconnect} className="text-xs text-muted-foreground hover:text-foreground">
-            断开
-          </button>
-        </div>
-        <nav className="flex overflow-x-auto border-t border-border">
-          {NAV.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setRoute(id)}
-              className={`flex shrink-0 items-center gap-1 px-3 py-2 text-xs ${
-                route === id ? "border-b-2 border-primary text-primary" : "text-muted-foreground"
-              }`}
-            >
-              <Icon className="h-3.5 w-3.5" />
-              {label}
-            </button>
-          ))}
-        </nav>
-      </header>
-
-      <aside className="hidden w-52 shrink-0 flex-col border-r border-border bg-card md:flex">
-        <div className="flex items-center justify-between border-b border-border px-4 py-4">
-          <span className="font-semibold text-foreground">oc-switch</span>
-          <button type="button" onClick={handleDisconnect} className="text-xs text-muted-foreground hover:text-foreground">
-            断开
-          </button>
-        </div>
-        <nav className="flex flex-1 flex-col gap-1 p-2">
-          {NAV.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setRoute(id)}
-              className={`flex items-center gap-2 rounded-md px-3 py-2 text-sm ${
-                route === id ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent hover:text-foreground"
-              }`}
-            >
-              <Icon className="h-4 w-4" />
-              {label}
-            </button>
-          ))}
-        </nav>
-        <div className="border-t border-border p-3">
-          <ThemeToggle embedded />
-        </div>
-      </aside>
-
-      <main className="flex-1 overflow-auto p-4 md:p-6">{renderRoute()}</main>
-    </div>
+    </ToastProvider>
   );
 }
