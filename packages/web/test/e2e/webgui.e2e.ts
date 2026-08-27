@@ -242,6 +242,34 @@ test.describe("WebGUI smoke", () => {
     await expect(page.locator("main")).not.toBeEmpty();
   });
 
+  test("记住密码 + 自动登录后重开页面直接进入主页", async ({ page }) => {
+    await page.goto("/");
+    await page.getByLabel("API 地址").fill(BASE_URL);
+    await page.getByLabel("Token").fill(TOKEN);
+    await page.getByLabel("记住密码").click();
+    await page.getByLabel("自动登录").click();
+    await expect(page.getByLabel("自动登录")).toHaveAttribute("aria-checked", "true");
+    await page.getByRole("button", { name: "连接" }).click();
+    await expect(page.getByTestId("dashboard-view")).toBeVisible({ timeout: 15_000 });
+
+    // 清掉会话态以模拟新开浏览器：此时只能靠 localStorage 里的记住凭据自动登录
+    await page.evaluate(() => window.sessionStorage.clear());
+    await page.reload();
+    await expect(page.getByTestId("dashboard-view")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole("button", { name: "连接" })).toHaveCount(0);
+  });
+
+  test("未勾记住密码时自动登录开关不可用", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByLabel("自动登录")).toBeDisabled();
+    await page.getByLabel("记住密码").click();
+    await expect(page.getByLabel("自动登录")).toBeEnabled();
+    await page.getByLabel("自动登录").click();
+    await page.getByLabel("记住密码").click();
+    await expect(page.getByLabel("自动登录")).toBeDisabled();
+    await expect(page.getByLabel("自动登录")).toHaveAttribute("aria-checked", "false");
+  });
+
   test("providers table visible", async ({ page }) => {
     await connect(page);
     await page.getByRole("button", { name: "Providers" }).click();

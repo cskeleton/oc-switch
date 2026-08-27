@@ -4,10 +4,18 @@ import {
   Cpu,
   LayoutDashboard,
   Layers,
+  Loader2,
   Settings
 } from "lucide-react";
-import { useCallback, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { createApiClient } from "./api";
+import {
+  clearAuthSession,
+  persistAuth,
+  readAuthSnapshot,
+  shouldAutoLogin,
+  type AuthPreferences
+} from "./auth-storage";
 import { BackupsView } from "./views/BackupsView";
 import { Dashboard } from "./views/Dashboard";
 import { ModelsView } from "./views/ModelsView";
@@ -19,10 +27,10 @@ import { ToastProvider } from "./components/Toast";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./components/ui/card";
 import { Input } from "./components/ui/input";
+import { Label } from "./components/ui/label";
+import { Switch } from "./components/ui/switch";
 import { cn } from "./lib/utils";
 
-const TOKEN_KEY = "oc-switch-token";
-const BASE_URL_KEY = "oc-switch-base-url";
 const DEFAULT_BASE_URL = "http://127.0.0.1:7420";
 
 export type AppRoute = "dashboard" | "providers" | "models" | "presets" | "backups" | "settings";
@@ -43,22 +51,6 @@ const NAV_MAIN: NavItem[] = [
 ];
 
 const NAV_LEGACY: NavItem[] = [{ id: "presets", label: "预设", icon: Layers }];
-
-function readSession(key: string): string {
-  try {
-    return typeof window === "undefined" ? "" : window.sessionStorage.getItem(key) ?? "";
-  } catch {
-    return "";
-  }
-}
-
-function writeSession(key: string, value: string) {
-  try {
-    window.sessionStorage.setItem(key, value);
-  } catch {
-    // 忽略存储失败
-  }
-}
 
 function defaultBaseUrl(): string {
   if (typeof window !== "undefined" && window.location.origin && window.location.origin !== "null") {
@@ -84,9 +76,14 @@ function BrandMark() {
 
 /** 应用主壳：顶栏 + 响应式导航（桌面侧栏 / 移动端横滚 tab） */
 export function App() {
-  const [token, setToken] = useState(() => readSession(TOKEN_KEY));
-  const [baseUrl, setBaseUrl] = useState(() => readSession(BASE_URL_KEY) || defaultBaseUrl());
-  const [connected, setConnected] = useState(() => Boolean(readSession(TOKEN_KEY)));
+  // 初始快照只读一次，供下方各 state 的初始值共用
+  const [initialAuth] = useState(() => readAuthSnapshot(defaultBaseUrl()));
+  const [token, setToken] = useState(initialAuth.token);
+  const [baseUrl, setBaseUrl] = useState(initialAuth.baseUrl);
+  const [rememberToken, setRememberToken] = useState(initialAuth.rememberToken);
+  const [autoLogin, setAutoLogin] = useState(initialAuth.autoLogin);
+  const [connected, setConnected] = useState(initialAuth.sessionActive);
+  const [autoLoginPending, setAutoLoginPending] = useState(() => shouldAutoLogin(initialAuth));
   const [route, setRoute] = useState<AppRoute>("dashboard");
   const [connectError, setConnectError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
@@ -107,28 +104,78 @@ export function App() {
     }
   }, [baseUrl]);
 
+  // 校验通过后统一落盘并进入已连接态；手动连接与自动登录共用
+  const finishConnect = useCallback(
+    (nextToken: string, nextBaseUrl: string, prefs: AuthPreferences) => {
+      persistAuth({ token: nextToken, baseUrl: nextBaseUrl, ...prefs });
+      setConnectError(null);
+      setConnected(true);
+    },
+    []
+  );
+
+  // 自动登录只在挂载时尝试一次：显式「断开」后不应被重新拉回已连接态
+  useEffect(() => {
+    if (!autoLoginPending) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        await createApiClient({ baseUrl: initialAuth.baseUrl, token: initialAuth.token }).getStatus();
+        if (cancelled) return;
+        finishConnect(initialAuth.token, initialAuth.baseUrl, {
+          rememberToken: initialAuth.rememberToken,
+          autoLogin: initialAuth.autoLogin
+        });
+      } catch (err) {
+        if (cancelled) return;
+        setConnectError(`自动登录失败：${err instanceof Error ? err.message : "连接失败"}`);
+      } finally {
+        if (!cancelled) setAutoLoginPending(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // 依赖数组刻意留空：initialAuth / autoLoginPending 都是首屏快照，不参与重触发
+  }, []);
+
   async function handleConnect(e: FormEvent) {
     e.preventDefault();
     setConnectError(null);
     const testClient = createApiClient({ baseUrl, token });
     try {
       await testClient.getStatus();
-      writeSession(TOKEN_KEY, token);
-      writeSession(BASE_URL_KEY, baseUrl);
-      setConnected(true);
+      finishConnect(token, baseUrl, { rememberToken, autoLogin });
     } catch (err) {
       setConnectError(err instanceof Error ? err.message : "连接失败");
     }
   }
 
   function handleDisconnect() {
-    try {
-      window.sessionStorage.removeItem(TOKEN_KEY);
-    } catch {
-      // 忽略
-    }
+    clearAuthSession();
+    setAutoLogin(false);
     setConnected(false);
-    setToken("");
+    // 记住密码时保留 Token 预填，方便直接重连
+    if (!rememberToken) setToken("");
+  }
+
+  /** 取消「记住密码」时联动关闭「自动登录」——没有凭据可用 */
+  function handleRememberChange(next: boolean) {
+    setRememberToken(next);
+    if (!next) setAutoLogin(false);
+  }
+
+  if (autoLoginPending) {
+    return (
+      <div className="flex min-h-screen items-center justify-center p-4">
+        <Card className="w-full max-w-md" data-testid="auto-login-pending">
+          <CardContent className="flex items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin text-brand" />
+            正在自动登录…
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
 
   if (!connected) {
@@ -162,6 +209,43 @@ export function App() {
                   autoComplete="off"
                 />
               </label>
+              <div className="space-y-2.5 rounded-lg border border-border bg-muted/40 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <Label htmlFor="remember-token" className="cursor-pointer font-normal">
+                    记住密码
+                  </Label>
+                  <Switch
+                    id="remember-token"
+                    checked={rememberToken}
+                    onCheckedChange={(value) => handleRememberChange(value === true)}
+                    aria-label="记住密码"
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <Label
+                    htmlFor="auto-login"
+                    className={cn(
+                      "cursor-pointer font-normal",
+                      rememberToken ? undefined : "cursor-not-allowed text-muted-foreground"
+                    )}
+                  >
+                    自动登录
+                  </Label>
+                  <Switch
+                    id="auto-login"
+                    checked={autoLogin}
+                    onCheckedChange={(value) => setAutoLogin(value === true)}
+                    disabled={!rememberToken}
+                    aria-label="自动登录"
+                    title={rememberToken ? undefined : "需先勾选「记住密码」"}
+                  />
+                </div>
+                <p className="text-[11px] leading-relaxed text-muted-foreground">
+                  {rememberToken
+                    ? "Token 将保存在此浏览器本地；自动登录会在打开页面时直接连接。"
+                    : "勾选「记住密码」后才能开启自动登录。"}
+                </p>
+              </div>
               {connectError ? <p className="text-sm text-destructive">{connectError}</p> : null}
               <Button type="submit" className="w-full">
                 连接

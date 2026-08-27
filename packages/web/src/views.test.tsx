@@ -28,6 +28,8 @@ import { GATEWAY_CONFIRM_SYNC_NEXT_STEP_HINT, GATEWAY_RESTART_NEXT_STEP_HINT } f
 afterEach(() => {
   cleanup();
   window.sessionStorage.clear();
+  // 登录偏好（记住密码 / 自动登录）落在 localStorage，不清会让后续用例误走自动登录分支
+  window.localStorage.clear();
   mock.restore();
 });
 
@@ -2247,7 +2249,117 @@ describe("App shell", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  test("记住密码 + 自动登录：打开页面直接进入主页", async () => {
+    globalThis.fetch = okStatusFetch() as unknown as typeof fetch;
+    try {
+      rememberedLogin("stored-token");
+      const app = render(<App />);
+      // 首屏不闪登录表单，直接进入自动登录中间态
+      expect(app.getByTestId("auto-login-pending")).toBeTruthy();
+
+      await app.findByTestId("dashboard-view");
+      // 自动登录成功需回写会话态，保住同 tab 刷新恢复的老路径
+      expect(window.sessionStorage.getItem("oc-switch-token")).toBe("stored-token");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("自动登录失败时回到登录表单、预填 Token 且不重试", async () => {
+    const fetchMock = mock(async () =>
+      new Response(JSON.stringify({ error: "unauthorized" }), {
+        status: 401,
+        headers: { "content-type": "application/json" }
+      })
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      rememberedLogin("stale-token");
+      const app = render(<App />);
+
+      expect(await app.findByText("自动登录失败：unauthorized")).toBeTruthy();
+      expect((app.getByLabelText("Token") as HTMLInputElement).value).toBe("stale-token");
+      expect(app.queryByTestId("auto-login-pending")).toBeNull();
+      expect(fetchMock.mock.calls.length).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("未勾记住密码时自动登录不可用，取消记住密码会联动关闭", async () => {
+    const user = userEvent.setup();
+    const app = render(<App />);
+    const remember = app.getByLabelText("记住密码");
+    const auto = app.getByLabelText("自动登录") as HTMLButtonElement;
+
+    expect(auto.disabled).toBe(true);
+    expect(auto.getAttribute("aria-checked")).toBe("false");
+
+    await user.click(remember);
+    expect(auto.disabled).toBe(false);
+    await user.click(auto);
+    expect(auto.getAttribute("aria-checked")).toBe("true");
+
+    // 取消记住密码：自动登录必须同时关闭并禁用
+    await user.click(remember);
+    expect(auto.disabled).toBe(true);
+    expect(auto.getAttribute("aria-checked")).toBe("false");
+  });
+
+  test("连接时按开关落盘：记住则存 Token，断开关自动登录，取消记住则清除", async () => {
+    globalThis.fetch = okStatusFetch() as unknown as typeof fetch;
+    try {
+      const user = userEvent.setup();
+      const app = render(<App />);
+      await user.type(app.getByLabelText("Token"), "tok-1");
+      await user.click(app.getByLabelText("记住密码"));
+      await user.click(app.getByLabelText("自动登录"));
+      await user.click(app.getByRole("button", { name: "连接" }));
+      await app.findByTestId("dashboard-view");
+
+      expect(window.localStorage.getItem("oc-switch-token")).toBe("tok-1");
+      expect(window.localStorage.getItem("oc-switch-auto-login")).toBe("1");
+
+      // 显式断开：保留预填 Token，但关闭自动登录，避免刷新又被登进去
+      await user.click(app.getByRole("button", { name: "断开" }));
+      expect(window.localStorage.getItem("oc-switch-auto-login")).toBe("0");
+      expect((app.getByLabelText("Token") as HTMLInputElement).value).toBe("tok-1");
+      expect((app.getByLabelText("自动登录") as HTMLButtonElement).getAttribute("aria-checked")).toBe("false");
+
+      // 取消记住密码后重连：清掉此前记住的陈旧凭据
+      await user.click(app.getByLabelText("记住密码"));
+      await user.click(app.getByRole("button", { name: "连接" }));
+      await app.findByTestId("dashboard-view");
+      expect(window.localStorage.getItem("oc-switch-token")).toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
+
+/** 预置「记住密码 + 自动登录」的持久化登录态（模拟新的浏览器会话） */
+function rememberedLogin(token: string) {
+  window.localStorage.setItem("oc-switch-token", token);
+  window.localStorage.setItem("oc-switch-remember-token", "1");
+  window.localStorage.setItem("oc-switch-auto-login", "1");
+}
+
+/** App shell 用的宽松 fetch mock：所有请求都返回可渲染的 status 载荷 */
+function okStatusFetch() {
+  return mock(async () =>
+    new Response(
+      JSON.stringify({
+        ok: true,
+        primaryModel: "minimax-portal/MiniMax-M3",
+        providerCount: 1,
+        providerModelCount: 1,
+        allowlistModelCount: 1
+      }),
+      { headers: { "content-type": "application/json" } }
+    )
+  );
+}
 
 function singleSuggestionResponse(overrides: Partial<ModelMetadataSuggestionsResponse> = {}): ModelMetadataSuggestionsResponse {
   return {

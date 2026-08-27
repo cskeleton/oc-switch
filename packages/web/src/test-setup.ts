@@ -14,6 +14,8 @@ Object.assign(globalThis, {
   Event: win.Event,
   CustomEvent: win.CustomEvent,
   MutationObserver: win.MutationObserver,
+  // Radix Switch 位于 <form> 内时会渲染依赖 ResizeObserver 的隐藏 bubble input
+  ResizeObserver: win.ResizeObserver,
   NodeFilter: win.NodeFilter,
   HTMLInputElement: win.HTMLInputElement,
   getComputedStyle: win.getComputedStyle.bind(win),
