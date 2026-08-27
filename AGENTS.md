@@ -29,6 +29,7 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 - **`repoRoot`**：`packages/cli/src/command-context.ts` 导出，须自 `packages/cli/src` **上溯三级**至 monorepo 根（测试脚本定位等用途）。
 - **Web 主题**：双主题用 `styles.css` 的 `@theme inline` + `:root` / `.dark` token。禁止硬编码 `slate-*` / `sky-*` / `red-*`——Tailwind v4 会静默丢弃未声明 token 的工具类且不报错。`brand` / `success` / `warning` / `danger` 等语义色 token 已在 `styles.css` 声明，同样禁止硬编码 `amber-*` / `emerald-*`。
 - **Web 共享组件**：`Button` / `Pill` / `Toast`（`ToastProvider` + `useToast`）/ `EmptyState` / `Skeleton` / `DataTable`（支持列排序）位于 `packages/web/src/components(/ui)`，新代码应直接使用，不得再内联拼 class。
+- **Web 单测 DOM 全局**：`packages/web/src/test-setup.ts` 逐项挑选 happy-dom 全局注入 `globalThis`，缺项不会在启动时报错，只在渲染时抛 `X is not defined` 且堆栈指向组件库内部。已知项：Radix `Switch` 位于 `<form>` 内会额外渲染依赖 `ResizeObserver` 的隐藏 bubble input（表单外不会），故该全局必须注入。引入新 Radix 组件后若测试炸在这类报错上，补 test-setup 而非改组件；单个用例的崩溃会经 `cleanup()` 连带打挂同文件其它用例，别被表象误导。
 - **共享类型**：不新建 shared contracts 包；core 类型由 server/cli/web 各自引用。
 
 ## 领域约定
@@ -52,6 +53,7 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 - **配置路径**：默认 `OPENCLAW_CONFIG_PATH` 或 `~/.openclaw/openclaw.json`；活动路径持久化于 `~/.oc-switch/settings.json`，可在 Settings 切换（`GET/PUT /api/settings/paths`）。
 - **`.env`**：默认 `~/.openclaw/.env`；oc-switch 写入限定在 `# oc-switch:start` … `# oc-switch:end` 托管块内。
 - **API Key**：仅存 `.env`；新写入的 `models.providers.*.apiKey` 使用 canonical SecretRef `{ source: "env", provider: "default", id: "ENV_VAR" }`。旧 `${ENV_VAR}`、`$ENV_VAR` 与两字段 EnvRef 只在 Providers 页提示并由用户确认迁移；源 `.env` 缺失、空值、重复或复杂表达式时 fail closed。已关联 Gateway service env 缺 Key 可迁移；同名值与 `.env` 不一致时因进程环境覆盖而 fail closed。`health repair` 不得静默迁移或降级 Provider `apiKey`。`authHeader` 是 boolean 开关，不保存密钥。CLI / API / Web **不回显**完整密钥；env preview 不收 value。
+- **Web 登录 Token**：指 oc-switch 自身的 API token（`~/.oc-switch/token.json`），与 Provider API Key 是两回事。浏览器侧默认只落 `sessionStorage`（同 tab 刷新恢复）；仅在用户勾选「记住密码」时才明文写入 `localStorage`，登录页对此有提示。「自动登录」以「记住密码」为前提，不变量在 `packages/web/src/auth-storage.ts` 的读、写两侧强制。
 - **`baseUrl`**：遵循 OpenClaw——`openai-completions` 含 `/v1`；`anthropic-messages` 通常不带末尾 `/v1`。
 
 ### 写入与安全
