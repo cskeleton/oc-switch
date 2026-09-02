@@ -4,6 +4,7 @@ import { inspectConfigHealth } from "./config-health";
 import { inspectEnvFile, listProviderEnvRefs } from "./env-inspector";
 import { inspectProviderSecretRefMigrations } from "./openclaw-compat";
 import { listOrphanEnvKeys, readManifest } from "./manifest-manager";
+import { isPolicyAllowsRef, readModelPolicyAllow } from "./model-policy";
 import type { OcSwitchPaths } from "./paths";
 import { readProviderStates } from "./provider-states";
 import type { LegacyRunningOpenClawInstance } from "./runtime-discovery-types";
@@ -306,6 +307,33 @@ function buildDisabledProviderIssues(disabledProviders: DisabledProviderStatus[]
   }));
 }
 
+/**
+ * modelPolicy.allow 分叉检测：OpenClaw 2026.8+ 中非空 modelPolicy.allow 是实际生效的 allowlist；
+ * agents.defaults.models 有但 policy 未覆盖（含通配）的 ref 在 OpenClaw 里选不到。
+ * 反向（policy 引用 builtin catalog 模型）属合法，不报。
+ */
+function buildModelPolicyIssues(config: OpenClawConfig): ConfigStatusIssue[] {
+  const allow = readModelPolicyAllow(config);
+  if (!allow || allow.length === 0) return [];
+
+  const uncovered = Object.keys(config.agents?.defaults?.models ?? {}).filter(
+    (ref) => !isPolicyAllowsRef(allow, ref)
+  );
+  if (uncovered.length === 0) return [];
+
+  const preview = uncovered.slice(0, 5).join(", ");
+  return [
+    {
+      id: issueId("health", "model-policy-not-covered", "modelPolicy.allow"),
+      severity: "warning",
+      source: "health",
+      title: `${uncovered.length} 个已启用模型未被 modelPolicy.allow 覆盖`,
+      detail: `OpenClaw 2026.8+ 以 modelPolicy.allow 为准，这些模型实际选不到：${preview}${uncovered.length > 5 ? " 等" : ""}`,
+      action: "将缺失 ref 加入 agents.defaults.modelPolicy.allow，或清空该列表放开全部"
+    }
+  ];
+}
+
 function deriveSummary(issues: ConfigStatusIssue[], health: ConfigHealthReport, disabledProviders: DisabledProviderStatus[], orphanEnvKeys: string[]) {
   return {
     issueCount: issues.length,
@@ -342,6 +370,7 @@ export function inspectConfigStatus(input: InspectConfigStatusInput): ConfigStat
     ...buildPathIssues(input.paths, input.configReadError),
     ...buildHealthIssues(health),
     ...(input.config ? buildCompatibilityIssues(input.config) : []),
+    ...(input.config ? buildModelPolicyIssues(input.config) : []),
     ...buildEnvIssues(envInspection, orphanEnvKeys),
     ...buildDisabledProviderIssues(disabledProviders)
   ]) {

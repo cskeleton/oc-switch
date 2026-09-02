@@ -1,4 +1,5 @@
 import { formatModelRef, normalizeProviderId, parseModelRef } from "./model-ref";
+import { addPolicyAllow, removePolicyAllow } from "./model-policy";
 import { ensureModelName } from "./openclaw-compat";
 import { ensureDefaults, matchingAllowlistRefs, resolveProviderId, type OperationResult } from "./operation-common";
 import { readFallbackModelRefs, readPrimaryModelRef } from "./primary-model";
@@ -69,6 +70,7 @@ export function batchAddProviderModels(
       const existing = existingRef ? config.agents!.defaults!.models![existingRef] : undefined;
       for (const matchingRef of matchingRefs) delete config.agents!.defaults!.models![matchingRef];
       config.agents!.defaults!.models![ref] = existing ?? {};
+      addPolicyAllow(config, ref);
     }
   }
 
@@ -167,6 +169,7 @@ export function batchRemoveProviderModels(
     for (const id of removedModelIds) {
       for (const ref of matchingAllowlistRefs(config, formatModelRef(resolvedProviderId!, id))) {
         delete config.agents!.defaults!.models![ref];
+        removePolicyAllow(config, ref);
       }
     }
 
@@ -189,6 +192,7 @@ export function batchRemoveProviderModels(
   for (const id of modelIds) {
     for (const ref of matchingAllowlistRefs(config, formatModelRef(resolvedProviderId!, id))) {
       delete config.agents!.defaults!.models![ref];
+      removePolicyAllow(config, ref);
     }
   }
 

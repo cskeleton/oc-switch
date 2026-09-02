@@ -1,4 +1,5 @@
 import { formatModelRef, normalizeProviderId, parseModelRef } from "./model-ref";
+import { addPolicyAllow, removePolicyAllow, removePolicyAllowForProvider } from "./model-policy";
 import { setPrimaryModel } from "./model-operations";
 import { formatEnvRefForOpenClaw, ensureModelName } from "./openclaw-compat";
 import { ensureDefaults, matchingAllowlistRefs, resolveProviderId, type OperationResult } from "./operation-common";
@@ -67,10 +68,14 @@ export function removeProvider(
       delete config.agents!.defaults!.models![ref];
     }
   }
+  const leftoverWildcards = removePolicyAllowForProvider(config, resolvedProviderId);
 
   const warnings = primary && normalizeProviderId(parseModelRef(primary).providerId) === normalizeProviderId(resolvedProviderId) && options.force
     ? [`Primary model ${primary} now points to a deleted provider`]
     : [];
+  for (const wildcard of leftoverWildcards) {
+    warnings.push(`modelPolicy.allow 仍包含已删除 Provider 的通配条目 ${wildcard}，请人工清理`);
+  }
 
   return { config, warnings };
 }
@@ -143,8 +148,10 @@ export function addProviderFromPreset(
       config.agents!.defaults!.models![ref] = model.alias
         ? { ...existingEntry, alias: model.alias }
         : existingEntry ?? {};
+      addPolicyAllow(config, ref);
     } else {
       delete config.agents!.defaults!.models![ref];
+      removePolicyAllow(config, ref);
     }
   }
 
@@ -215,6 +222,7 @@ export function addCustomProvider(config: OpenClawConfig, input: CustomProviderI
     for (const model of input.models) {
       const ref = formatModelRef(providerId, model.id);
       config.agents!.defaults!.models![ref] = model.alias ? { alias: model.alias } : {};
+      addPolicyAllow(config, ref);
     }
   }
 

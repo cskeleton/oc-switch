@@ -1,4 +1,5 @@
 import { formatModelRef } from "./model-ref";
+import { rewritePolicyAllowProviderPrefix } from "./model-policy";
 import { providerEnvVar } from "./openclaw-compat";
 import type { OperationResult } from "./operations";
 import { readFallbackModelRefs, readPrimaryModelRef, writePrimaryModelRef } from "./primary-model";
@@ -351,6 +352,14 @@ export function mergeProviderCaseDuplicates(config: OpenClawConfig, input: Merge
     } else if (prefix === input.canonicalId && !isKept(modelId)) {
       delete allowlist[ref]; // canonical 侧被取消保留的模型
     }
+  }
+
+  // 3b. 同步 modelPolicy.allow：removeId 前缀（精确+通配）→canonical；两侧不保留模型的精确条目删除
+  for (const id of input.removeIds) {
+    rewritePolicyAllowProviderPrefix(config, id, input.canonicalId, { keepModelIds: keepSet, dropUncheckedExact: true });
+  }
+  if (keepSet) {
+    rewritePolicyAllowProviderPrefix(config, input.canonicalId, input.canonicalId, { keepModelIds: keepSet, dropUncheckedExact: true });
   }
 
   // 4. 落实主模型迁移（形状守恒：对象形态保留 fallbacks 与未知键）

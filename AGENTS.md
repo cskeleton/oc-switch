@@ -38,6 +38,7 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 
 - **ModelRef**：仅在第一个 `/` 处拆分 provider 与 model，**保留大小写**。
 - **Allowlist**（已启用模型）：`agents.defaults.models`，key 为完整 ModelRef。
+- **modelPolicy.allow**（OpenClaw 2026.8+ 覆盖 allowlist）：`agents.defaults.modelPolicy.allow` 非空时是 OpenClaw 实际生效的可选模型列表（覆盖 `agents.defaults.models`），支持精确 ref 与尾部通配（`provider/*`、`provider/namespace/*`）；缺省或 `[]` = 放开任何模型。core 禁止直接读写该字段，必须经 `packages/core/src/model-policy.ts` 归一层；仅在它存在且非空时随 allowlist 成员变化双向同步（启用→补精确条目，禁用/删除/改名/merge/规范化→同步移除或改写），**绝不创建、绝不清空**；通配条目不被自动增删，残留时给 warning。`config-status` 对「已启用但 policy 未覆盖」报 `model-policy-not-covered` warning。
 - **Provider 模型目录**：`models.providers`；`listModels` 合并两者。
 - **主模型**：`agents.defaults.model`，双形态（见下节）。
 

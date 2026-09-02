@@ -1,4 +1,5 @@
 import { normalizeModelRefForStorage, normalizeProviderId } from "./model-ref";
+import { normalizePolicyAllowRefs } from "./model-policy";
 import type { OpenClawConfig } from "./types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -90,7 +91,8 @@ function normalizePrimaryRefs(config: OpenClawConfig): boolean {
 export function normalizeConfigForStorage<T extends OpenClawConfig>(config: T): { config: T; changed: boolean } {
   const providerKeysChanged = normalizeProviderKeys(config);
   const allowlistKeysChanged = normalizeAllowlistKeys(config);
+  const policyAllowChanged = normalizePolicyAllowRefs(config);
   const primaryRefsChanged = normalizePrimaryRefs(config);
-  const changed = providerKeysChanged || allowlistKeysChanged || primaryRefsChanged;
+  const changed = providerKeysChanged || allowlistKeysChanged || policyAllowChanged || primaryRefsChanged;
   return { config, changed };
 }

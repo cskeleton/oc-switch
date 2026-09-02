@@ -1,4 +1,5 @@
 import { formatModelRef, normalizeModelRefForStorage, normalizeProviderId, parseModelRef } from "./model-ref";
+import { addPolicyAllow, removePolicyAllow } from "./model-policy";
 import { ensureDefaults, resolveProviderId, type OperationResult } from "./operation-common";
 import { readFallbackModelRefs, readPrimaryModelRef } from "./primary-model";
 import type { AllowlistEntry, OpenClawConfig } from "./types";
@@ -35,6 +36,7 @@ export function disableProvider(config: OpenClawConfig, providerId: string): Dis
     if (normalizeProviderId(parseModelRef(ref).providerId) === normalizeProviderId(resolvedProviderId)) {
       allowlistEntries[normalizeModelRefForStorage(ref)] = structuredClone(entry);
       delete config.agents!.defaults!.models![ref];
+      removePolicyAllow(config, ref);
     }
   }
 
@@ -61,7 +63,9 @@ export function restoreDisabledProvider(
       throw new Error(`Snapshot ref ${ref} does not belong to provider ${providerId}`);
     }
     const modelId = parseModelRef(ref).modelId;
-    config.agents!.defaults!.models![formatModelRef(normalizeProviderId(resolvedProviderId), modelId)] = structuredClone(entry);
+    const restoredRef = formatModelRef(normalizeProviderId(resolvedProviderId), modelId);
+    config.agents!.defaults!.models![restoredRef] = structuredClone(entry);
+    addPolicyAllow(config, restoredRef);
   }
 
   return { config, warnings: [] };

@@ -64,6 +64,11 @@ export interface OpenClawConfig {
     defaults?: {
       model?: OpenClawPrimaryModel;
       models?: Record<string, AllowlistEntry>;
+      /** OpenClaw 2026.8+ 覆盖 allowlist；非空时取代 models 成员作为可选性判据。读写一律走 model-policy.ts 归一层 */
+      modelPolicy?: {
+        allow?: string[];
+        [key: string]: unknown;
+      };
       [key: string]: unknown;
     };
     [key: string]: unknown;

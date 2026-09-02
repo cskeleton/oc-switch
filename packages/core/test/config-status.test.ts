@@ -189,6 +189,44 @@ describe("inspectConfigStatus", () => {
       expect(existsSync(paths.envPath)).toBe(true);
     }
   });
+
+  test("modelPolicy.allow 非空且未覆盖已启用模型时产生 model-policy-not-covered warning", () => {
+    const { paths } = workspace();
+    writeFileSync(paths.envPath, "TEST=1\n");
+    const config: OpenClawConfig = {
+      models: { providers: { cpa: { baseUrl: "https://api.test/v1", models: [{ id: "m1", name: "M1" }, { id: "m2", name: "M2" }] } } },
+      agents: {
+        defaults: {
+          models: { "cpa/m1": {}, "cpa/m2": {} },
+          modelPolicy: { allow: ["cpa/m1"] }
+        }
+      }
+    };
+    const report = inspect(paths, { config });
+    const issue = report.issues.find((i) => i.id === "health:model-policy-not-covered:modelPolicy.allow");
+    expect(issue?.severity).toBe("warning");
+    expect(issue?.detail).toContain("cpa/m2");
+    expect(issue?.detail).not.toContain("cpa/m1,");
+  });
+
+  test("modelPolicy.allow 缺省、为空或通配已覆盖时不产生 issue", () => {
+    const { paths } = workspace();
+    writeFileSync(paths.envPath, "TEST=1\n");
+    const base: OpenClawConfig = {
+      models: { providers: { cpa: { baseUrl: "https://api.test/v1", models: [{ id: "m1", name: "M1" }] } } },
+      agents: { defaults: { models: { "cpa/m1": {} } } }
+    };
+    const noPolicy = inspect(paths, { config: structuredClone(base) });
+    expect(noPolicy.issues.some((i) => i.id.includes("model-policy"))).toBe(false);
+
+    const emptyAllow = structuredClone(base);
+    emptyAllow.agents!.defaults!.modelPolicy = { allow: [] };
+    expect(inspect(paths, { config: emptyAllow }).issues.some((i) => i.id.includes("model-policy"))).toBe(false);
+
+    const wildcard = structuredClone(base);
+    wildcard.agents!.defaults!.modelPolicy = { allow: ["cpa/*"] };
+    expect(inspect(paths, { config: wildcard }).issues.some((i) => i.id.includes("model-policy"))).toBe(false);
+  });
 });
 
 describe("OpenClaw compatibility issues", () => {
