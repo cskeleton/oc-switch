@@ -36,7 +36,8 @@ const API_OPTIONS: Array<{ value: ApiType; label: string }> = [
   { value: "google-generative-ai", label: "google-generative-ai" }
 ];
 
-const INPUT_MODE_OPTIONS = ["text", "image", "audio", "video", "pdf"] as const;
+// OpenClaw 仅支持 text / image / audio / video 输入类型；Models.dev 词表中的 pdf 等其余模态一律过滤
+const INPUT_MODE_OPTIONS = ["text", "image", "audio", "video"] as const;
 type InputMode = (typeof INPUT_MODE_OPTIONS)[number];
 
 const K = 1024;

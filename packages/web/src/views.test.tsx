@@ -2945,6 +2945,45 @@ describe("ModelDialog 参考参数建议", () => {
     expect(saved[0]!.input).toEqual(["text", "image"]);
   });
 
+  test("pdf 不属于 OpenClaw 支持的输入类型：不渲染 pdf 选项且建议中的 pdf 被过滤", async () => {
+    const saved: ProviderModelInput[] = [];
+    const { getByLabelText, findByTestId, getByText, queryByRole } = renderModelDialog({
+      onSave: async (_providerId, model) => {
+        saved.push(model);
+      },
+      onLookupMetadata: async () =>
+        singleSuggestionResponse({
+          suggestions: [
+            {
+              matchKind: "model-key-exact",
+              confidence: "high",
+              model: {
+                catalogKey: "openai/gpt-5.2",
+                providerId: "openai",
+                modelId: "gpt-5.2",
+                name: "GPT-5.2",
+                input: ["text", "pdf"],
+                sourceKind: "models-dev-model",
+                sourceUrl: "https://models.dev/models.json"
+              }
+            }
+          ]
+        })
+    });
+
+    // 用布尔断言避免失败时序列化整个按钮元素
+    expect(queryByRole("button", { name: "pdf" }) === null).toBe(true);
+
+    await queryAndMatch({ getByLabelText });
+    await findByTestId("model-metadata-suggestion-card");
+    await userEvent.click(getByLabelText("应用建议的输入类型 text,pdf"));
+    expect(getByLabelText("应用建议的输入类型 text,pdf")).toBeTruthy();
+
+    await userEvent.click(getByText("保存模型"));
+    expect(saved).toHaveLength(1);
+    expect(saved[0]!.input).toEqual(["text"]);
+  });
+
   test("建议输入类型与当前勾选仅顺序不同视为一致，不显示替换提示", async () => {
     const suggestionWithInput = (input: string[]) => async () =>
       singleSuggestionResponse({

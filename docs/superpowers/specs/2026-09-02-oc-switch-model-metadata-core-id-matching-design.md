@@ -133,7 +133,7 @@ coreN = core(N-1) 剥掉最后一个 "-segment"     // 深度 N
   - 建议 input 与当前勾选不一致时显示差异提示（与数值字段同款）。
 - `ModelDialog`：
   - 新增 `onApplyInputModes` 回调：写入 `inputModes` 并置 `inputModesTouched = true`，确保随保存写入。
-  - `INPUT_MODE_OPTIONS` 扩为 `text` / `image` / `audio` / `video` / `pdf`（对齐 Models.dev modalities 词汇）；应用时对建议值按该集合过滤并保持选项顺序。
+  - `INPUT_MODE_OPTIONS` 为 `text` / `image` / `audio` / `video`（对齐 OpenClaw 支持的输入类型；Models.dev 词表中的 `pdf` 等其余模态不入选项）；应用时对建议值按该集合过滤并保持选项顺序。
 
 ## 8. 错误与边界
 
