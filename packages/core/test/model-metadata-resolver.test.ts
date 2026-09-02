@@ -81,13 +81,19 @@ describe("resolveModelMetadata", () => {
     expect(top?.model.contextWindow).toBe(400000);
   });
 
-  test("arbitrary Provider + bare gpt-* 不因字符串相似度自动映射", async () => {
+  test("ISO 日期后缀经核心 ID 回退命中（已知类别，medium）；非日期近似仍不命中", async () => {
     const catalog = await loadFixtureCatalog();
-    // 带日期后缀的近似 ID 不应命中 gpt-5.2
-    expect(
-      resolveModelMetadata({ providerId: "custom-proxy", modelId: "gpt-5.2-2026-01-01" }, catalog)
-    ).toEqual([]);
-    // 接近但不相等
+    const suggestions = resolveModelMetadata(
+      { providerId: "custom-proxy", modelId: "gpt-5.2-2026-01-01" },
+      catalog
+    );
+    expect(suggestions.length).toBeGreaterThan(0);
+    expect(suggestions.every((s) => s.matchKind === "core-model-id")).toBe(true);
+    expect(suggestions.every((s) => s.confidence === "medium")).toBe(true);
+    // provider 目录来源排在模型事实之前
+    expect(suggestions[0]!.model.sourceKind).toBe("models-dev-provider");
+    expect(suggestions[0]!.model.catalogKey).toBe("openai/gpt-5.2");
+    // 接近但剥不出已知核心的仍不命中
     expect(
       resolveModelMetadata({ providerId: "custom-proxy", modelId: "gpt-5.20" }, catalog)
     ).toEqual([]);
@@ -105,10 +111,19 @@ describe("resolveModelMetadata", () => {
     expect(suggestions[0]!.model.catalogKey).toBe("unique-vendor/unique-model");
   });
 
-  test("歧义 bare ID（多个同名候选）不产生 unique-model-id 匹配", async () => {
+  test("歧义 bare ID 经核心 ID 回退返回多候选（medium，封顶 5，稳定排序），无 unique-model-id", async () => {
     const catalog = await loadFixtureCatalog();
-    // fixture 中 shared 有 6 个厂商候选：不得返回列表靠前者，避免误用错误厂商参数
-    expect(resolveModelMetadata({ providerId: "custom-proxy", modelId: "shared" }, catalog)).toEqual([]);
+    const suggestions = resolveModelMetadata({ providerId: "custom-proxy", modelId: "shared" }, catalog);
+    expect(suggestions).toHaveLength(5);
+    expect(suggestions.every((s) => s.matchKind === "core-model-id")).toBe(true);
+    expect(suggestions.every((s) => s.confidence === "medium")).toBe(true);
+    expect(suggestions.map((s) => s.model.catalogKey)).toEqual([
+      "aaa/shared",
+      "bbb/shared",
+      "ccc/shared",
+      "ddd/shared",
+      "eee/shared"
+    ]);
   });
 
   test("同一查询候选超过 5 条时封顶，排序稳定", () => {
@@ -137,12 +152,17 @@ describe("resolveModelMetadata", () => {
     ]);
   });
 
-  test("latest、日期后缀、大小写近似不得被改写猜测", async () => {
+  test("latest 不命中；大小写差异经核心 ID 回退命中（medium），精确层级保持大小写敏感", async () => {
     const catalog = await loadFixtureCatalog();
     expect(resolveModelMetadata({ providerId: "custom-proxy", modelId: "latest" }, catalog)).toEqual([]);
-    // 大小写近似不命中（模型 ID 大小写敏感）
-    expect(resolveModelMetadata({ providerId: "custom-proxy", modelId: "GPT-5.2" }, catalog)).toEqual([]);
-    expect(resolveModelMetadata({ providerId: "openai", modelId: "GPT-5.2" }, catalog)).toEqual([]);
+    const folded = resolveModelMetadata({ providerId: "custom-proxy", modelId: "GPT-5.2" }, catalog);
+    expect(folded.length).toBeGreaterThan(0);
+    expect(folded.every((s) => s.matchKind === "core-model-id")).toBe(true);
+    expect(folded.every((s) => s.confidence === "medium")).toBe(true);
+    // 精确层级不命中（模型 ID 大小写敏感），命中完全来自回退层
+    const fromOpenAi = resolveModelMetadata({ providerId: "openai", modelId: "GPT-5.2" }, catalog);
+    expect(fromOpenAi.find((s) => s.matchKind === "provider-exact")).toBeUndefined();
+    expect(fromOpenAi.every((s) => s.matchKind === "core-model-id")).toBe(true);
   });
 
   test("baseUrl 仅在声明 api 且标准化后完全匹配时产生 endpoint-exact", async () => {
@@ -208,5 +228,125 @@ describe("resolveModelMetadata", () => {
     expect(kinds.filter((k) => k === "unique-model-id")).toHaveLength(0);
     // provider-exact 排最前
     expect(suggestions[0]!.matchKind).toBe("provider-exact");
+  });
+
+  test("前缀与大小写差异经核心 ID 回退命中（深度 0，medium）", async () => {
+    const catalog = await loadFixtureCatalog();
+    const suggestions = resolveModelMetadata(
+      { providerId: "custom-proxy", modelId: "zai-org/GLM-5" },
+      catalog
+    );
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0]!.matchKind).toBe("core-model-id");
+    expect(suggestions[0]!.confidence).toBe("medium");
+    expect(suggestions[0]!.model.catalogKey).toBe("zhipuai/glm-5");
+  });
+
+  test("思考等级后缀剥离命中（medium）", async () => {
+    const catalog = await loadFixtureCatalog();
+    const suggestions = resolveModelMetadata(
+      { providerId: "custom-proxy", modelId: "openai/gpt-5.2-high" },
+      catalog
+    );
+    // 3 个候选：openai provider 目录（raw）+ openai/gpt-5.2 模型事实（raw）+ openrouter 目录 openai/gpt-5.2（core 命中，排最后）
+    expect(suggestions.length).toBe(3);
+    expect(suggestions.every((s) => s.matchKind === "core-model-id" && s.confidence === "medium")).toBe(true);
+    expect(suggestions[0]!.model.sourceKind).toBe("models-dev-provider");
+    expect(suggestions[0]!.model.catalogKey).toBe("openai/gpt-5.2");
+    expect(suggestions[2]!.model.catalogKey).toBe("openrouter/openai/gpt-5.2");
+  });
+
+  test("目录侧带检查点日期时本地无日期 id 命中（medium）", () => {
+    const modelFacts = [
+      {
+        catalogKey: "anthropic/claude-sonnet-4-5-20250929",
+        providerId: "anthropic",
+        modelId: "claude-sonnet-4-5-20250929",
+        contextWindow: 200000,
+        sourceKind: "models-dev-model" as const,
+        sourceUrl: MODELS_DEV_MODELS_URL
+      }
+    ];
+    const suggestions = resolveModelMetadata(
+      { providerId: "custom-proxy", modelId: "claude-sonnet-4-5" },
+      { modelFacts, providerCatalog: [] }
+    );
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0]!.matchKind).toBe("core-model-id");
+    expect(suggestions[0]!.confidence).toBe("medium");
+  });
+
+  test("剥离段含未归类段时置信度 low", () => {
+    const modelFacts = [
+      {
+        catalogKey: "moonshotai/kimi-k2",
+        providerId: "moonshotai",
+        modelId: "kimi-k2",
+        contextWindow: 128000,
+        sourceKind: "models-dev-model" as const,
+        sourceUrl: MODELS_DEV_MODELS_URL
+      }
+    ];
+    const suggestions = resolveModelMetadata(
+      { providerId: "custom-proxy", modelId: "kimi-k2-0711-preview" },
+      { modelFacts, providerCatalog: [] }
+    );
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0]!.matchKind).toBe("core-model-id");
+    expect(suggestions[0]!.confidence).toBe("low");
+  });
+
+  test("同一深度内 raw 命中排在 core 命中之前", () => {
+    const modelFacts = [
+      {
+        catalogKey: "foo/gpt-4o",
+        providerId: "foo",
+        modelId: "gpt-4o",
+        sourceKind: "models-dev-model" as const,
+        sourceUrl: MODELS_DEV_MODELS_URL
+      },
+      {
+        catalogKey: "openai/gpt-4o-2024-08-06",
+        providerId: "openai",
+        modelId: "gpt-4o-2024-08-06",
+        sourceKind: "models-dev-model" as const,
+        sourceUrl: MODELS_DEV_MODELS_URL
+      }
+    ];
+    const suggestions = resolveModelMetadata(
+      { providerId: "custom-proxy", modelId: "gpt-4o-high" },
+      { modelFacts, providerCatalog: [] }
+    );
+    expect(suggestions.map((s) => s.model.catalogKey)).toEqual(["foo/gpt-4o", "openai/gpt-4o-2024-08-06"]);
+  });
+
+  test("最小剥离深度胜出，更深层候选不返回", () => {
+    const modelFacts = [
+      {
+        catalogKey: "x/a-b",
+        providerId: "x",
+        modelId: "a-b",
+        sourceKind: "models-dev-model" as const,
+        sourceUrl: MODELS_DEV_MODELS_URL
+      },
+      {
+        catalogKey: "y/a",
+        providerId: "y",
+        modelId: "a",
+        sourceKind: "models-dev-model" as const,
+        sourceUrl: MODELS_DEV_MODELS_URL
+      }
+    ];
+    const suggestions = resolveModelMetadata(
+      { providerId: "custom-proxy", modelId: "a-b-c" },
+      { modelFacts, providerCatalog: [] }
+    );
+    expect(suggestions.map((s) => s.model.catalogKey)).toEqual(["x/a-b"]);
+  });
+
+  test("精确层级已有候选时不产生 core-model-id", async () => {
+    const catalog = await loadFixtureCatalog();
+    const suggestions = resolveModelMetadata({ providerId: "openai", modelId: "gpt-5.2" }, catalog);
+    expect(suggestions.find((s) => s.matchKind === "core-model-id")).toBeUndefined();
   });
 });

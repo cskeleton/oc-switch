@@ -408,7 +408,8 @@ export type ModelMetadataMatchKind =
   | "endpoint-exact"
   | "model-key-exact"
   | "provider-model-exact"
-  | "unique-model-id";
+  | "unique-model-id"
+  | "core-model-id";
 
 export type ModelMetadataConfidence = "high" | "medium" | "low";
 
@@ -425,6 +426,7 @@ export interface ModelMetadataSuggestionModel {
   maxTokens?: number;
   reasoning?: boolean;
   input?: string[];
+  output?: string[];
   updatedAt?: string;
   sourceKind: ModelMetadataSourceKind;
   sourceUrl: string;

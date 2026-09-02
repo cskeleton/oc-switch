@@ -2657,10 +2657,40 @@ describe("ModelDialog 参考参数建议", () => {
     expect(await findByText(/请先选择一个候选参考模型/)).toBeTruthy();
 
     await userEvent.click(getByLabelText("选择参考模型 zhipu/gpt-5.2"));
-    expect(await findByText(/低置信匹配/)).toBeTruthy();
+    expect(await findByText("低置信匹配：仅根据模型 ID 唯一性推断，请人工核对后再应用。")).toBeTruthy();
 
     await userEvent.click(getByLabelText("应用建议的原生上下文 200000"));
     expect((getByLabelText("原生上下文窗口") as HTMLInputElement).value).toBe("200000");
+  });
+
+  test("core-model-id 的 low 置信候选显示核心 ID 回退专属文案", async () => {
+    const { getByLabelText, findByText, queryByText } = renderModelDialog({
+      onLookupMetadata: async () =>
+        singleSuggestionResponse({
+          suggestions: [
+            {
+              matchKind: "core-model-id",
+              confidence: "low",
+              model: {
+                catalogKey: "openai/gpt-5",
+                providerId: "openai",
+                modelId: "gpt-5",
+                name: "GPT-5",
+                contextWindow: 400000,
+                maxTokens: 128000,
+                sourceKind: "models-dev-model",
+                sourceUrl: "https://models.dev/models.json"
+              }
+            }
+          ]
+        })
+    });
+    await queryAndMatch({ getByLabelText });
+
+    expect(
+      await findByText("低置信匹配：核心 ID 回退剥离了未归类后缀（可能不是同一模型），请人工核对后再应用。")
+    ).toBeTruthy();
+    expect(queryByText(/仅根据模型 ID 唯一性推断/)).toBeNull();
   });
 
   test("not-found/error/stale 文案可被 screen reader 读到", async () => {
@@ -2837,5 +2867,196 @@ describe("ModelDialog 参考参数建议", () => {
     await userEvent.click(await findByLabelText("查询参考参数"));
 
     await waitFor(() => expect(getModelMetadataSuggestions).toHaveBeenCalledWith("nvidia", "gpt-5.2"));
+  });
+
+  test("卡片展示输入/输出类型；输出类型无应用按钮", async () => {
+    const { getByLabelText, findByTestId, findByText, queryByLabelText } = renderModelDialog({
+      onLookupMetadata: async () =>
+        singleSuggestionResponse({
+          suggestions: [
+            {
+              matchKind: "core-model-id",
+              confidence: "medium",
+              model: {
+                catalogKey: "openai/gpt-5.2",
+                providerId: "openai",
+                modelId: "gpt-5.2",
+                name: "GPT-5.2",
+                contextWindow: 400000,
+                maxTokens: 128000,
+                input: ["text", "image"],
+                output: ["text"],
+                sourceKind: "models-dev-model",
+                sourceUrl: "https://models.dev/models.json"
+              }
+            }
+          ]
+        })
+    });
+    await queryAndMatch({ getByLabelText });
+    await findByTestId("model-metadata-suggestion-card");
+    expect(await findByText("输入类型")).toBeTruthy();
+    expect(await findByText("text, image")).toBeTruthy();
+    expect(await findByText("输出类型")).toBeTruthy();
+    // 输出类型仅展示：不存在任何 output 应用按钮
+    expect(queryByLabelText(/应用建议的输出类型/)).toBeNull();
+    // 核心 ID 匹配标注
+    expect(await findByText(/核心 ID 匹配/)).toBeTruthy();
+  });
+
+  test("应用输入类型写入勾选并随保存提交；未知模态被过滤", async () => {
+    const saved: ProviderModelInput[] = [];
+    const { getByLabelText, findByTestId, getByText, getByRole } = renderModelDialog({
+      onSave: async (_providerId, model) => {
+        saved.push(model);
+      },
+      onLookupMetadata: async () =>
+        singleSuggestionResponse({
+          suggestions: [
+            {
+              matchKind: "model-key-exact",
+              confidence: "high",
+              model: {
+                catalogKey: "openai/gpt-5.2",
+                providerId: "openai",
+                modelId: "gpt-5.2",
+                name: "GPT-5.2",
+                contextWindow: 400000,
+                maxTokens: 128000,
+                input: ["text", "image", "hologram"],
+                output: ["text"],
+                sourceKind: "models-dev-model",
+                sourceUrl: "https://models.dev/models.json"
+              }
+            }
+          ]
+        })
+    });
+    await queryAndMatch({ getByLabelText });
+    await findByTestId("model-metadata-suggestion-card");
+
+    await userEvent.click(getByLabelText("应用建议的输入类型 text,image,hologram"));
+    expect(getByRole("button", { name: "text" }).getAttribute("aria-pressed")).toBe("true");
+    expect(getByRole("button", { name: "image" }).getAttribute("aria-pressed")).toBe("true");
+    expect(getByRole("button", { name: "video" }).getAttribute("aria-pressed")).toBe("false");
+
+    await userEvent.click(getByText("保存模型"));
+    expect(saved).toHaveLength(1);
+    expect(saved[0]!.input).toEqual(["text", "image"]);
+  });
+
+  test("建议输入类型与当前勾选仅顺序不同视为一致，不显示替换提示", async () => {
+    const suggestionWithInput = (input: string[]) => async () =>
+      singleSuggestionResponse({
+        suggestions: [
+          {
+            matchKind: "model-key-exact",
+            confidence: "high",
+            model: {
+              catalogKey: "openai/gpt-5.2",
+              providerId: "openai",
+              modelId: "gpt-5.2",
+              name: "GPT-5.2",
+              input,
+              sourceKind: "models-dev-model",
+              sourceUrl: "https://models.dev/models.json"
+            }
+          }
+        ]
+      });
+
+    // 勾选 text+image（UI 归一化为选项顺序），建议 ["image","text"] 集合相同 → 无替换提示
+    const same = renderModelDialog({ onLookupMetadata: suggestionWithInput(["image", "text"]) });
+    await userEvent.click(same.getByRole("button", { name: "text" }));
+    await userEvent.click(same.getByRole("button", { name: "image" }));
+    await queryAndMatch(same);
+    await same.findByTestId("model-metadata-suggestion-card");
+    expect(same.queryByText(/输入类型当前为/)).toBeNull();
+    same.unmount();
+
+    // 对照：集合不同（多出 audio）→ 显示替换提示
+    const different = renderModelDialog({ onLookupMetadata: suggestionWithInput(["image", "text", "audio"]) });
+    await userEvent.click(different.getByRole("button", { name: "text" }));
+    await userEvent.click(different.getByRole("button", { name: "image" }));
+    await queryAndMatch(different);
+    expect(
+      await different.findByText(/输入类型当前为 text, image，应用后将替换为 image, text, audio/)
+    ).toBeTruthy();
+  });
+
+  test("建议输入类型全为未知模态时应用为无操作，保存不携带 input", async () => {
+    const saved: ProviderModelInput[] = [];
+    const { findByLabelText, getByLabelText, findByTestId, getByText, getByRole } = renderModelDialog({
+      mode: "edit",
+      model: modelSummary({ ref: "nvidia/custom-model", input: ["text"] }),
+      onSave: async (_providerId, model) => {
+        saved.push(model);
+      },
+      onLookupMetadata: async () =>
+        singleSuggestionResponse({
+          suggestions: [
+            {
+              matchKind: "model-key-exact",
+              confidence: "high",
+              model: {
+                catalogKey: "openai/gpt-5.2",
+                providerId: "openai",
+                modelId: "gpt-5.2",
+                name: "GPT-5.2",
+                input: ["hologram"],
+                sourceKind: "models-dev-model",
+                sourceUrl: "https://models.dev/models.json"
+              }
+            }
+          ]
+        })
+    });
+    // edit 模式 Provider 与 Model ID 已预填，直接查询
+    await userEvent.click(await findByLabelText("查询参考参数"));
+    await findByTestId("model-metadata-suggestion-card");
+
+    await userEvent.click(getByLabelText("应用建议的输入类型 hologram"));
+    // 无操作：既有 text 勾选不变
+    expect(getByRole("button", { name: "text" }).getAttribute("aria-pressed")).toBe("true");
+    expect(getByRole("button", { name: "image" }).getAttribute("aria-pressed")).toBe("false");
+
+    await userEvent.click(getByText("保存模型"));
+    expect(saved).toHaveLength(1);
+    // 未标记 touched：保存不携带 input，编辑场景既有 input 不被清空
+    expect(saved[0]!.input).toBeUndefined();
+  });
+
+  test("全部应用包含输入类型且不修改运行上下文预算", async () => {
+    const { getByLabelText, findByTestId, getByRole } = renderModelDialog({
+      onLookupMetadata: async () =>
+        singleSuggestionResponse({
+          suggestions: [
+            {
+              matchKind: "model-key-exact",
+              confidence: "high",
+              model: {
+                catalogKey: "openai/gpt-5.2",
+                providerId: "openai",
+                modelId: "gpt-5.2",
+                name: "GPT-5.2",
+                contextWindow: 400000,
+                maxTokens: 128000,
+                input: ["image"],
+                sourceKind: "models-dev-model",
+                sourceUrl: "https://models.dev/models.json"
+              }
+            }
+          ]
+        })
+    });
+    await queryAndMatch({ getByLabelText });
+    await findByTestId("model-metadata-suggestion-card");
+
+    await userEvent.type(getByLabelText("运行上下文预算"), "50000");
+    await userEvent.click(getByLabelText("全部应用建议值"));
+    expect((getByLabelText("原生上下文窗口") as HTMLInputElement).value).toBe("400000");
+    expect((getByLabelText("最大输出长度") as HTMLInputElement).value).toBe("128000");
+    expect((getByLabelText("运行上下文预算") as HTMLInputElement).value).toBe("50000");
+    expect(getByRole("button", { name: "image" }).getAttribute("aria-pressed")).toBe("true");
   });
 });

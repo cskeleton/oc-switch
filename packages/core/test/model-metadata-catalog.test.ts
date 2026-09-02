@@ -99,6 +99,7 @@ describe("loadModelMetadataCatalog", () => {
       sourceKind: "models-dev-model"
     });
     expect(gpt?.input).toEqual(["text", "image"]);
+    expect(gpt?.output).toEqual(["text"]);
 
     // api.json 归一化（provider-specific，含 inputLimit）
     const openRouterGpt = result.providerCatalog.find((entry) => entry.catalogKey === "openrouter/openai/gpt-5.2");
@@ -121,7 +122,7 @@ describe("loadModelMetadataCatalog", () => {
 
     // 原子落盘
     const cache = readCacheFile(dir);
-    expect(cache?.version).toBe(1);
+    expect(cache?.version).toBe(2);
     expect(cache?.modelFacts?.entries.length).toBeGreaterThan(0);
     expect(cache?.providerCatalog?.entries.length).toBeGreaterThan(0);
     expect(cache?.modelFacts?.etag).toBe("etag-models");
@@ -456,5 +457,34 @@ describe("loadModelMetadataCatalog", () => {
     expect(second.calls).toHaveLength(2);
     expect(second.calls.find((c) => c.url === MODELS_DEV_MODELS_URL)?.headers["If-None-Match"]).toBe("etag-m");
     expect(result.sources.every((source) => source.stale === false)).toBe(true);
+  });
+
+  test("version 1 旧缓存废弃并重新获取", async () => {
+    const dir = stateDir();
+    // 写入 v1 旧缓存（带明显标记条目）
+    writeFileSync(
+      join(dir, MODEL_METADATA_CACHE_FILENAME),
+      JSON.stringify({
+        version: 1,
+        modelFacts: {
+          fetchedAt: new Date(BASE_NOW).toISOString(),
+          checkedAt: new Date(BASE_NOW).toISOString(),
+          entries: [
+            {
+              catalogKey: "legacy/old-model",
+              modelId: "old-model",
+              sourceKind: "models-dev-model",
+              sourceUrl: MODELS_DEV_MODELS_URL
+            }
+          ]
+        }
+      })
+    );
+    const { fetchImpl } = successFetch();
+    const result = await loadModelMetadataCatalog({ stateDir: dir, fetchImpl, now: () => BASE_NOW });
+    // v1 缓存被废弃：结果来自重新获取，不含旧缓存标记条目
+    expect(result.modelFacts.find((entry) => entry.catalogKey === "legacy/old-model")).toBeUndefined();
+    expect(result.modelFacts.find((entry) => entry.catalogKey === "openai/gpt-5.2")).toBeTruthy();
+    expect(readCacheFile(dir)?.version).toBe(2);
   });
 });

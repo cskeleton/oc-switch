@@ -15,7 +15,7 @@ export const MODELS_DEV_MODELS_URL = "https://models.dev/models.json";
 export const MODELS_DEV_API_URL = "https://models.dev/api.json";
 
 /** 缓存 schema 版本；未知版本视为不可用并重新获取 */
-export const MODEL_METADATA_CACHE_VERSION = 1;
+export const MODEL_METADATA_CACHE_VERSION = 2;
 export const MODEL_METADATA_CACHE_FILENAME = "model-metadata-cache.json";
 
 /** Fresh TTL：24 小时内复用缓存不联网 */
@@ -40,6 +40,7 @@ export interface NormalizedModelMetadata {
   maxTokens?: number;
   reasoning?: boolean;
   input?: string[];
+  output?: string[];
   updatedAt?: string;
   /** 仅 provider-specific 条目：Models.dev Provider 声明的 api base URL（用于 endpoint-exact 匹配） */
   providerApi?: string;
@@ -55,7 +56,7 @@ export interface ModelMetadataCacheSource {
 }
 
 export interface ModelMetadataCache {
-  version: 1;
+  version: 2;
   modelFacts?: ModelMetadataCacheSource;
   providerCatalog?: ModelMetadataCacheSource;
 }
@@ -147,6 +148,10 @@ function normalizeModelEntry(
   if (Array.isArray(modalities.input)) {
     const input = modalities.input.filter((mode): mode is string => typeof mode === "string");
     if (input.length) entry.input = input;
+  }
+  if (Array.isArray(modalities.output)) {
+    const output = modalities.output.filter((mode): mode is string => typeof mode === "string");
+    if (output.length) entry.output = output;
   }
   return entry;
 }
@@ -249,6 +254,10 @@ function rebuildEntry(raw: unknown): NormalizedModelMetadata | undefined {
     const input = raw.input.filter((mode): mode is string => typeof mode === "string");
     if (input.length) entry.input = input;
   }
+  if (Array.isArray(raw.output)) {
+    const output = raw.output.filter((mode): mode is string => typeof mode === "string");
+    if (output.length) entry.output = output;
+  }
   if (typeof raw.updatedAt === "string") entry.updatedAt = raw.updatedAt;
   if (typeof raw.providerApi === "string") entry.providerApi = raw.providerApi;
   return entry;
@@ -272,11 +281,13 @@ function readCache(stateDir: string): ModelMetadataCache {
   return readJsonState<ModelMetadataCache>({
     stateDir,
     filename: MODEL_METADATA_CACHE_FILENAME,
-    fallback: () => ({ version: 1 }),
+    fallback: () => ({ version: MODEL_METADATA_CACHE_VERSION }),
     invalidJson: "fallback",
     normalize(value) {
-      if (!isPlainObject(value) || value.version !== MODEL_METADATA_CACHE_VERSION) return { version: 1 };
-      const cache: ModelMetadataCache = { version: 1 };
+      if (!isPlainObject(value) || value.version !== MODEL_METADATA_CACHE_VERSION) {
+        return { version: MODEL_METADATA_CACHE_VERSION };
+      }
+      const cache: ModelMetadataCache = { version: MODEL_METADATA_CACHE_VERSION };
       const modelFacts = rebuildCacheSource(value.modelFacts);
       const providerCatalog = rebuildCacheSource(value.providerCatalog);
       if (modelFacts) cache.modelFacts = modelFacts;
@@ -379,7 +390,7 @@ export async function loadModelMetadataCatalog(options: LoadModelMetadataOptions
   const forceRefresh = options.forceRefresh ?? false;
 
   const cache = readCache(options.stateDir);
-  const nextCache: ModelMetadataCache = { version: 1 };
+  const nextCache: ModelMetadataCache = { version: MODEL_METADATA_CACHE_VERSION };
   if (cache.modelFacts) nextCache.modelFacts = cache.modelFacts;
   if (cache.providerCatalog) nextCache.providerCatalog = cache.providerCatalog;
 

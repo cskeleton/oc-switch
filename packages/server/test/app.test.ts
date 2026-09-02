@@ -2477,6 +2477,7 @@ describe("server model-metadata suggestions", () => {
       "maxTokens",
       "modelId",
       "name",
+      "output",
       "providerId",
       "reasoning",
       "sourceKind",
@@ -2495,6 +2496,26 @@ describe("server model-metadata suggestions", () => {
     // fixture 含 broken/* 非法 limit 条目，归一化 warning 允许存在但必须是纯字符串
     expect(Array.isArray(json.warnings)).toBe(true);
     expect((json.warnings as string[]).every((warning) => typeof warning === "string")).toBe(true);
+  });
+
+  test("建议响应透传 output modalities", async () => {
+    const ws = workspace();
+    const { fetchImpl } = metadataFetch(modelsDevSuccessSpecs());
+    const app = createTestApp(ws, fetchImpl);
+
+    const { response, json } = await jsonRequest(
+      app,
+      `${SUGGESTIONS_URL}?providerId=nvidia&modelId=${encodeURIComponent("openai/gpt-5.2")}`
+    );
+
+    expect(response.status).toBe(200);
+    const suggestions = json.suggestions as Array<{
+      model: { catalogKey: string; output?: string[] };
+    }>;
+    // fixture 中 openai/gpt-5.2 带 modalities.output: ["text"]，路由须原样透传
+    const hit = suggestions.find((suggestion) => suggestion.model.catalogKey === "openai/gpt-5.2");
+    expect(hit).toBeTruthy();
+    expect(hit?.model.output).toEqual(["text"]);
   });
 
   test("refresh=1 绕过 fresh TTL 但仍使用 ETag", async () => {

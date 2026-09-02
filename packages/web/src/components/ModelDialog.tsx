@@ -36,7 +36,7 @@ const API_OPTIONS: Array<{ value: ApiType; label: string }> = [
   { value: "google-generative-ai", label: "google-generative-ai" }
 ];
 
-const INPUT_MODE_OPTIONS = ["text", "image", "video"] as const;
+const INPUT_MODE_OPTIONS = ["text", "image", "audio", "video", "pdf"] as const;
 type InputMode = (typeof INPUT_MODE_OPTIONS)[number];
 
 const K = 1024;
@@ -300,6 +300,15 @@ export function ModelDialog({
     });
   }
 
+  /** 应用建议的输入类型：按已知选项过滤并保持选项顺序；过滤后为空视为无操作（避免误清编辑场景已有 input），否则标记 touched 以随保存写入 */
+  function applySuggestedInputModes(modes: string[]): void {
+    const wanted = new Set(modes);
+    const filtered = INPUT_MODE_OPTIONS.filter((mode) => wanted.has(mode));
+    if (filtered.length === 0) return;
+    setInputModesTouched(true);
+    setInputModes(filtered);
+  }
+
   return (
     <Dialog open={open} onOpenChange={(val) => { if (!val) onCancel(); }}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
@@ -376,6 +385,8 @@ export function ModelDialog({
                   : {})}
                 onApplyContextWindow={(value) => setContextWindow(String(value))}
                 onApplyMaxTokens={(value) => setMaxTokens(String(value))}
+                currentInputModes={inputModes}
+                onApplyInputModes={applySuggestedInputModes}
               />
             ) : null}
           </div>

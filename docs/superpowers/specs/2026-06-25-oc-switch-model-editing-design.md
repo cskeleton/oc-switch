@@ -376,8 +376,9 @@ Providers 页新增：
 3. `model-key-exact`：用户输入本身是完整模型 key（如 `openai/gpt-5.2`），精确命中 `models.json`。
 4. `provider-model-exact`：`${normalizedProviderId}/${rawModelId}` 精确命中 `models.json`。
 5. `unique-model-id`：raw Model ID 在模型事实表中只有一个候选；仅返回低置信候选，不自动应用。
+6. `core-model-id`：前 5 级全部落空后启用。本地 id 与目录条目经确定性核心 ID 归一化（剥最后一个 `/` 前的前缀、目录侧剥检查点日期尾段、本地侧渐进剥尾段）后匹配；剥离段全部属于已知类别（日期/思考等级/路由后缀枚举）为 medium，含未归类段为 low。详见 `2026-09-02-oc-switch-model-metadata-core-id-matching-design.md`。
 
-禁止：模糊字符串相似度、自动删日期后缀、自动把 `latest` 映射到某个版本、按名称猜厂商、从任意 baseUrl 域名关键词猜 Provider。
+禁止：模糊字符串相似度、自动把 `latest` 映射到某个版本、按名称猜厂商、从任意 baseUrl 域名关键词猜 Provider。日期/思考等级/路由后缀差异仅允许经 `2026-09-02-oc-switch-model-metadata-core-id-matching-design.md` §5 定义的确定性核心 ID 归一化回退（即上述第 6 级），不得任意删改 Model ID。
 
 Provider-specific 与 model-only 数值冲突时：
 

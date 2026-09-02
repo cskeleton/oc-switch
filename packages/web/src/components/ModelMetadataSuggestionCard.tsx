@@ -21,7 +21,9 @@ const MATCH_KIND_LABELS: Record<ModelMetadataMatchKind, string> = {
   "endpoint-exact": "Endpoint 精确匹配",
   "model-key-exact": "模型 Key 精确匹配",
   "provider-model-exact": "Provider/Model 组合精确匹配",
-  "unique-model-id": "唯一模型 ID 匹配"
+  "unique-model-id": "唯一模型 ID 匹配",
+  // 核心 ID 回退层级；长文案说明由提示段落承载（spec §7.2）
+  "core-model-id": "核心 ID 匹配（忽略前缀/后缀）"
 };
 
 const SOURCE_KIND_LABELS: Record<ModelMetadataSourceKind, string> = {
@@ -34,8 +36,10 @@ export interface ModelMetadataSuggestionCardProps {
   sources: ModelMetadataSourceStatus[];
   currentContextWindow?: number | undefined;
   currentMaxTokens?: number | undefined;
+  currentInputModes?: string[] | undefined;
   onApplyContextWindow: (value: number) => void;
   onApplyMaxTokens: (value: number) => void;
+  onApplyInputModes: (modes: string[]) => void;
 }
 
 function formatValue(value: number | undefined): string {
@@ -47,8 +51,10 @@ export function ModelMetadataSuggestionCard({
   sources,
   currentContextWindow,
   currentMaxTokens,
+  currentInputModes,
   onApplyContextWindow,
-  onApplyMaxTokens
+  onApplyMaxTokens,
+  onApplyInputModes
 }: ModelMetadataSuggestionCardProps) {
   const multiple = suggestions.length > 1;
   // 多候选时不预选：避免用户未注意就把字典序/优先级第一的候选应用掉
@@ -64,6 +70,7 @@ export function ModelMetadataSuggestionCard({
   function applyAll() {
     if (model?.contextWindow !== undefined) onApplyContextWindow(model.contextWindow);
     if (model?.maxTokens !== undefined) onApplyMaxTokens(model.maxTokens);
+    if (model?.input !== undefined) onApplyInputModes(model.input);
   }
 
   const contextDiffers =
@@ -72,6 +79,11 @@ export function ModelMetadataSuggestionCard({
     currentContextWindow !== model.contextWindow;
   const maxDiffers =
     model?.maxTokens !== undefined && currentMaxTokens !== undefined && currentMaxTokens !== model.maxTokens;
+  // 集合比较：输入类型是无序多选，顺序差异不算差异
+  const currentInputs = currentInputModes ?? [];
+  const inputDiffers =
+    model?.input !== undefined &&
+    (currentInputs.length !== model.input.length || model.input.some((mode) => !currentInputs.includes(mode)));
 
   return (
     <div
@@ -123,6 +135,16 @@ export function ModelMetadataSuggestionCard({
               <dd className="font-medium">{formatValue(model.maxTokens)}</dd>
             </div>
             <div>
+              <dt className="text-muted-foreground">输入类型</dt>
+              <dd className="font-medium">{model.input?.join(", ") ?? "—"}</dd>
+            </div>
+            <div>
+              <dt className="text-muted-foreground">输出类型</dt>
+              <dd className="font-medium">
+                {model.output !== undefined ? `${model.output.join(", ")}（仅供参考）` : "—"}
+              </dd>
+            </div>
+            <div>
               <dt className="text-muted-foreground">匹配方式</dt>
               <dd>{MATCH_KIND_LABELS[selected.matchKind]}</dd>
             </div>
@@ -143,7 +165,15 @@ export function ModelMetadataSuggestionCard({
 
           {selected.confidence === "low" ? (
             <p className="text-xs font-medium text-warning">
-              低置信匹配：仅根据模型 ID 唯一性推断，请人工核对后再应用。
+              {selected.matchKind === "core-model-id"
+                ? "低置信匹配：核心 ID 回退剥离了未归类后缀（可能不是同一模型），请人工核对后再应用。"
+                : "低置信匹配：仅根据模型 ID 唯一性推断，请人工核对后再应用。"}
+            </p>
+          ) : null}
+
+          {selected.matchKind === "core-model-id" ? (
+            <p className="text-xs text-muted-foreground">
+              该候选由核心 ID 回退层级命中：已忽略前缀与思考等级/路由/日期等后缀差异，请核对后再应用。
             </p>
           ) : null}
 
@@ -161,6 +191,11 @@ export function ModelMetadataSuggestionCard({
           {maxDiffers ? (
             <p className="text-xs text-muted-foreground">
               最大输出当前值 {currentMaxTokens}，应用后将替换为 {model.maxTokens}
+            </p>
+          ) : null}
+          {inputDiffers && model?.input !== undefined ? (
+            <p className="text-xs text-muted-foreground">
+              输入类型当前为 {(currentInputModes ?? []).join(", ") || "（未设置）"}，应用后将替换为 {model.input.join(", ")}
             </p>
           ) : null}
         </>
@@ -198,14 +233,29 @@ export function ModelMetadataSuggestionCard({
         <Button
           variant="outline"
           size="sm"
-          disabled={model === undefined || (model.contextWindow === undefined && model.maxTokens === undefined)}
+          disabled={model?.input === undefined}
+          onClick={() => {
+            if (model?.input !== undefined) onApplyInputModes(model.input);
+          }}
+          aria-label={
+            model?.input !== undefined ? `应用建议的输入类型 ${model.input.join(",")}` : "应用建议的输入类型"
+          }
+        >
+          应用输入类型{model?.input !== undefined ? ` ${model.input.join(", ")}` : ""}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={model === undefined || (model.contextWindow === undefined && model.maxTokens === undefined && model.input === undefined)}
           onClick={applyAll}
           aria-label="全部应用建议值"
         >
           全部应用
         </Button>
       </div>
-      <p className="text-xs text-muted-foreground">“全部应用”只写入原生上下文与最大输出，不会修改运行上下文预算。</p>
+      <p className="text-xs text-muted-foreground">
+        “全部应用”写入原生上下文、最大输出与输入类型；不修改运行上下文预算，输出类型仅供参考不会写入。
+      </p>
     </div>
   );
 }
