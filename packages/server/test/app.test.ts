@@ -327,6 +327,24 @@ describe("server read endpoints", () => {
     expect(models.find((m) => m.isPrimary)?.ref).toBe("minimax-portal/MiniMax-M3");
   });
 
+  test("disabled Provider 从 providers 与 status 的有效可选模型聚合中排除", async () => {
+    const ws = workspace();
+    upsertDisabledProviderState(ws.paths.stateDir, {
+      providerId: "nvidia",
+      openclawPath: ws.paths.openclawPath,
+      disabledAt: "2026-09-04T00:00:00.000Z",
+      allowlistEntries: {}
+    });
+    const app = createTestApp(ws);
+
+    const providers = await jsonRequest(app, "/api/providers");
+    const status = await jsonRequest(app, "/api/status");
+    const nvidia = (providers.json.providers as Array<{ id: string; disabled: boolean; enabledModelCount: number }>).find((provider) => provider.id === "nvidia");
+
+    expect(nvidia).toMatchObject({ disabled: true, enabledModelCount: 0 });
+    expect(status.json.effectiveModelCount).toBe(2);
+  });
+
   test("GET /api/presets lists builtin presets", async () => {
     const ws = workspace();
     const app = createTestApp(ws);

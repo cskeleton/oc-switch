@@ -12,12 +12,15 @@ import JSON5 from "json5";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { OpenClawConfig } from "@oc-switch/core";
-import { readConfig, readEnvContent, type AppRuntime } from "../context";
+import { readConfig, readDisabledProviderIds, readEnvContent, type AppRuntime } from "../context";
 import { jsonError } from "../errors";
 
 export function registerHealthRoutes(app: Hono, runtime: AppRuntime): void {
   app.get("/api/status", (c) => {
-    const adapter = createConfigAdapter(readConfig(runtime.currentPaths()));
+    const paths = runtime.currentPaths();
+    const adapter = createConfigAdapter(readConfig(paths), {
+      disabledProviderIds: readDisabledProviderIds(paths)
+    });
     const status = adapter.getStatus();
     return c.json({ ok: true, ...status });
   });

@@ -232,6 +232,25 @@ describe("ModelsView", () => {
     expect(toggle.title).toContain("先收窄 policy");
   });
 
+  for (const scenario of [
+    { selectionSource: "legacy" as const, badge: "传统元数据", toggleDisabled: false },
+    { selectionSource: "unrestricted" as const, badge: "无限制策略", toggleDisabled: false },
+    { selectionSource: "policy-exact" as const, badge: "精确策略", toggleDisabled: false },
+    { selectionSource: "policy-wildcard" as const, badge: "通配策略", toggleDisabled: true }
+  ]) {
+    test(`renders ${scenario.selectionSource} model selection state`, async () => {
+      const getProviders = mock(async () => ({ providers: [providerSummary({ id: "cpa", disabled: false })] }));
+      const getModels = mock(async () => ({
+        models: [modelSummary({ ref: "cpa/m2", enabled: true, selectionSource: scenario.selectionSource })]
+      }));
+
+      const { findByLabelText, findByText } = renderModelsView(mockClient({ getModels, getProviders }));
+
+      expect(await findByText(scenario.badge)).toBeTruthy();
+      expect((await findByLabelText("禁用 cpa/m2") as HTMLButtonElement).disabled).toBe(scenario.toggleDisabled);
+    });
+  }
+
   test("shows a wildcard blocking error without reporting a successful toggle", async () => {
     const patchModel = mock(async () => {
       throw new Error("Cannot disable cpa/m2 while agents.defaults.modelPolicy.allow contains cpa/*; narrow the policy first.");
@@ -1451,6 +1470,21 @@ describe("ProvidersView", () => {
 
     expect((await findByLabelText("关闭 Provider cpa") as HTMLButtonElement).disabled).toBe(false);
   });
+
+  for (const scenario of [
+    { disabled: false, enabledModelCount: 0, action: "关闭" },
+    { disabled: true, enabledModelCount: 2, action: "恢复" }
+  ]) {
+    test(`uses disabled=${scenario.disabled} rather than policy-effective model count for Provider controls`, async () => {
+      const getProviders = mock(async () => ({
+        providers: [providerSummary({ id: "cpa", containsPrimary: false, ...scenario })]
+      }));
+
+      const { findByLabelText } = renderProvidersView(mockClient({ getProviders }));
+
+      expect((await findByLabelText(`${scenario.action} Provider cpa`) as HTMLButtonElement).disabled).toBe(false);
+    });
+  }
 });
 
 describe("PresetsView", () => {

@@ -66,6 +66,26 @@ describe("createApiClient", () => {
     });
   });
 
+  test("keeps selectionSource from a real models response", async () => {
+    const client = createApiClient({
+      baseUrl: "http://localhost:7420",
+      token: "token",
+      fetchImpl: async () => new Response(JSON.stringify({
+        models: [{
+          ref: "cpa/m2",
+          providerId: "cpa",
+          modelId: "m2",
+          enabled: true,
+          selectionSource: "policy-wildcard",
+          isPrimary: false
+        }]
+      }), { status: 200 })
+    });
+
+    const { models } = await client.getModels();
+    expect(models[0]?.selectionSource).toBe("policy-wildcard");
+  });
+
   test("surfaces structured gateway restart failures from non-2xx responses", async () => {
     const client = createApiClient({
       baseUrl: "http://localhost:7420",

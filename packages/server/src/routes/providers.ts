@@ -36,8 +36,8 @@ import {
   assertProviderCanEnable,
   providerEnvVar as contextProviderEnvVar,
   readConfig,
+  readDisabledProviderIds,
   readEnvContent,
-  withDisabledStatus,
   type AppRuntime
 } from "../context";
 import { jsonError } from "../errors";
@@ -218,13 +218,15 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
   app.get("/api/providers", (c) => {
     const paths = runtime.currentPaths();
     const config = readConfig(paths);
-    const adapter = createConfigAdapter(config);
+    const adapter = createConfigAdapter(config, {
+      disabledProviderIds: readDisabledProviderIds(paths)
+    });
     const envInspection = inspectEnvFile({
       content: readEnvContent(paths) ?? "",
       providerRefs: listProviderEnvRefs(config),
       manifest: readManifest(paths.stateDir)
     });
-    const providers = withDisabledStatus(paths, adapter.listProviders()).map((provider) => {
+    const providers = adapter.listProviders().map((provider) => {
       const apiKeyEnv = providerEnvVar(config.models?.providers?.[provider.id]) ?? null;
       const summary = apiKeyEnv
         ? envInspection.variables.find((item) => item.envVar === apiKeyEnv)

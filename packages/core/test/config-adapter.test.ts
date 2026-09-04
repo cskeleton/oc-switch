@@ -230,6 +230,48 @@ describe("ConfigAdapter", () => {
       effectiveModelCount: 2
     });
   });
+
+  test("disabled Provider 从所有策略模式的有效可选聚合中排除", () => {
+    const scenarios: Array<{ name: string; config: OpenClawConfig; cpaSelectionSource: string }> = [
+      {
+        name: "legacy",
+        config: {
+          models: { providers: { cpa: { models: [{ id: "m1" }, { id: "m2" }] }, other: { models: [{ id: "m1" }] } } },
+          agents: { defaults: { models: { "cpa/m1": {}, "cpa/m2": {}, "other/m1": {} } } }
+        },
+        cpaSelectionSource: "legacy"
+      },
+      {
+        name: "unrestricted",
+        config: {
+          models: { providers: { cpa: { models: [{ id: "m1" }, { id: "m2" }] }, other: { models: [{ id: "m1" }] } } },
+          agents: { defaults: { modelPolicy: { allow: [] } } }
+        },
+        cpaSelectionSource: "unrestricted"
+      },
+      {
+        name: "restricted",
+        config: {
+          models: { providers: { cpa: { models: [{ id: "m1" }, { id: "m2" }] }, other: { models: [{ id: "m1" }] } } },
+          agents: { defaults: { modelPolicy: { allow: ["cpa/*", "other/m1"] } } }
+        },
+        cpaSelectionSource: "policy-wildcard"
+      }
+    ];
+
+    for (const scenario of scenarios) {
+      const adapter = createConfigAdapter(scenario.config, { disabledProviderIds: ["CPA"] });
+      expect(adapter.listProviders().find((provider) => provider.id === "cpa")).toMatchObject({
+        disabled: true,
+        enabledModelCount: 0
+      });
+      expect(adapter.getStatus().effectiveModelCount).toBe(1);
+      expect(adapter.listModels().find((model) => model.ref === "cpa/m2")).toMatchObject({
+        enabled: true,
+        selectionSource: scenario.cpaSelectionSource
+      });
+    }
+  });
 });
 
 describe("ConfigAdapter 对象形态主模型", () => {

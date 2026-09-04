@@ -3,11 +3,19 @@ import { getModelPolicyMode, getModelSelectionSource } from "./model-policy";
 import { readPrimaryModelRef } from "./primary-model";
 import type { ModelSummary, OpenClawConfig, ProviderSummary, StatusSummary } from "./types";
 
-export function createConfigAdapter(config: OpenClawConfig) {
+export interface ConfigAdapterOptions {
+  /** 由外层 provider-states 提供；adapter 只负责归一化后的可选模型聚合。 */
+  disabledProviderIds?: Iterable<string>;
+}
+
+export function createConfigAdapter(config: OpenClawConfig, options: ConfigAdapterOptions = {}) {
   const providers = config.models?.providers ?? {};
   const allowlist = config.agents?.defaults?.models ?? {};
   const primaryModel = readPrimaryModelRef(config);
   const modelPolicyMode = getModelPolicyMode(config);
+  const disabledProviderIds = new Set(
+    [...(options.disabledProviderIds ?? [])].map((providerId) => normalizeProviderId(providerId))
+  );
 
   const providerIdsByNormalized = new Map<string, string[]>();
   for (const providerId of Object.keys(providers)) {
@@ -41,28 +49,35 @@ export function createConfigAdapter(config: OpenClawConfig) {
     return getModelSelectionSource(config, ref);
   }
 
+  function listProviderSummaries(): ProviderSummary[] {
+    return Object.entries(providers).map(([id, provider]) => {
+      const refs = providerModelRefs(id);
+      const disabled = disabledProviderIds.has(normalizeProviderId(id));
+      return {
+        id,
+        api: provider.api,
+        baseUrl: provider.baseUrl,
+        modelCount: refs.length,
+        enabledModelCount: disabled
+          ? 0
+          : refs.filter((ref) => {
+              const { providerId, modelId } = parseModelRef(ref);
+              return selectionSourceFor(providerId, modelId) !== undefined;
+            }).length,
+        containsPrimary: primaryModel
+          ? (() => {
+              const { providerId } = parseModelRef(primaryModel);
+              return uniqueProviderId(id) ? normalizeProviderId(providerId) === normalizeProviderId(id) : providerId === id;
+            })()
+          : false,
+        disabled
+      };
+    });
+  }
+
   return {
     listProviders(): ProviderSummary[] {
-      return Object.entries(providers).map(([id, provider]) => {
-        const refs = providerModelRefs(id);
-        return {
-          id,
-          api: provider.api,
-          baseUrl: provider.baseUrl,
-          modelCount: refs.length,
-          enabledModelCount: refs.filter((ref) => {
-            const { providerId, modelId } = parseModelRef(ref);
-            return selectionSourceFor(providerId, modelId) !== undefined;
-          }).length,
-          containsPrimary: primaryModel
-            ? (() => {
-                const { providerId } = parseModelRef(primaryModel);
-                return uniqueProviderId(id) ? normalizeProviderId(providerId) === normalizeProviderId(id) : providerId === id;
-              })()
-            : false,
-          disabled: false
-        };
-      });
+      return listProviderSummaries();
     },
 
     listModels(): ModelSummary[] {
@@ -129,11 +144,7 @@ export function createConfigAdapter(config: OpenClawConfig) {
         providerModelCount: Object.values(providers).reduce((sum, provider) => sum + (provider.models?.length ?? 0), 0),
         allowlistModelCount: Object.keys(allowlist).length,
         modelPolicyMode,
-        effectiveModelCount: Object.entries(providers).reduce(
-          (sum, [providerId, provider]) =>
-            sum + (provider.models ?? []).filter((model) => selectionSourceFor(providerId, model.id) !== undefined).length,
-          0
-        )
+        effectiveModelCount: listProviderSummaries().reduce((sum, provider) => sum + provider.enabledModelCount, 0)
       };
     }
   };

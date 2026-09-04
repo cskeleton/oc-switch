@@ -3,13 +3,13 @@ import {
   discoverOpenClawRuntime,
   getActivePaths,
   isProviderDisabled,
+  readProviderStates,
   providerEnvVar as coreProviderEnvVar,
   resolveProviderId,
   type FetchImpl,
   type OcSwitchPaths,
   type OpenClawConfig,
   type PresetDirs,
-  type ProviderSummary,
   type RuntimeDiscoveryProvider
 } from "@oc-switch/core";
 import JSON5 from "json5";
@@ -86,9 +86,7 @@ export function assertProviderCanEnable(paths: OcSwitchPaths, providerId: string
   }
 }
 
-export function withDisabledStatus(paths: OcSwitchPaths, providers: ProviderSummary[]): ProviderSummary[] {
-  return providers.map((provider) => ({
-    ...provider,
-    disabled: isProviderDisabled(paths.stateDir, provider.id)
-  }));
+/** 统一读取供 adapter 聚合的 disabled Provider ID，避免 status/providers 各自计算。 */
+export function readDisabledProviderIds(paths: OcSwitchPaths): string[] {
+  return Object.keys(readProviderStates(paths.stateDir).disabledProviders);
 }
