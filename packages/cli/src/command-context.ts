@@ -3,6 +3,8 @@ import {
   discoverOpenClawRuntime,
   getActivePaths,
   isProviderDisabled,
+  MODELS_DEV_API_URL,
+  MODELS_DEV_MODELS_URL,
   providerEnvVar as coreProviderEnvVar,
   resolveProviderId,
   type FetchImpl,
@@ -32,6 +34,19 @@ function mockSyncFetch(): FetchImpl | undefined {
     new Response(JSON.stringify({ data: ids.map((id) => ({ id })) }), {
       headers: { "content-type": "application/json" }
     });
+}
+
+/** 测试缝：OC_SWITCH_MOCK_METADATA 指向 { models, api } JSON 文件时，models.dev 请求由本地文件应答 */
+function mockMetadataFetch(): FetchImpl | undefined {
+  const mockPath = process.env.OC_SWITCH_MOCK_METADATA;
+  if (!mockPath) return undefined;
+  const payload = JSON.parse(readFileSync(mockPath, "utf8")) as { models?: unknown; api?: unknown };
+  return async (input) => {
+    const url = String(input);
+    if (url === MODELS_DEV_MODELS_URL) return new Response(JSON.stringify(payload.models ?? {}), { headers: { "content-type": "application/json" } });
+    if (url === MODELS_DEV_API_URL) return new Response(JSON.stringify(payload.api ?? {}), { headers: { "content-type": "application/json" } });
+    throw new Error(`unexpected url: ${url}`);
+  };
 }
 
 function defaultEnvName(providerId: string): string {
@@ -65,6 +80,7 @@ export interface CommandContext {
   providerEnvVar: typeof providerEnvVar;
   presetDirs(): PresetDirs;
   mockSyncFetch: typeof mockSyncFetch;
+  mockMetadataFetch: typeof mockMetadataFetch;
   defaultEnvName: typeof defaultEnvName;
   parseModelIds: typeof parseModelIds;
   parseAliasMap: typeof parseAliasMap;
@@ -122,6 +138,7 @@ export function createCommandContext(
     providerEnvVar,
     presetDirs,
     mockSyncFetch,
+    mockMetadataFetch,
     defaultEnvName,
     parseModelIds,
     parseAliasMap

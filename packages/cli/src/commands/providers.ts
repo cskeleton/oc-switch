@@ -1,6 +1,7 @@
 import {
   addCustomProvider,
   addProviderFromPreset,
+  applyModelMetadataSyncPlan,
   batchAddProviderModels,
   batchRemoveProviderModels,
   createConfigAdapter,
@@ -11,16 +12,55 @@ import {
   loadPreset,
   isProviderDisabled,
   getDisabledProviderState,
+  planProviderModelMetadataSync,
+  readModelMetadataQueue,
+  recordModelMetadataSyncQueue,
   removeDisabledProviderState,
   removeProvider,
+  resolveModelMetadataQueue,
   restoreDisabledProvider,
   summarizeConfigDiff,
   upsertDisabledProviderState,
+  writeModelMetadataQueue,
   writeOpenClawTransaction
 } from "@oc-switch/core";
-import type { ApiType } from "@oc-switch/core";
+import type { ApiType, ModelMetadataQueueResolveAction, ModelMetadataQueueResolveResult } from "@oc-switch/core";
 import type { Command } from "commander";
 import type { CommandContext } from "../command-context";
+
+function printResolveResult(result: ModelMetadataQueueResolveResult): void {
+  for (const item of result.applied) console.log(`已回填 ${item.modelId}: ${Object.keys(item.filled).join(", ")}`);
+  if (result.dismissedCount > 0) console.log(`已忽略 ${result.dismissedCount} 项`);
+  for (const failure of result.failed) console.log(`失败: ${failure.providerId}/${failure.modelId}: ${failure.error}`);
+}
+
+/** 队列解决：有字段变更走写事务（自动备份），否则只更新队列文件 */
+async function resolveQueueActions(
+  context: CommandContext,
+  actions: ModelMetadataQueueResolveAction[]
+): Promise<void> {
+  const paths = context.activePaths();
+  const preview = resolveModelMetadataQueue(context.readConfig(), readModelMetadataQueue(paths.stateDir), actions);
+  if (!preview.configChanged) {
+    writeModelMetadataQueue(paths.stateDir, preview.queue);
+    printResolveResult(preview);
+    return;
+  }
+  let resolved = preview;
+  await writeOpenClawTransaction({
+    ...paths,
+    runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
+    reason: "resolve model metadata sync queue",
+    mutate(config) {
+      resolved = resolveModelMetadataQueue(config, readModelMetadataQueue(paths.stateDir), actions);
+      return resolved.config;
+    },
+    afterWrite() {
+      writeModelMetadataQueue(paths.stateDir, resolved.queue);
+    }
+  });
+  printResolveResult(resolved);
+}
 
 export function registerProviderCommands(program: Command, context: CommandContext): void {
   const providers = program.command("providers");
@@ -342,6 +382,82 @@ export function registerProviderCommands(program: Command, context: CommandConte
       console.log(
         `发现 ${result.remoteModels.length} 个远端模型，其中 ${result.alreadyAddedIds.length} 个已添加`
       );
+    });
+
+  provider.command("sync-metadata")
+    .argument("<name>")
+    .description("从 models.dev 批量回填本地模型缺失参数（只填空缺；歧义进确认队列）")
+    .option("--models <ids>", "逗号分隔的 raw model id，缺省整 provider")
+    .option("--refresh", "绕过 24h 缓存强制刷新 models.dev 目录", false)
+    .action(async (name: string, options: { models?: string; refresh?: boolean }) => {
+      const paths = context.activePaths();
+      const modelIds = options.models !== undefined ? context.parseModelIds(options.models) : undefined;
+      if (modelIds !== undefined && modelIds.length === 0) throw new Error("--models requires at least one model id");
+      const plan = await planProviderModelMetadataSync(
+        context.readConfig(),
+        { providerId: name, ...(modelIds !== undefined ? { modelIds } : {}) },
+        {
+          stateDir: paths.stateDir,
+          fetchImpl: context.mockMetadataFetch() ?? fetch,
+          ...(options.refresh ? { forceRefresh: true } : {})
+        }
+      );
+      let updatedCount = 0;
+      if (plan.applies.length > 0) {
+        await writeOpenClawTransaction({
+          ...paths,
+          runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
+          reason: `sync model metadata for provider ${name}`,
+          mutate(config) {
+            const applied = applyModelMetadataSyncPlan(config, plan);
+            updatedCount = applied.updated.length;
+            return applied.config;
+          },
+          afterWrite() {
+            recordModelMetadataSyncQueue(paths.stateDir, plan);
+          }
+        });
+      } else {
+        recordModelMetadataSyncQueue(paths.stateDir, plan);
+      }
+      console.log(`已回填 ${updatedCount} 个模型，待确认 ${plan.queued.length}，未匹配 ${plan.unmatched.length}，参数齐全跳过 ${plan.skipped.length}`);
+      for (const item of plan.queued) console.log(`  待确认: ${item.modelId}（${item.candidates.length} 个候选）`);
+      for (const id of plan.unmatched) console.log(`  未匹配: ${id}`);
+    });
+
+  const metadataQueue = provider.command("metadata-queue").description("模型参数同步确认队列");
+
+  metadataQueue.command("list")
+    .option("--provider <id>", "只看指定 provider")
+    .action((options: { provider?: string }) => {
+      const queue = readModelMetadataQueue(context.activePaths().stateDir);
+      const items = options.provider ? queue.items.filter((item) => item.providerId === options.provider) : queue.items;
+      if (items.length === 0) {
+        console.log("确认队列为空");
+        return;
+      }
+      for (const item of items) {
+        const flag = item.dismissed ? " [已忽略]" : "";
+        console.log(`${item.providerId}/${item.modelId}${flag}`);
+        for (const candidate of item.candidates) {
+          console.log(`  - ${candidate.catalogKey} (score ${candidate.score.toFixed(2)}, ${candidate.reason})`);
+        }
+      }
+    });
+
+  metadataQueue.command("accept")
+    .argument("<providerId>")
+    .argument("<modelId>")
+    .requiredOption("--catalog <catalogKey>", "选中的目录候选 catalogKey")
+    .action(async (providerId: string, modelId: string, options: { catalog: string }) => {
+      await resolveQueueActions(context, [{ providerId, modelId, action: "accept", catalogKey: options.catalog }]);
+    });
+
+  metadataQueue.command("dismiss")
+    .argument("<providerId>")
+    .argument("<modelId>")
+    .action(async (providerId: string, modelId: string) => {
+      await resolveQueueActions(context, [{ providerId, modelId, action: "dismiss" }]);
     });
 
   provider

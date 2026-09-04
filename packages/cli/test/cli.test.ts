@@ -1127,6 +1127,104 @@ describe("cli gateway commands", () => {
   });
 });
 
+describe("provider sync-metadata / metadata-queue", () => {
+  /** 用 core fixture 组装 OC_SWITCH_MOCK_METADATA 文件（{ models, api } 双 payload） */
+  function writeMockMetadataFile(dir: string): string {
+    const fixtureDir = join(import.meta.dir, "../../core/test/fixtures/model-metadata");
+    const mockPath = join(dir, "mock-metadata.json");
+    writeFileSync(mockPath, JSON.stringify({
+      models: JSON.parse(readFileSync(join(fixtureDir, "models.json"), "utf8")),
+      api: JSON.parse(readFileSync(join(fixtureDir, "api.json"), "utf8"))
+    }));
+    return mockPath;
+  }
+
+  /** endpoint-provider：special-model 唯一 high 置信（provider-exact + endpoint-exact），shared 多候选入队 */
+  function writeEndpointConfig(configPath: string): void {
+    writeFileSync(configPath, `${JSON.stringify({
+      models: {
+        providers: {
+          "endpoint-provider": {
+            baseUrl: "https://api.endpoint.example/v1",
+            api: "openai-completions",
+            models: [{ id: "special-model" }, { id: "shared" }]
+          }
+        }
+      }
+    }, null, 2)}\n`);
+  }
+
+  test("sync-metadata 回填 high 置信模型并列摘要；队列 list/accept/dismiss 全链路", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-mmsync-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "openclaw.json");
+    writeEndpointConfig(configPath);
+    const env = {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir,
+      OC_SWITCH_MOCK_METADATA: writeMockMetadataFile(dir)
+    };
+
+    // 同步：special-model 自动回填；shared 进确认队列
+    const sync = await runCli(["provider", "sync-metadata", "endpoint-provider"], env);
+    expect(sync.code).toBe(0);
+    expect(sync.stdout).toContain("已回填 1");
+    expect(sync.stdout).toContain("待确认 1");
+    let config = JSON.parse(readFileSync(configPath, "utf8"));
+    const special = config.models.providers["endpoint-provider"].models
+      .find((model: { id: string }) => model.id === "special-model");
+    expect(special.contextWindow).toBe(64000);
+
+    // 队列 list：含模型条目与候选 catalogKey
+    const list = await runCli(["provider", "metadata-queue", "list"], env);
+    expect(list.code).toBe(0);
+    expect(list.stdout).toContain("endpoint-provider/shared");
+    expect(list.stdout).toContain("aaa/shared");
+
+    // accept 指定候选：shared 回填 contextWindow 1000，队列清空
+    const accept = await runCli([
+      "provider", "metadata-queue", "accept", "endpoint-provider", "shared",
+      "--catalog", "aaa/shared"
+    ], env);
+    expect(accept.code).toBe(0);
+    expect(accept.stdout).toContain("已回填 shared");
+    config = JSON.parse(readFileSync(configPath, "utf8"));
+    const shared = config.models.providers["endpoint-provider"].models
+      .find((model: { id: string }) => model.id === "shared");
+    expect(shared.contextWindow).toBe(1000);
+    const emptyList = await runCli(["provider", "metadata-queue", "list"], env);
+    expect(emptyList.stdout).toContain("确认队列为空");
+
+    // 再次入队后 dismiss：仅标记已忽略
+    const resync = await runCli(["provider", "sync-metadata", "endpoint-provider"], env);
+    expect(resync.code).toBe(0);
+    const dismiss = await runCli(["provider", "metadata-queue", "dismiss", "endpoint-provider", "shared"], env);
+    expect(dismiss.code).toBe(0);
+    expect(dismiss.stdout).toContain("已忽略 1 项");
+    const dismissedList = await runCli(["provider", "metadata-queue", "list"], env);
+    expect(dismissedList.stdout).toContain("[已忽略]");
+  });
+
+  test("sync-metadata 无 mock 且目录不可用时 fail closed：报错退出非 0、不写盘", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-mmsync-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "openclaw.json");
+    writeEndpointConfig(configPath);
+    const configText = readFileSync(configPath, "utf8");
+
+    // 不注入 OC_SWITCH_MOCK_METADATA；指向不可达代理让 models.dev 请求确定性失败
+    const result = await runCli(["provider", "sync-metadata", "endpoint-provider"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir,
+      HTTPS_PROXY: "http://127.0.0.1:9",
+      https_proxy: "http://127.0.0.1:9"
+    });
+    expect(result.code).not.toBe(0);
+    expect(result.stderr + result.stdout).toContain("目录不可用");
+    expect(readFileSync(configPath, "utf8")).toBe(configText);
+  });
+});
+
 describe("对象形态主模型 CLI", () => {
   function writeObjectPrimaryConfig(): { dir: string; configPath: string } {
     const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
