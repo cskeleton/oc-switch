@@ -73,6 +73,15 @@ describe("modelPolicy.allow 双向同步", () => {
     expect(readModelPolicyAllow(config)).not.toContain("other/o1");
   });
 
+  test("restricted 仅有旧精确条目时，启用改名净替换为新精确条目", () => {
+    const config = migratedConfig();
+    config.agents!.defaults!.modelPolicy!.allow = ["cpa/m1"];
+
+    updateProviderModel(config, "cpa/m1", { id: "m1-renamed", enabled: true });
+
+    expect(readModelPolicyAllow(config)).toEqual(["cpa/m1-renamed"]);
+  });
+
   test("removeProviderModel 同步移除", () => {
     const config = migratedConfig();
     removeProviderModel(config, "cpa/m1", { force: false });
@@ -240,6 +249,20 @@ describe("modelPolicy.allow 双向同步", () => {
 
     expect(() => updateProviderModel(config, "cpa/m1", { id: "renamed/m1", enabled: false })).toThrow(
       "Cannot disable cpa/renamed/m1 while agents.defaults.modelPolicy.allow contains cpa/renamed/*; narrow the policy first."
+    );
+    expect(JSON.stringify(config)).toBe(before);
+  });
+
+  test("rename 命中旧 ref 的 namespace wildcard 时拒绝且不写入", () => {
+    const config = migratedConfig();
+    config.models!.providers!.cpa!.models![0] = { id: "legacy/m1" };
+    delete config.agents!.defaults!.models!["cpa/m1"];
+    config.agents!.defaults!.models!["cpa/legacy/m1"] = { alias: "m-one" };
+    config.agents!.defaults!.modelPolicy!.allow = ["cpa/legacy/*", "other/o1"];
+    const before = JSON.stringify(config);
+
+    expect(() => updateProviderModel(config, "cpa/legacy/m1", { id: "m1-renamed", enabled: true })).toThrow(
+      "Cannot rename cpa/legacy/m1 while agents.defaults.modelPolicy.allow contains cpa/legacy/*; narrow the policy first."
     );
     expect(JSON.stringify(config)).toBe(before);
   });

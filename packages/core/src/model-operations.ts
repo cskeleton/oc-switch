@@ -198,14 +198,19 @@ export function updateProviderModel(config: OpenClawConfig, ref: string, input: 
     assertNoPolicyWildcardForRef(config, ref, "rename");
     if (!input.enabled) {
       assertNoPolicyWildcardForRef(config, nextRef, "disable");
+      assertPolicyExactRefsRemovalAllowed(config, [ref, nextRef], "rename", ref);
     }
-    assertPolicyExactRefsRemovalAllowed(config, input.enabled ? [ref] : [ref, nextRef], "rename", ref);
   } else if (!input.enabled) {
     assertNoPolicyWildcardForRef(config, ref, "disable");
     assertPolicyExactRefsRemovalAllowed(config, [ref], "disable", ref);
   }
 
   ensureDefaults(config);
+
+  // 启用改名先补入新精确条目，再移除旧条目，避免最后一条受限 policy 被短暂清空为 unrestricted。
+  if (input.id !== modelId && input.enabled) {
+    addPolicyAllow(config, nextRef);
+  }
 
   const existingModel = models[existingIndex];
   provider.models = models.map((model, index) =>

@@ -235,6 +235,32 @@ describe("mergeProviderCaseDuplicates", () => {
     })).toThrow(/would make \[\] unrestricted/);
     expect(JSON.stringify(config)).toBe(before);
   });
+
+  test("keepModelIds 丢弃 mixed-case policy exact 时预检拒绝且配置字节不变", () => {
+    const config: OpenClawConfig = {
+      models: {
+        providers: {
+          deepseek: { models: [{ id: "chat" }] },
+          DeepSeek: { models: [{ id: "legacy" }] }
+        }
+      },
+      agents: {
+        defaults: {
+          models: {},
+          modelPolicy: { allow: ["DEEPSEEK/legacy"] }
+        }
+      }
+    };
+    const before = JSON.stringify(config);
+
+    expect(() => mergeProviderCaseDuplicates(config, {
+      groupKey: "deepseek",
+      canonicalId: "deepseek",
+      removeIds: ["DeepSeek"],
+      keepModelIds: ["chat"]
+    })).toThrow(/would make \[\] unrestricted/);
+    expect(JSON.stringify(config)).toBe(before);
+  });
 });
 
 describe("对象形态主模型与 fallback 保护", () => {
@@ -343,5 +369,33 @@ describe("对象形态主模型与 fallback 保护", () => {
         keepModelIds: ["chat"]
       })
     ).toThrow(/agents\.defaults\.model\.fallbacks references deepseek\/legacy/);
+  });
+
+  test("keepModelIds 丢弃 mixed-case fallback 引用的模型时拒绝且配置字节不变", () => {
+    const config = cfg({
+      models: {
+        providers: {
+          deepseek: { models: [{ id: "chat" }] },
+          DeepSeek: { models: [{ id: "legacy" }] }
+        }
+      },
+      agents: {
+        defaults: {
+          model: { primary: "openai/gpt-x", fallbacks: ["DEEPSEEK/legacy"] },
+          models: {}
+        }
+      }
+    });
+    const before = JSON.stringify(config);
+
+    expect(() =>
+      mergeProviderCaseDuplicates(config, {
+        groupKey: "deepseek",
+        canonicalId: "deepseek",
+        removeIds: ["DeepSeek"],
+        keepModelIds: ["chat"]
+      })
+    ).toThrow(/agents\.defaults\.model\.fallbacks references DEEPSEEK\/legacy/);
+    expect(JSON.stringify(config)).toBe(before);
   });
 });

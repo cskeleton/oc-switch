@@ -1,4 +1,4 @@
-import { formatModelRef } from "./model-ref";
+import { formatModelRef, normalizeProviderId } from "./model-ref";
 import {
   assertPolicyExactRefsRemovalAllowed,
   readModelPolicyAllow,
@@ -264,6 +264,10 @@ export function mergeProviderCaseDuplicates(config: OpenClawConfig, input: Merge
   const providers = config.models.providers;
   const allowlist = config.agents.defaults.models;
   const allIds = [input.canonicalId, ...input.removeIds];
+  const normalizedAllIds = new Set(allIds.map(normalizeProviderId));
+  const normalizedRemoveIds = new Set(input.removeIds.map(normalizeProviderId));
+  const belongsToGroup = (providerId: string): boolean => normalizedAllIds.has(normalizeProviderId(providerId));
+  const isRemovedProvider = (providerId: string): boolean => normalizedRemoveIds.has(normalizeProviderId(providerId));
   const keepSet = input.keepModelIds ? new Set(input.keepModelIds) : undefined;
   const isKept = (modelId: string): boolean => !keepSet || keepSet.has(modelId);
 
@@ -288,7 +292,7 @@ export function mergeProviderCaseDuplicates(config: OpenClawConfig, input: Merge
     if (slashIndex > 0) {
       const prefix = primary.slice(0, slashIndex);
       const modelId = primary.slice(slashIndex + 1);
-      if (allIds.includes(prefix)) {
+      if (belongsToGroup(prefix)) {
         migratedPrimary = formatModelRef(input.canonicalId, modelId);
         if (!isKept(modelId)) {
           throw new Error(`Cannot drop the primary model ${primary}; keep it or set a new primary first`);
@@ -305,8 +309,8 @@ export function mergeProviderCaseDuplicates(config: OpenClawConfig, input: Merge
     if (slashIndex <= 0) continue;
     const prefix = ref.slice(0, slashIndex);
     const modelId = ref.slice(slashIndex + 1);
-    const providerRemoved = input.removeIds.includes(prefix);
-    const catalogDropped = allIds.includes(prefix) && !isKept(modelId);
+    const providerRemoved = isRemovedProvider(prefix);
+    const catalogDropped = belongsToGroup(prefix) && !isKept(modelId);
     if (providerRemoved || catalogDropped) {
       throw new Error(
         `Cannot merge: agents.defaults.model.fallbacks references ${ref}. Remove or migrate fallbacks in the OpenClaw config first.`
@@ -319,7 +323,7 @@ export function mergeProviderCaseDuplicates(config: OpenClawConfig, input: Merge
       if (ref.endsWith("/*")) return false;
       const slashIndex = ref.indexOf("/");
       if (slashIndex <= 0) return false;
-      return allIds.includes(ref.slice(0, slashIndex)) && !isKept(ref.slice(slashIndex + 1));
+      return belongsToGroup(ref.slice(0, slashIndex)) && !isKept(ref.slice(slashIndex + 1));
     });
     assertPolicyExactRefsRemovalAllowed(
       config,
