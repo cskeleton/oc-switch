@@ -7,10 +7,12 @@
 
 ## §10 功能验收
 
+> 兼容说明：本节及下方旧 fixture 中凡只写“allowlist”而未明确 `modelPolicy.allow` 的验收，均指 legacy mode 下的 `agents.defaults.models` 行为；不得用这些行推导 restricted mode 的 effective selection。Model policy 兼容性以本页 P1–P9 为准。
+
 | # | 验收项 | 验证方式 | 命令 / 测试 |
 |---|--------|----------|-------------|
-| 1 | 完整读取现有 12 个 provider 与 43 个 allowlist 模型 | 只读真实配置 smoke | `OPENCLAW_CONFIG_PATH="$HOME/.openclaw/openclaw.json" bun run packages/cli/src/index.ts status` |
-| 2 | 从 preset 添加 provider 后 `models.providers` 与 `agents.defaults.models` 同步 | 单元 + REST | `packages/core/test/operations.test.ts`（adds provider…）；`packages/server/test/app.test.ts`（POST /api/providers） |
+| 1 | legacy mode 下完整读取现有 12 个 provider 与 43 个 `agents.defaults.models` allowlist 模型 | 只读真实配置 smoke | `OPENCLAW_CONFIG_PATH="$HOME/.openclaw/openclaw.json" bun run packages/cli/src/index.ts status` |
+| 2 | legacy mode 下从 preset 添加 provider 后 `models.providers` 与 `agents.defaults.models` 同步 | 单元 + REST | `packages/core/test/operations.test.ts`（adds provider…）；`packages/server/test/app.test.ts`（POST /api/providers） |
 | 3 | API Key 写入 `.env`，JSON 保持 env 引用 | 单元 | `packages/core/test/env-manager.test.ts`；`packages/core/test/transaction-writer.test.ts` |
 | 4 | 写入前自动备份，回滚后与备份一致 | 单元 + CLI + REST | `packages/core/test/backup-manager.test.ts`；`packages/cli/test/cli.test.ts`（restores backup）；`packages/server/test/app.test.ts`（POST restore） |
 | 5 | 写入不影响 `acp`、`channels` 等非目标字段 | 单元 | `packages/core/test/diff-guard.test.ts`；`packages/core/test/diff.test.ts` |
@@ -30,6 +32,9 @@
 | P4 | `ModelSummary.selectionSource`、`StatusSummary.modelPolicyMode`、`effectiveModelCount` 正确，兼容保留 `allowlistModelCount` | Core + Web API contract | `packages/core/test/config-adapter.test.ts`；`packages/web/src/api.test.ts` |
 | P5 | exact policy entry 可切换；provider-wide/namespace wildcard 无法安全表达单模型或 Provider disable 时拒绝，`force` 也拒绝 | Core mutation tests | `packages/core/test/model-operations.test.ts`；`packages/core/test/operations.test.ts` |
 | P6 | Provider disabled state 与 policy availability 独立：disabled Provider 不可有效启用，恢复不改 policy；rename、batch cleanup 遵守 wildcard/fallback fail-closed 规则 | Core + acceptance fixture | `packages/core/test/operations.test.ts`；`bun run acceptance` |
+| P7 | `health:model-policy-not-covered:modelPolicy.allow` 使用 `health` source、warning severity 和固定全局 ID；detail/action 说明 legacy metadata 未被非空 policy 覆盖及修复方向 | Config-status contract | `packages/core/test/config-status.test.ts` |
+| P8 | `ConfigStatusReport.modelPolicy` 返回固定 `mode`、`policyEntryCount`、`effectiveCatalogCount`、`unknownProviderRefs`；unknown refs 仅 exact ref、仅 refs、info raw fact，不虚构本地目录 | Config-status contract | `packages/core/test/config-status.test.ts` |
+| P9 | 非数组 `allow` 按 legacy 处理并产生 blocking `health:invalid-model-policy-allow:modelPolicy.allow`；非字符串数组项保留但忽略匹配，并按 zero-based index 产生 blocking `health:invalid-model-policy-entry:modelPolicy.allow[<index>]` | Config-status contract | `packages/core/test/config-status.test.ts` |
 
 ---
 
@@ -57,8 +62,8 @@
 |---------|------|----------|-------------|
 | slash-model-ref | `nvidia/deepseek-ai/deepseek-v4-flash` → provider `nvidia`，modelId `deepseek-ai/deepseek-v4-flash` | 单元 + CLI + smoke | `packages/core/test/model-ref.test.ts`；`packages/cli/test/cli.test.ts`；`bun run acceptance` |
 | provider-id-storage-normalization | `DeepSeek/Model-X` 写入为 `deepseek/Model-X`，model ID 保持原样；同名 Provider 块冲突时拒绝静默覆盖 | 单元 | `packages/core/test/config-normalization.test.ts`；`packages/core/test/transaction-writer.test.ts` |
-| allowlist-value-preserve | 更新 alias 时保留 `agentRuntime` 与未知字段 | 单元 | `packages/core/test/operations.test.ts`；`packages/core/test/config-adapter.test.ts` |
-| provider-delete-scope | 删除 `nvidia` 只移除首段为 `nvidia` 的 allowlist | 单元 | `packages/core/test/operations.test.ts` |
+| allowlist-value-preserve | legacy mode 下更新 alias 时保留 `agentRuntime` 与未知字段 | 单元 | `packages/core/test/operations.test.ts`；`packages/core/test/config-adapter.test.ts` |
+| provider-delete-scope | legacy mode 下删除 `nvidia` 只移除首段为 `nvidia` 的 `agents.defaults.models` allowlist | 单元 | `packages/core/test/operations.test.ts` |
 | env-conflict | 管理块外同名 env var 默认拒绝覆盖 | 单元 | `packages/core/test/env-manager.test.ts` |
 | transaction-rollback | JSON 或 `.env` 写入失败后两者均恢复 | 单元 | `packages/core/test/transaction-writer.test.ts` |
 | json5-semantic-guard | 仅目标语义字段变化 | 单元 | `packages/core/test/diff-guard.test.ts`；`packages/core/test/diff.test.ts` |
@@ -79,4 +84,4 @@ OPENCLAW_CONFIG_PATH="$HOME/.openclaw/openclaw.json" bun run packages/cli/src/in
 
 - `check`：全部单元测试通过、typecheck 通过、WebGUI 构建成功
 - `acceptance`：临时 fixture 烟雾脚本通过，输出不含 API Key
-- 真实配置 `status`（只读）：本机应显示 12 providers、43 allowlist models（以实际环境为准）
+- 真实配置 `status`（只读，legacy-mode compatibility baseline）：本机应显示 12 providers、43 `agents.defaults.models` allowlist models（以实际环境为准）

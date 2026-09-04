@@ -41,3 +41,33 @@ Implemented the contract-only amendment for OpenClaw `modelPolicy.allow` compati
 
 - This task intentionally changes documentation only. The current implementation and its tests still need the later Core/Server/Web tasks to expose and enforce every newly normative DTO and wildcard mutation rule.
 - Existing older acceptance rows still use “allowlist” as shorthand for `agents.defaults.models`; later task updates should distinguish legacy metadata from effective policy counts where they exercise restricted configurations.
+
+## Fix round 1 (review findings)
+
+### Changed files
+
+- `docs/superpowers/specs/2026-06-26-oc-switch-config-status-design.md`
+  - Fixed the normative `health:model-policy-not-covered:modelPolicy.allow` issue contract: source `health`, severity `warning`, global exact ID, legacy metadata trigger, and required detail/action meaning.
+  - Added the fixed additive `ConfigStatusModelPolicy` raw DTO with `mode`, `policyEntryCount`, `effectiveCatalogCount`, and `unknownProviderRefs`.
+  - Defined policy-only/unknown-Provider behavior and no-secret constraints.
+  - Defined malformed non-array and non-string array-entry behavior with fixed blocking issue IDs and zero-based indexes.
+- `AGENTS.md`
+  - Added the same model-policy coverage issue and malformed-policy rules for repository-wide consistency.
+- `docs/acceptance-checklist.md`
+  - Marked older allowlist rows as legacy-mode behavior.
+  - Added P7–P9 for coverage issue, raw modelPolicy diagnostics, and malformed policy handling.
+- This report was appended with this fix-round section.
+
+### Tests/commands/output
+
+- `git status --short --branch` before changes: clean except the existing committed Task 1 state (`main` ahead by one commit).
+- `git diff --check`: passed before the fix commit.
+- `bun run check`: passed after the fix-round edits: 640 core/CLI/server tests, 111 Web tests, typecheck, and Web build.
+
+### Self-review
+
+- The four valid mode names remain exactly `legacy`, `unrestricted`, and `restricted`.
+- The fixed coverage issue cannot be duplicated per ref and explicitly distinguishes legacy metadata from restricted selection.
+- `unknownProviderRefs` contains only string exact refs, excludes wildcard/non-string entries, and is informational raw data only.
+- Malformed policy remains fail-visible: non-array is legacy-compatible but blocking; invalid array entries are preserved/ignored and individually blocking.
+- Existing no-secret, Provider disabled-state independence, Core-only writer, wildcard immutability, and per-agent scope constraints remain unchanged.
