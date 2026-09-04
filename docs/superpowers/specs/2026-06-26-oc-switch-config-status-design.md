@@ -131,10 +131,14 @@ export interface ConfigStatusModelPolicy {
   effectiveCatalogCount: number;
   /** policy 中 Provider 不在 models.providers 的字符串 exact ModelRef */
   unknownProviderRefs: string[];
+  /** 不存在于 agents.defaults.models 的字符串 exact policy refs；包含已知/未知 Provider */
+  policyOnlyExactRefs: string[];
+  /** policyOnlyExactRefs 中 Provider 存在但 model 不在该 Provider 本地目录的 refs */
+  knownProviderUnknownModelRefs: string[];
 }
 ```
 
-`policyEntryCount` 对缺失和显式 `[]` 都为 `0`，两者的区别只由 `mode` 表达；非字符串 policy 条目仍计入该 raw count，但不计入匹配结果。`unknownProviderRefs` 只包含 policy 中的字符串 exact ModelRef，且其 Provider 在本地 `models.providers` 中不存在；wildcard、非字符串条目和本地目录已有 Provider 的 refs 不进入该数组。该数组只返回 refs，不返回任何 secret、Provider credentials 或 `.env` 值，并按原 policy 顺序去重。
+`policyEntryCount` 对缺失、显式 `[]` 和非数组 `allow` 都固定为 `0`，三者区别分别由 `mode` 或 blocking malformed-policy issue 表达；数组中的非字符串条目计入该 raw count。`unknownProviderRefs` 只包含 policy 中的字符串 exact ModelRef，且其 Provider 在本地 `models.providers` 中不存在；`policyOnlyExactRefs` 只包含字符串 exact policy refs，且该 ref 不存在于 `agents.defaults.models`（即 policy-only 的定义，包含本地目录已有模型、已知 Provider 但本地模型缺失、以及未知 Provider）；`knownProviderUnknownModelRefs` 是 `policyOnlyExactRefs` 的子集，要求 Provider 存在但 model 不在该 Provider 本地目录。wildcard 和非字符串条目不进入任何 exact-ref diagnostic list。所有列表只返回 refs，不返回任何 secret、Provider credentials 或 `.env` 值，并按原 policy 顺序去重。
 
 `ModelSummary` 增加 `selectionSource: ModelSelectionSource`。`StatusSummary` 增加 `modelPolicyMode: ModelPolicyMode` 和 `effectiveModelCount: number`，同时保留 `allowlistModelCount: number` 供既有客户端使用。`allowlistModelCount` 只统计 `agents.defaults.models` 条目，`effectiveModelCount` 统计经过 Provider disabled state 与 model policy 判定后的有效模型；两者不可互换。
 
@@ -145,7 +149,7 @@ export interface ConfigStatusModelPolicy {
 ### 3.2 malformed policy 的兼容与 issue 映射
 
 - `agents.defaults.modelPolicy.allow` 缺失仍为 `legacy`。
-- `allow` 存在但不是数组时，为兼容旧配置按 `legacy` 计算 effective enabled；同时必须产生一个 blocking issue：`source: "health"`、`id: "health:invalid-model-policy-allow:modelPolicy.allow"`、`severity: "blocking"`。`detail` 必须说明 `modelPolicy.allow` 不是数组、已按 legacy 解释且未用于 selection；`action` 必须指导用户将其修正为数组或删除该字段。此错误形态不得被报告为 `unrestricted` 或 `restricted`。
+- `allow` 存在但不是数组时，为兼容旧配置按 `legacy` 计算 effective enabled，`ConfigStatusModelPolicy.policyEntryCount` 固定为 `0`；同时必须产生一个 blocking issue：`source: "health"`、`id: "health:invalid-model-policy-allow:modelPolicy.allow"`、`severity: "blocking"`。`detail` 必须说明 `modelPolicy.allow` 不是数组、已按 legacy 解释且未用于 selection；`action` 必须指导用户将其修正为数组或删除该字段。此错误形态不得被报告为 `unrestricted` 或 `restricted`。
 - `allow` 是数组时，非字符串条目原样保留在配置和 raw count 中，但忽略匹配；每个条目必须产生一个 blocking issue：`source: "health"`、`id: "health:invalid-model-policy-entry:modelPolicy.allow[<index>]"`、`severity: "blocking"`。`detail` 必须指出数组索引和“非字符串、未参与匹配”；`action` 必须指导用户删除或改为字符串 exact/wildcard entry。issue ID 使用 zero-based 原数组 index，确保重复值也可区分且可测试。
 - malformed policy issue 不得泄露配置中除该 policy entry 以外的 secret；非字符串值的 detail 只描述类型，不序列化其内容。`unknownProviderRefs` 仍只收集字符串 exact refs，并为 informational raw fact，不额外产生 blocking issue。
 
@@ -219,7 +223,7 @@ export interface ConfigStatusModelPolicy {
 
 ### 5.2 模型 policy 与 wildcard 状态规则
 
-config-status 可报告模型 selection 的 mode、source 和计数，但不得把用户 wildcard 展开为 exact 条目，也不得因状态读取删除或改写 wildcard。policy-only exact ref 应可被识别为 restricted selection；不在本地 Provider 目录中的 exact ref 可作为 `modelPolicy.unknownProviderRefs` informational raw fact，但不能被计入 `effectiveModelCount`。当非空 policy 存在且 `agents.defaults.models` 中的 legacy metadata ref 未被 exact 或 wildcard 覆盖时，必须产生唯一的 `health:model-policy-not-covered:modelPolicy.allow` warning；其 `detail` 应说明 legacy metadata 仍存在但不参与 restricted selection，`action` 应指导用户将 ref 加入 policy、调整 wildcard，或移除不再需要的 metadata。该 issue 是全局 policy issue，不按 ref 追加 ID。
+config-status 可报告模型 selection 的 mode、source 和计数，但不得把用户 wildcard 展开为 exact 条目，也不得因状态读取删除或改写 wildcard。policy-only exact ref 必须通过 `modelPolicy.policyOnlyExactRefs` 暴露；其中 Provider 已知但 model 不在本地目录的 refs 还必须出现在 `modelPolicy.knownProviderUnknownModelRefs`，两者均为 informational raw facts，不计入 `effectiveModelCount`。未知 Provider refs 通过 `modelPolicy.unknownProviderRefs` 暴露；三个列表均排除 wildcard 和非字符串条目。当非空 policy 存在且 `agents.defaults.models` 中的 legacy metadata ref 未被 exact 或 wildcard 覆盖时，必须产生唯一的 `health:model-policy-not-covered:modelPolicy.allow` warning；其 `detail` 应说明 legacy metadata 仍存在但不参与 restricted selection，`action` 应指导用户将 ref 加入 policy、调整 wildcard，或移除不再需要的 metadata。该 issue 是全局 policy issue，不按 ref 追加 ID。
 
 当单模型或 Provider 的 disable、rename、批量清理会要求重写 wildcard 才能保持结果时，写入操作必须采用 fail-closed 错误；`force` 不得绕过。Provider disabled state 只能影响 effective availability，不得被解释为 policy entry，也不得改变 `modelPolicy.allow` 的存在性或内容。per-agent `agents.entries.*.modelPolicy.allow` 不属于本契约范围。
 

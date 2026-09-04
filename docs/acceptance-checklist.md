@@ -33,7 +33,7 @@
 | P5 | exact policy entry 可切换；provider-wide/namespace wildcard 无法安全表达单模型或 Provider disable 时拒绝，`force` 也拒绝 | Core mutation tests | `packages/core/test/model-operations.test.ts`；`packages/core/test/operations.test.ts` |
 | P6 | Provider disabled state 与 policy availability 独立：disabled Provider 不可有效启用，恢复不改 policy；rename、batch cleanup 遵守 wildcard/fallback fail-closed 规则 | Core + acceptance fixture | `packages/core/test/operations.test.ts`；`bun run acceptance` |
 | P7 | `health:model-policy-not-covered:modelPolicy.allow` 使用 `health` source、warning severity 和固定全局 ID；detail/action 说明 legacy metadata 未被非空 policy 覆盖及修复方向 | Config-status contract | `packages/core/test/config-status.test.ts` |
-| P8 | `ConfigStatusReport.modelPolicy` 返回固定 `mode`、`policyEntryCount`、`effectiveCatalogCount`、`unknownProviderRefs`；unknown refs 仅 exact ref、仅 refs、info raw fact，不虚构本地目录 | Config-status contract | `packages/core/test/config-status.test.ts` |
+| P8 | `ConfigStatusReport.modelPolicy` 返回固定 `mode`、`policyEntryCount`、`effectiveCatalogCount`、`unknownProviderRefs`、`policyOnlyExactRefs`、`knownProviderUnknownModelRefs`；exact diagnostics 排除 wildcard/非字符串，policy-only 定义为不在 `agents.defaults.models`，unknown-provider/known-provider-unknown-model 列表仅 refs 且为 info raw facts | Config-status contract | `packages/core/test/config-status.test.ts` |
 | P9 | 非数组 `allow` 按 legacy 处理并产生 blocking `health:invalid-model-policy-allow:modelPolicy.allow`；非字符串数组项保留但忽略匹配，并按 zero-based index 产生 blocking `health:invalid-model-policy-entry:modelPolicy.allow[<index>]` | Config-status contract | `packages/core/test/config-status.test.ts` |
 
 ---

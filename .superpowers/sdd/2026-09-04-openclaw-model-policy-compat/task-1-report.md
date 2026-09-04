@@ -71,3 +71,29 @@ Implemented the contract-only amendment for OpenClaw `modelPolicy.allow` compati
 - `unknownProviderRefs` contains only string exact refs, excludes wildcard/non-string entries, and is informational raw data only.
 - Malformed policy remains fail-visible: non-array is legacy-compatible but blocking; invalid array entries are preserved/ignored and individually blocking.
 - Existing no-secret, Provider disabled-state independence, Core-only writer, wildcard immutability, and per-agent scope constraints remain unchanged.
+
+## Fix round 2 (review findings)
+
+### Changed files
+
+- `docs/superpowers/specs/2026-06-26-oc-switch-config-status-design.md`
+  - Added `policyOnlyExactRefs` and `knownProviderUnknownModelRefs` to the fixed `ConfigStatusModelPolicy` raw DTO.
+  - Defined policy-only as string exact policy refs absent from `agents.defaults.models`; the known-provider/unknown-model list is its explicit subset. Wildcards and non-string entries are excluded.
+  - Fixed `policyEntryCount` to `0` for non-array `allow` and retained the malformed-policy issue semantics.
+- `AGENTS.md`
+  - Mirrored the fixed raw DTO fields and exact-ref diagnostic semantics.
+- `docs/acceptance-checklist.md`
+  - Expanded P8 to cover both exact-ref diagnostic lists and their exclusion rules.
+- This report was appended with this fix-round section.
+
+### Tests/output
+
+- `bun run check`: passed after the fix-round edits: 640 core/CLI/server tests, 111 Web tests, typecheck, and Web build.
+- `git diff --check`: passed before commit.
+
+### Self-review
+
+- Existing valid mode names and all prior issue IDs are unchanged.
+- `policyOnlyExactRefs` is directly testable for known catalog refs, known-provider/unknown-model refs, and unknown-provider refs; `knownProviderUnknownModelRefs` is explicitly a subset.
+- All diagnostic lists are refs-only, ordered by policy occurrence and deduplicated; wildcard and non-string entries are excluded.
+- Non-array `allow` now has an explicit safe raw count of `0`, remains legacy-compatible, and still emits the blocking malformed-policy issue.
