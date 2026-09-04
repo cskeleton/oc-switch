@@ -4,11 +4,18 @@ import { inspectConfigHealth } from "./config-health";
 import { inspectEnvFile, listProviderEnvRefs } from "./env-inspector";
 import { inspectProviderSecretRefMigrations } from "./openclaw-compat";
 import { listOrphanEnvKeys, readManifest } from "./manifest-manager";
-import { isPolicyAllowsRef, readModelPolicyAllow } from "./model-policy";
+import { normalizeProviderId, parseModelRef } from "./model-ref";
+import {
+  getModelPolicyMode,
+  getModelSelectionSource,
+  isPolicyAllowsRef,
+  readModelPolicyAllow,
+  readModelPolicyAllowRaw
+} from "./model-policy";
 import type { OcSwitchPaths } from "./paths";
 import { readProviderStates } from "./provider-states";
 import type { LegacyRunningOpenClawInstance } from "./runtime-discovery-types";
-import type { OpenClawConfig } from "./types";
+import type { ModelPolicyMode, OpenClawConfig } from "./types";
 
 /** 去重后的单条可行动问题 */
 export interface ConfigStatusIssue {
@@ -31,6 +38,16 @@ export interface DisabledProviderStatus {
   hiddenModelCount: number;
 }
 
+/** modelPolicy 的脱敏原始事实；不展开通配条目，也不返回凭据。 */
+export interface ConfigStatusModelPolicy {
+  mode: ModelPolicyMode;
+  policyEntryCount: number;
+  effectiveCatalogCount: number;
+  unknownProviderRefs: string[];
+  policyOnlyExactRefs: string[];
+  knownProviderUnknownModelRefs: string[];
+}
+
 export interface ConfigStatusReport {
   version: 1;
   /** raw facts：完整 case-duplicate 健康报告 */
@@ -41,6 +58,8 @@ export interface ConfigStatusReport {
   orphanEnvKeys: string[];
   /** raw facts：inspectEnvFile 产生的警告字符串列表 */
   envWarnings: string[];
+  /** raw facts：modelPolicy 的模式、有效目录计数与精确 ref 漂移 */
+  modelPolicy: ConfigStatusModelPolicy;
   /** 唯一去重后的行动列表 */
   issues: ConfigStatusIssue[];
   summary: {
@@ -307,31 +326,138 @@ function buildDisabledProviderIssues(disabledProviders: DisabledProviderStatus[]
   }));
 }
 
+function emptyModelPolicyStatus(): ConfigStatusModelPolicy {
+  return {
+    mode: "legacy",
+    policyEntryCount: 0,
+    effectiveCatalogCount: 0,
+    unknownProviderRefs: [],
+    policyOnlyExactRefs: [],
+    knownProviderUnknownModelRefs: []
+  };
+}
+
+/** 仅保留合法的字符串 exact ModelRef，且按 policy 原顺序去重。 */
+function listPolicyExactRefs(config: OpenClawConfig): Array<{ ref: string; providerId: string; modelId: string }> {
+  const seen = new Set<string>();
+  const exactRefs: Array<{ ref: string; providerId: string; modelId: string }> = [];
+  for (const entry of readModelPolicyAllow(config) ?? []) {
+    if (entry.endsWith("/*") || seen.has(entry)) continue;
+    try {
+      const { providerId, modelId } = parseModelRef(entry);
+      seen.add(entry);
+      exactRefs.push({ ref: entry, providerId, modelId });
+    } catch {
+      // 非法字符串不是 ModelRef，不进入 exact-ref 诊断列表。
+    }
+  }
+  return exactRefs;
+}
+
+function buildModelPolicyStatus(
+  config: OpenClawConfig,
+  disabledProviders: DisabledProviderStatus[]
+): ConfigStatusModelPolicy {
+  const rawAllow = readModelPolicyAllowRaw(config);
+  const providers = config.models?.providers ?? {};
+  const providersByNormalizedId = new Map<string, Array<{ id: string; modelIds: Set<string> }>>();
+  for (const [id, provider] of Object.entries(providers)) {
+    const normalizedId = normalizeProviderId(id);
+    const catalogProviders = providersByNormalizedId.get(normalizedId) ?? [];
+    catalogProviders.push({ id, modelIds: new Set((provider.models ?? []).map((model) => model.id)) });
+    providersByNormalizedId.set(normalizedId, catalogProviders);
+  }
+
+  const disabledProviderIds = new Set(disabledProviders.map((provider) => normalizeProviderId(provider.providerId)));
+  const effectiveCatalogCount = Object.entries(providers).reduce(
+    (count, [providerId, provider]) => {
+      if (disabledProviderIds.has(normalizeProviderId(providerId))) return count;
+      return count + (provider.models ?? []).filter((model) =>
+        getModelSelectionSource(config, `${providerId}/${model.id}`) !== undefined
+      ).length;
+    },
+    0
+  );
+
+  const exactRefs = listPolicyExactRefs(config);
+  const legacyRefs = Object.keys(config.agents?.defaults?.models ?? {});
+  const unknownProviderRefs: string[] = [];
+  const policyOnlyExactRefs: string[] = [];
+  const knownProviderUnknownModelRefs: string[] = [];
+  for (const exact of exactRefs) {
+    const catalogProviders = providersByNormalizedId.get(normalizeProviderId(exact.providerId));
+    if (!catalogProviders) unknownProviderRefs.push(exact.ref);
+
+    // exact policy 与 metadata 的同一模型判断沿用 Core policy helper 的大小写语义。
+    const isPolicyOnly = !legacyRefs.some((legacyRef) => isPolicyAllowsRef([exact.ref], legacyRef));
+    if (!isPolicyOnly) continue;
+    policyOnlyExactRefs.push(exact.ref);
+    if (catalogProviders && !catalogProviders.some((provider) => provider.modelIds.has(exact.modelId))) {
+      knownProviderUnknownModelRefs.push(exact.ref);
+    }
+  }
+
+  return {
+    mode: getModelPolicyMode(config),
+    policyEntryCount: rawAllow?.length ?? 0,
+    effectiveCatalogCount,
+    unknownProviderRefs,
+    policyOnlyExactRefs,
+    knownProviderUnknownModelRefs
+  };
+}
+
 /**
  * modelPolicy.allow 分叉检测：OpenClaw 2026.8+ 中非空 modelPolicy.allow 是实际生效的 allowlist；
  * agents.defaults.models 有但 policy 未覆盖（含通配）的 ref 在 OpenClaw 里选不到。
  * 反向（policy 引用 builtin catalog 模型）属合法，不报。
  */
 function buildModelPolicyIssues(config: OpenClawConfig): ConfigStatusIssue[] {
-  const allow = readModelPolicyAllow(config);
-  if (!allow || allow.length === 0) return [];
+  const issues: ConfigStatusIssue[] = [];
+  const rawAllow = readModelPolicyAllowRaw(config);
+  const policy = config.agents?.defaults?.modelPolicy as { allow?: unknown } | undefined;
+  if (policy && Object.prototype.hasOwnProperty.call(policy, "allow") && rawAllow === undefined) {
+    issues.push({
+      id: issueId("health", "invalid-model-policy-allow", "modelPolicy.allow"),
+      severity: "blocking",
+      source: "health",
+      title: "modelPolicy.allow 不是数组",
+      detail: "modelPolicy.allow 不是数组，已按 legacy 解释且未参与 selection",
+      action: "将 modelPolicy.allow 修正为数组，或删除该字段以保留 legacy 行为"
+    });
+  }
+  if (rawAllow) {
+    rawAllow.forEach((entry, index) => {
+      if (typeof entry === "string") return;
+      issues.push({
+        id: `health:invalid-model-policy-entry:modelPolicy.allow[${index}]`,
+        severity: "blocking",
+        source: "health",
+        title: `modelPolicy.allow[${index}] 不是字符串`,
+        detail: `modelPolicy.allow[${index}] 为非字符串，未参与匹配`,
+        action: "删除该条目，或改为字符串 exact/wildcard ModelRef"
+      });
+    });
+  }
 
+  if (getModelPolicyMode(config) !== "restricted") return issues;
+
+  const allow = readModelPolicyAllow(config) ?? [];
   const uncovered = Object.keys(config.agents?.defaults?.models ?? {}).filter(
     (ref) => !isPolicyAllowsRef(allow, ref)
   );
-  if (uncovered.length === 0) return [];
+  if (uncovered.length === 0) return issues;
 
   const preview = uncovered.slice(0, 5).join(", ");
-  return [
-    {
-      id: issueId("health", "model-policy-not-covered", "modelPolicy.allow"),
-      severity: "warning",
-      source: "health",
-      title: `${uncovered.length} 个已启用模型未被 modelPolicy.allow 覆盖`,
-      detail: `OpenClaw 2026.8+ 以 modelPolicy.allow 为准，这些模型实际选不到：${preview}${uncovered.length > 5 ? " 等" : ""}`,
-      action: "将缺失 ref 加入 agents.defaults.modelPolicy.allow，或清空该列表放开全部"
-    }
-  ];
+  issues.push({
+    id: issueId("health", "model-policy-not-covered", "modelPolicy.allow"),
+    severity: "warning",
+    source: "health",
+    title: `${uncovered.length} 个 legacy metadata 模型未被 modelPolicy.allow 覆盖`,
+    detail: `restricted mode 下 agents.defaults.models 仅为 metadata，不参与 selection；这些 ref 实际选不到：${preview}${uncovered.length > 5 ? " 等" : ""}`,
+    action: "将缺失 ref 加入或调整 agents.defaults.modelPolicy.allow，或从 metadata 移除不再需要的条目"
+  });
+  return issues;
 }
 
 function deriveSummary(issues: ConfigStatusIssue[], health: ConfigHealthReport, disabledProviders: DisabledProviderStatus[], orphanEnvKeys: string[]) {
@@ -356,6 +482,9 @@ export function inspectConfigStatus(input: InspectConfigStatusInput): ConfigStat
     openclawPath: state.openclawPath,
     hiddenModelCount: Object.keys(state.allowlistEntries).length
   }));
+  const modelPolicy = input.config
+    ? buildModelPolicyStatus(input.config, disabledProviders)
+    : emptyModelPolicyStatus();
 
   const orphanEnvKeys = listOrphanEnvKeys(input.paths.stateDir);
 
@@ -384,6 +513,7 @@ export function inspectConfigStatus(input: InspectConfigStatusInput): ConfigStat
     disabledProviders,
     orphanEnvKeys,
     envWarnings: envInspection.warnings,
+    modelPolicy,
     issues,
     summary: deriveSummary(issues, health, disabledProviders, orphanEnvKeys)
   };

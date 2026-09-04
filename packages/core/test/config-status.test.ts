@@ -227,6 +227,116 @@ describe("inspectConfigStatus", () => {
     wildcard.agents!.defaults!.modelPolicy = { allow: ["cpa/*"] };
     expect(inspect(paths, { config: wildcard }).issues.some((i) => i.id.includes("model-policy"))).toBe(false);
   });
+
+  test("脱敏 claw-like policy fixture 将有效目录、policy-only stale ref 与 Provider 停用状态分开报告", () => {
+    const { paths } = workspace();
+    const config: OpenClawConfig = {
+      models: {
+        providers: {
+          cpa: { models: [{ id: "m1", name: "CPA 1" }, { id: "m2", name: "CPA 2" }] },
+          grok2api: { models: [{ id: "grok-1", name: "Grok 1" }] },
+          OpenCode: { models: [{ id: "gpt-5", name: "GPT 5" }] },
+          nvidia: { models: [{ id: "nemotron", name: "Nemotron" }] },
+          openrouter: { models: [{ id: "qwen", name: "Qwen" }] }
+        }
+      },
+      agents: {
+        defaults: {
+          models: {
+            "cpa/m1": {},
+            "grok2api/grok-1": {},
+            "OpenCode/gpt-5": {},
+            "nvidia/nemotron": {},
+            "openrouter/qwen": {},
+            "cpa/legacy-only": {},
+            "OpenCode/legacy-only": {},
+            "legacy/only": {}
+          },
+          modelPolicy: {
+            allow: [
+              "cpa/*",
+              "grok2api/*",
+              "OpenCode/gpt-5",
+              "nvidia/nemotron",
+              "openrouter/qwen",
+              "cpa/policy-only",
+              "nvidia/unknown",
+              "absent-provider/model",
+              42
+            ]
+          }
+        }
+      }
+    };
+    for (const providerId of ["nvidia", "openrouter"]) {
+      upsertDisabledProviderState(paths.stateDir, {
+        providerId,
+        openclawPath: paths.openclawPath,
+        disabledAt: "2026-09-04T00:00:00.000Z",
+        allowlistEntries: {}
+      });
+    }
+
+    const report = inspect(paths, { config });
+
+    expect(report.modelPolicy).toEqual({
+      mode: "restricted",
+      policyEntryCount: 9,
+      effectiveCatalogCount: 4,
+      unknownProviderRefs: ["absent-provider/model"],
+      policyOnlyExactRefs: ["cpa/policy-only", "nvidia/unknown", "absent-provider/model"],
+      knownProviderUnknownModelRefs: ["cpa/policy-only", "nvidia/unknown"]
+    });
+    expect(report.issues).toContainEqual(expect.objectContaining({
+      id: "health:model-policy-not-covered:modelPolicy.allow",
+      source: "health",
+      severity: "warning",
+      detail: expect.stringContaining("OpenCode/legacy-only"),
+      action: expect.stringContaining("metadata")
+    }));
+    expect(report.issues).toContainEqual(expect.objectContaining({
+      id: "health:invalid-model-policy-entry:modelPolicy.allow[8]",
+      source: "health",
+      severity: "blocking"
+    }));
+    expect(report.issues).toContainEqual(expect.objectContaining({
+      id: "providers:disabled:nvidia",
+      source: "providers",
+      severity: "info"
+    }));
+    expect(report.issues).toContainEqual(expect.objectContaining({
+      id: "providers:disabled:openrouter",
+      source: "providers",
+      severity: "info"
+    }));
+    const issueIds = report.issues.map((issue) => issue.id);
+    expect(new Set(issueIds).size).toBe(issueIds.length);
+  });
+
+  test("畸形 modelPolicy.allow 以 legacy 读取并输出不泄露值的 blocking issue", () => {
+    const { paths } = workspace();
+    const config = {
+      models: { providers: { cpa: { models: [{ id: "m1", name: "CPA 1" }] } } },
+      agents: { defaults: { models: { "cpa/m1": {} }, modelPolicy: { allow: "not-an-array" } } }
+    } as unknown as OpenClawConfig;
+
+    const report = inspect(paths, { config });
+
+    expect(report.modelPolicy).toMatchObject({
+      mode: "legacy",
+      policyEntryCount: 0,
+      effectiveCatalogCount: 1,
+      unknownProviderRefs: [],
+      policyOnlyExactRefs: [],
+      knownProviderUnknownModelRefs: []
+    });
+    expect(report.issues).toContainEqual(expect.objectContaining({
+      id: "health:invalid-model-policy-allow:modelPolicy.allow",
+      source: "health",
+      severity: "blocking",
+      detail: expect.stringContaining("不是数组")
+    }));
+  });
 });
 
 describe("OpenClaw compatibility issues", () => {
