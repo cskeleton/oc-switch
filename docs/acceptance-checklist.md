@@ -26,12 +26,12 @@
 
 | # | 验收项 | 验证方式 | 命令 / 测试 |
 |---|--------|----------|-------------|
-| P1 | claw-like restricted 配置中 `cpa/*` 与 `grok2api/*` 按 provider-wide wildcard 生效，不展开或删除用户 wildcard | Core + REST fixture | `packages/core/test/model-policy.test.ts`；`packages/server/test/app.test.ts` |
+| P1 | claw-like restricted 配置中 `cpa/*` 与 `grok2api/*` 按 provider-wide wildcard 生效，不展开或删除用户 wildcard | Core + REST fixture | `packages/core/test/model-policy.test.ts`；`packages/server/test/app.test.ts`；`bun run acceptance` |
 | P2 | policy-only exact refs 识别为 `restricted` / `policy-exact`；不在本地目录的 ref 不虚构模型 | Core + status DTO | `packages/core/test/config-status.test.ts` |
 | P3 | `modelPolicy.allow` 缺失=`legacy`，存在空数组=`unrestricted`，两者不可混淆；restricted 下 `agents.defaults.models` 仅为 metadata | Core + REST | `packages/core/test/model-policy.test.ts`；`packages/server/test/app.test.ts` |
 | P4 | `ModelSummary.selectionSource`、`StatusSummary.modelPolicyMode`、`effectiveModelCount` 正确，兼容保留 `allowlistModelCount` | Core + Web API contract | `packages/core/test/config-adapter.test.ts`；`packages/web/src/api.test.ts` |
 | P5 | exact policy entry 可切换；provider-wide/namespace wildcard 无法安全表达单模型或 Provider disable 时拒绝，`force` 也拒绝 | Core mutation tests | `packages/core/test/model-operations.test.ts`；`packages/core/test/operations.test.ts` |
-| P6 | Provider disabled state 与 policy availability 独立：disabled Provider 不可有效启用，恢复不改 policy；rename、batch cleanup 遵守 wildcard/fallback fail-closed 规则 | Core + acceptance fixture | `packages/core/test/operations.test.ts`；`bun run acceptance` |
+| P6 | Provider disabled state 与 policy availability 独立：disabled Provider 不可有效启用，恢复不改 policy；rename、batch cleanup 遵守 wildcard/fallback fail-closed 规则 | Core + acceptance fixture | `packages/core/test/model-policy-sync.test.ts`；`packages/core/test/provider-lifecycle.test.ts`；`bun run acceptance` |
 | P7 | `health:model-policy-not-covered:modelPolicy.allow` 使用 `health` source、warning severity 和固定全局 ID；detail/action 说明 legacy metadata 未被非空 policy 覆盖及修复方向 | Config-status contract | `packages/core/test/config-status.test.ts` |
 | P8 | `ConfigStatusReport.modelPolicy` 返回固定 `mode`、`policyEntryCount`、`effectiveCatalogCount`、`unknownProviderRefs`、`policyOnlyExactRefs`、`knownProviderUnknownModelRefs`；exact diagnostics 排除 wildcard/非字符串，policy-only 定义为不在 `agents.defaults.models`，unknown-provider/known-provider-unknown-model 列表仅 refs 且为 info raw facts | Config-status contract | `packages/core/test/config-status.test.ts` |
 | P9 | 非数组 `allow` 按 legacy 处理并产生 blocking `health:invalid-model-policy-allow:modelPolicy.allow`；非字符串数组项保留但忽略匹配，并按 zero-based index 产生 blocking `health:invalid-model-policy-entry:modelPolicy.allow[<index>]` | Config-status contract | `packages/core/test/config-status.test.ts` |
@@ -69,6 +69,7 @@
 | json5-semantic-guard | 仅目标语义字段变化 | 单元 | `packages/core/test/diff-guard.test.ts`；`packages/core/test/diff.test.ts` |
 | primary-delete-warning | 删除含当前 primary 的 provider 需新 primary 或 `--force` | 单元 | `packages/core/test/operations.test.ts` |
 | unauthorized-api | 无 token 返回 401 且不泄漏配置 | 单元 + smoke | `packages/server/test/app.test.ts`；`bun run acceptance` |
+| model-policy-three-mode | 脱敏 REST fixture 覆盖 legacy、`allow: []`、restricted exact/wildcard、policy-only catalog、metadata alias 与独立 disabled Provider；只读请求前后配置不变 | acceptance smoke | `packages/core/test/fixtures/model-policy-acceptance.json`；`bun run acceptance` |
 
 ---
 
@@ -84,4 +85,4 @@ OPENCLAW_CONFIG_PATH="$HOME/.openclaw/openclaw.json" bun run packages/cli/src/in
 
 - `check`：全部单元测试通过、typecheck 通过、WebGUI 构建成功
 - `acceptance`：临时 fixture 烟雾脚本通过，输出不含 API Key
-- 真实配置 `status`（只读，legacy-mode compatibility baseline）：本机应显示 12 providers、43 `agents.defaults.models` allowlist models（以实际环境为准）
+- 真实配置 `status`（只读）：以当前环境实际的 policy mode、有效可选模型数与 `agents.defaults.models` metadata 条目数为准，不使用历史固定计数作为通过条件

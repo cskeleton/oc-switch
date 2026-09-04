@@ -1,0 +1,229 @@
+{
+  "scenarios": [
+    {
+      "id": "legacy",
+      "config": {
+        "models": {
+          "mode": "merge",
+          "providers": {
+            "alpha": {
+              "baseUrl": "https://alpha.acceptance.invalid/v1",
+              "api": "openai-completions",
+              "models": [
+                { "id": "m1", "name": "Alpha One" },
+                { "id": "m2", "name": "Alpha Two" }
+              ]
+            }
+          }
+        },
+        "agents": {
+          "defaults": {
+            "models": {
+              "alpha/m1": { "alias": "legacy-alpha" },
+              "alpha/metadata-only": { "alias": "metadata-only" }
+            }
+          }
+        }
+      },
+      "disabledProviderIds": [],
+      "expected": {
+        "status": {
+          "modelPolicyMode": "legacy",
+          "allowlistModelCount": 2,
+          "effectiveModelCount": 1
+        },
+        "models": {
+          "alpha/m1": {
+            "enabled": true,
+            "selectionSource": "legacy",
+            "alias": "legacy-alpha"
+          },
+          "alpha/m2": {
+            "enabled": false
+          },
+          "alpha/metadata-only": {
+            "enabled": true,
+            "selectionSource": "legacy",
+            "alias": "metadata-only"
+          }
+        },
+        "providers": {
+          "alpha": {
+            "disabled": false,
+            "enabledModelCount": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "unrestricted",
+      "config": {
+        "models": {
+          "mode": "merge",
+          "providers": {
+            "alpha": {
+              "baseUrl": "https://alpha.acceptance.invalid/v1",
+              "api": "openai-completions",
+              "models": [
+                { "id": "m1", "name": "Alpha One" },
+                { "id": "m2", "name": "Alpha Two" }
+              ]
+            },
+            "beta": {
+              "baseUrl": "https://beta.acceptance.invalid/v1",
+              "api": "openai-completions",
+              "models": [
+                { "id": "ns/one", "name": "Beta One" },
+                { "id": "ns/two", "name": "Beta Two" }
+              ]
+            },
+            "paused": {
+              "baseUrl": "https://paused.acceptance.invalid/v1",
+              "api": "openai-completions",
+              "models": [
+                { "id": "d1", "name": "Paused One" }
+              ]
+            }
+          }
+        },
+        "agents": {
+          "defaults": {
+            "modelPolicy": { "allow": [] },
+            "models": {
+              "alpha/m1": { "alias": "unrestricted-alpha" },
+              "alpha/metadata-only": { "alias": "metadata-only" }
+            }
+          }
+        }
+      },
+      "disabledProviderIds": [],
+      "expected": {
+        "status": {
+          "modelPolicyMode": "unrestricted",
+          "allowlistModelCount": 2,
+          "effectiveModelCount": 5
+        },
+        "models": {
+          "alpha/m1": {
+            "enabled": true,
+            "selectionSource": "unrestricted",
+            "alias": "unrestricted-alpha"
+          },
+          "alpha/m2": {
+            "enabled": true,
+            "selectionSource": "unrestricted"
+          },
+          "alpha/metadata-only": {
+            "enabled": false,
+            "alias": "metadata-only"
+          }
+        },
+        "providers": {
+          "alpha": {
+            "disabled": false,
+            "enabledModelCount": 2
+          },
+          "beta": {
+            "disabled": false,
+            "enabledModelCount": 2
+          },
+          "paused": {
+            "disabled": false,
+            "enabledModelCount": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "restricted",
+      "config": {
+        "models": {
+          "mode": "merge",
+          "providers": {
+            "alpha": {
+              "baseUrl": "https://alpha.acceptance.invalid/v1",
+              "api": "openai-completions",
+              "models": [
+                { "id": "m1", "name": "Alpha One" },
+                { "id": "m2", "name": "Alpha Two" }
+              ]
+            },
+            "beta": {
+              "baseUrl": "https://beta.acceptance.invalid/v1",
+              "api": "openai-completions",
+              "models": [
+                { "id": "ns/one", "name": "Beta One" },
+                { "id": "ns/two", "name": "Beta Two" }
+              ]
+            },
+            "paused": {
+              "baseUrl": "https://paused.acceptance.invalid/v1",
+              "api": "openai-completions",
+              "models": [
+                { "id": "d1", "name": "Paused One" }
+              ]
+            }
+          }
+        },
+        "agents": {
+          "defaults": {
+            "modelPolicy": {
+              "allow": ["alpha/m2", "beta/ns/*", "paused/*"]
+            },
+            "models": {
+              "alpha/m1": { "alias": "legacy-not-selected" },
+              "beta/ns/one": { "alias": "beta-alias" },
+              "paused/d1": { "alias": "paused-alias" }
+            }
+          }
+        }
+      },
+      "disabledProviderIds": ["paused"],
+      "expected": {
+        "status": {
+          "modelPolicyMode": "restricted",
+          "allowlistModelCount": 3,
+          "effectiveModelCount": 3
+        },
+        "models": {
+          "alpha/m1": {
+            "enabled": false,
+            "alias": "legacy-not-selected"
+          },
+          "alpha/m2": {
+            "enabled": true,
+            "selectionSource": "policy-exact"
+          },
+          "beta/ns/one": {
+            "enabled": true,
+            "selectionSource": "policy-wildcard",
+            "alias": "beta-alias"
+          },
+          "beta/ns/two": {
+            "enabled": true,
+            "selectionSource": "policy-wildcard"
+          },
+          "paused/d1": {
+            "enabled": false,
+            "selectionSource": "policy-wildcard",
+            "alias": "paused-alias"
+          }
+        },
+        "providers": {
+          "alpha": {
+            "disabled": false,
+            "enabledModelCount": 1
+          },
+          "beta": {
+            "disabled": false,
+            "enabledModelCount": 2
+          },
+          "paused": {
+            "disabled": true,
+            "enabledModelCount": 0
+          }
+        }
+      }
+    }
+  ]
+}

@@ -17,6 +17,9 @@ import type {
   RuntimePathCandidateGroup
 } from "../packages/core/src/runtime-discovery-types";
 import { writeOpenClawTransaction } from "../packages/core/src/transaction-writer";
+import { upsertDisabledProviderState } from "../packages/core/src/provider-states";
+import type { OpenClawConfig } from "../packages/core/src/types";
+import modelPolicyAcceptance from "../packages/core/test/fixtures/model-policy-acceptance.json";
 import sample from "../packages/core/test/fixtures/openclaw.sample.json";
 import { createApp } from "../packages/server/src/app";
 
@@ -54,6 +57,114 @@ function assertNoSecrets(text: string, label: string): void {
   if (text.includes(FIXTURE_SECRET)) {
     fail(`${label} 输出包含 fixture 密钥明文`);
   }
+}
+
+interface ModelPolicyAcceptanceExpectation {
+  enabled: boolean;
+  selectionSource?: string;
+  alias?: string;
+}
+
+interface ModelPolicyAcceptanceScenario {
+  id: string;
+  config: OpenClawConfig;
+  disabledProviderIds: string[];
+  expected: {
+    status: {
+      modelPolicyMode: string;
+      allowlistModelCount: number;
+      effectiveModelCount: number;
+    };
+    models: Record<string, ModelPolicyAcceptanceExpectation>;
+    providers: Record<string, { disabled: boolean; enabledModelCount: number }>;
+  };
+}
+
+/**
+ * 通过真实文件读取与 REST 路由验证 model policy 三态；fixture 全部脱敏且只写临时目录。
+ */
+async function assertModelPolicyAcceptance(rootDir: string, outputs: string[]): Promise<void> {
+  const scenarios = modelPolicyAcceptance.scenarios as ModelPolicyAcceptanceScenario[];
+  const observedModes = new Set<string>();
+
+  for (const scenario of scenarios) {
+    const scenarioDir = join(rootDir, `model-policy-${scenario.id}`);
+    const stateDir = join(scenarioDir, ".oc-switch");
+    const customDir = join(stateDir, "presets", "custom");
+    const openclawPath = join(scenarioDir, "openclaw.json");
+    const envPath = join(scenarioDir, ".env");
+    mkdirSync(customDir, { recursive: true });
+    writeFileSync(openclawPath, `${JSON.stringify(scenario.config, null, 2)}\n`);
+    writeFileSync(envPath, "");
+
+    for (const providerId of scenario.disabledProviderIds) {
+      upsertDisabledProviderState(stateDir, {
+        providerId,
+        openclawPath,
+        disabledAt: "2026-01-01T00:00:00.000Z",
+        allowlistEntries: {}
+      });
+    }
+
+    const beforeConfig = readFileSync(openclawPath, "utf8");
+    const app = createApp({
+      token: TOKEN,
+      paths: { openclawPath, envPath, stateDir },
+      presetDirs: { builtinDir: fixtureBuiltinDir, customDir }
+    });
+    const headers = { Authorization: `Bearer ${TOKEN}` };
+    const statusResponse = await app.request("/api/status", { headers });
+    const modelsResponse = await app.request("/api/models", { headers });
+    const providersResponse = await app.request("/api/providers", { headers });
+    const configStatusResponse = await app.request("/api/config-status", { headers });
+    assert(statusResponse.status === 200, `${scenario.id}: status REST 应成功`);
+    assert(modelsResponse.status === 200, `${scenario.id}: models REST 应成功`);
+    assert(providersResponse.status === 200, `${scenario.id}: providers REST 应成功`);
+    assert(configStatusResponse.status === 200, `${scenario.id}: config-status REST 应成功`);
+
+    const status = await statusResponse.json() as Record<string, unknown>;
+    const modelsBody = await modelsResponse.json() as { models: Array<Record<string, unknown>> };
+    const providersBody = await providersResponse.json() as { providers: Array<Record<string, unknown>> };
+    const configStatus = await configStatusResponse.json() as {
+      modelPolicy?: { mode?: string; effectiveCatalogCount?: number };
+    };
+    outputs.push(JSON.stringify({ status, modelsBody, providersBody, configStatus }));
+    observedModes.add(String(status.modelPolicyMode));
+
+    assert(status.modelPolicyMode === scenario.expected.status.modelPolicyMode, `${scenario.id}: policy mode 不符`);
+    assert(status.allowlistModelCount === scenario.expected.status.allowlistModelCount, `${scenario.id}: metadata 计数不符`);
+    assert(status.effectiveModelCount === scenario.expected.status.effectiveModelCount, `${scenario.id}: 有效目录计数不符`);
+    assert(configStatus.modelPolicy?.mode === scenario.expected.status.modelPolicyMode, `${scenario.id}: config-status mode 不符`);
+    assert(
+      configStatus.modelPolicy?.effectiveCatalogCount === scenario.expected.status.effectiveModelCount,
+      `${scenario.id}: config-status 有效目录计数不符`
+    );
+
+    for (const [ref, expected] of Object.entries(scenario.expected.models)) {
+      const model = modelsBody.models.find((item) => item.ref === ref);
+      assert(Boolean(model), `${scenario.id}: 缺少模型 ${ref}`);
+      assert(model?.enabled === expected.enabled, `${scenario.id}: ${ref} enabled 不符`);
+      assert(model?.selectionSource === expected.selectionSource, `${scenario.id}: ${ref} selectionSource 不符`);
+      assert(model?.alias === expected.alias, `${scenario.id}: ${ref} alias 不符`);
+    }
+
+    for (const [providerId, expected] of Object.entries(scenario.expected.providers)) {
+      const provider = providersBody.providers.find((item) => item.id === providerId);
+      assert(Boolean(provider), `${scenario.id}: 缺少 Provider ${providerId}`);
+      assert(provider?.disabled === expected.disabled, `${scenario.id}: ${providerId} disabled 不符`);
+      assert(
+        provider?.enabledModelCount === expected.enabledModelCount,
+        `${scenario.id}: ${providerId} 有效模型计数不符`
+      );
+    }
+
+    assert(readFileSync(openclawPath, "utf8") === beforeConfig, `${scenario.id}: 只读验收不得修改配置`);
+  }
+
+  assert(
+    ["legacy", "unrestricted", "restricted"].every((mode) => observedModes.has(mode)),
+    "model policy acceptance fixture 必须覆盖 legacy、unrestricted、restricted 三态"
+  );
 }
 
 /** 运行 CLI 子进程并收集 stdout/stderr */
@@ -601,6 +712,9 @@ async function main(): Promise<void> {
 
     // Runtime discovery / 多实例 / service-env 验收（临时 fixture）
     await assertRuntimeDiscoveryAcceptance(outputs);
+
+    // Model policy 三态与独立 Provider state 验收（临时脱敏 fixture）
+    await assertModelPolicyAcceptance(dir, outputs);
 
     // 汇总扫描所有输出
     for (const text of outputs) {

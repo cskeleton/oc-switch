@@ -15,7 +15,7 @@ oc-switch 读写 `openclaw.json` 及 `~/.openclaw/.env` 中由工具托管的密
 | | English | 中文 |
 |---|---------|------|
 | **Providers** | List, add (preset or custom), edit, delete, disable/enable, sync, merge case duplicates | 列出、添加（模板或自定义）、编辑、删除、关闭/启用、同步、合并大小写重复项 |
-| **Models** | Add/remove, enable/disable allowlist, switch primary model (`use`) | 增删模型、启用/禁用 allowlist、切换主模型 |
+| **Models** | Add/remove, manage effective selection across model-policy modes, switch primary model (`use`) | 增删模型、按模型策略管理有效可选状态、切换主模型 |
 | **Safety** | Auto-backup on every write; `diff` before restore; API keys only in `.env` | 每次写入自动备份；恢复前可 `diff`；API Key 仅存于 `.env` |
 | **Migration** | `import` / `presets export`, full backup & restore | `import` / `presets export`、完整备份与恢复 |
 | **Web GUI** | React SPA with dark/light theme, proxies `/api` to REST server | React 单页应用，深浅色主题，`/api` 代理至 REST 服务 |
@@ -233,6 +233,12 @@ oc-switch/
 ---
 
 ## Important Notes / 重要说明
+
+### Model Policy Compatibility / 模型策略兼容
+
+OpenClaw model selection has three distinct states: missing `agents.defaults.modelPolicy.allow` keeps legacy `agents.defaults.models` selection; `allow: []` makes every local catalog model selectable; a non-empty `allow` restricts selection to exact or trailing-wildcard matches. Upgrading oc-switch does not rewrite these states. In restricted mode, `agents.defaults.models` remains alias/per-model metadata only. A wildcard-covered model cannot be disabled individually until the wildcard is narrowed, and an oc-switch-disabled Provider remains unavailable independently of policy.
+
+OpenClaw 模型选择有三种必须区分的状态：缺少 `agents.defaults.modelPolicy.allow` 时沿用 `agents.defaults.models` 的 legacy 选择；`allow: []` 表示本地目录模型均可选；非空 `allow` 仅允许精确项或尾部通配命中的模型。升级 oc-switch 不会改写这些状态。restricted 模式下，`agents.defaults.models` 仅保存 alias/单模型元数据；通配覆盖的单模型需先收窄通配规则才能关闭，oc-switch 的 Provider 关闭状态则独立于 policy 并优先使其不可用。
 
 ### Backup & Restore / 备份与恢复
 

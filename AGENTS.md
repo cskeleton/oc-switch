@@ -70,13 +70,13 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 ### Provider
 
 - CRUD、从 preset / 自定义添加（`provider add-custom`、`POST /api/providers/custom*`）
-- 可逆关闭（`provider disable/enable`、`PATCH /api/providers/:id/state`）：快照 allowlist 至 `provider-states.json`，保留 `models.providers`、不改 `.env`；含主模型时不可关闭
-- 删除级联：移除 `models.providers[<id>]` 与 allowlist 中第一段等于该 ID 的条目；`.env` Key 不自动删，标为 orphan；含当前主模型须先切换
+- 可逆关闭（`provider disable/enable`、`PATCH /api/providers/:id/state`）：快照 `agents.defaults.models` metadata 至 `provider-states.json`，保留 `models.providers`、不改 `modelPolicy.allow` / `.env`；含主模型时不可关闭
+- 删除级联：移除 `models.providers[<id>]` 与 `agents.defaults.models` 中第一段等于该 ID 的 metadata；restricted exact policy 在可安全表达时同步，通配覆盖则 fail closed；`.env` Key 不自动删，标为 orphan；含当前主模型须先切换
 - 大小写重复：`inspectConfigHealth` / `mergeProviderCaseDuplicates`；`GET /api/health`（legacy，仅大小写检查）；CLI `health` / `providers merge-duplicates`；`addCustomProvider` 含大小写防重复
 
 ### Model
 
-- 增删、allowlist 启用/禁用、切换主模型（`use`）
+- 增删、按 model policy 三态启用/禁用、切换主模型（`use`）
 - 模型编辑（Web + API）
 
 ### 配置健康
@@ -94,7 +94,7 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 
 ### 主路径（日常）
 
-- 本机已有 OpenClaw：读/改 `openclaw.json` 与 allowlist 是主流程。
+- 本机已有 OpenClaw：读/改 `openclaw.json` 的 Provider、模型目录与有效选择策略是主流程。
 - 新开荒：直接添加 provider 与模型，不依赖 preset。
 
 ### 迁移与共享
