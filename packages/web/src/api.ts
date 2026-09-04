@@ -1,11 +1,17 @@
 /** API 响应类型（与 server 端点对齐，不含密钥值） */
 
+export type ModelPolicyMode = "legacy" | "unrestricted" | "restricted";
+
+export type ModelSelectionSource = "legacy" | "unrestricted" | "policy-exact" | "policy-wildcard";
+
 export interface StatusResponse {
   ok: boolean;
   primaryModel?: string;
   providerCount: number;
   providerModelCount: number;
   allowlistModelCount: number;
+  modelPolicyMode: ModelPolicyMode;
+  effectiveModelCount: number;
 }
 
 export interface EnvPreview {
@@ -93,6 +99,8 @@ export interface ModelSummary {
   name: string | undefined;
   alias: string | undefined;
   enabled: boolean;
+  /** undefined 表示该行没有有效 selection 来源。 */
+  selectionSource?: ModelSelectionSource;
   isPrimary: boolean;
   api?: ApiType;
   reasoning?: boolean;

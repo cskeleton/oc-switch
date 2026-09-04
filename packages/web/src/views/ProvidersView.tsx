@@ -436,7 +436,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
           },
           {
             key: "enabled",
-            header: "已启用",
+            header: "有效可选",
             align: "right",
             render: (row) => row.enabledModelCount
           },
@@ -589,7 +589,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
         message={
           stateTarget?.disabled
             ? `将恢复关闭前保存的 ${stateTarget.modelCount} 个模型启用状态。`
-            : `该 Provider 的 ${stateTarget?.enabledModelCount ?? 0} 个已启用模型将从 OpenClaw 菜单中隐藏。Provider 配置和模型目录会保留，可稍后恢复。`
+            : `该 Provider 的 ${stateTarget?.enabledModelCount ?? 0} 个有效可选模型将从 OpenClaw 菜单中隐藏。Provider 配置和模型目录会保留，可稍后恢复。`
         }
         onCancel={() => setStateTarget(null)}
         onConfirm={() => void confirmProviderStateChange()}

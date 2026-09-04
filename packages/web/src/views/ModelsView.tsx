@@ -16,6 +16,25 @@ interface ModelsViewProps {
   client: ApiClient;
 }
 
+const selectionSourcePresentation = {
+  legacy: {
+    label: "传统元数据",
+    title: "由 agents.defaults.models 的传统元数据条目启用"
+  },
+  unrestricted: {
+    label: "无限制策略",
+    title: "modelPolicy.allow 为空，Provider 目录中的模型均可选"
+  },
+  "policy-exact": {
+    label: "精确策略",
+    title: "由 modelPolicy.allow 中的精确模型条目启用"
+  },
+  "policy-wildcard": {
+    label: "通配策略",
+    title: "由 modelPolicy.allow 中的通配条目启用"
+  }
+} as const;
+
 export function ModelsView({ client }: ModelsViewProps) {
   const toast = useToast();
   const [models, setModels] = useState<ModelSummary[]>([]);
@@ -211,6 +230,11 @@ export function ModelsView({ client }: ModelsViewProps) {
                     {row.ref}
                   </span>
                   {row.isPrimary ? <Pill variant="brand">当前主模型</Pill> : null}
+                  {row.selectionSource ? (
+                    <Badge variant="secondary" title={selectionSourcePresentation[row.selectionSource].title}>
+                      {selectionSourcePresentation[row.selectionSource].label}
+                    </Badge>
+                  ) : null}
                 </div>
               )
             },
@@ -223,7 +247,14 @@ export function ModelsView({ client }: ModelsViewProps) {
               key: "actions",
               header: "操作",
               className: "w-40 text-right pr-4",
-              render: (row) => (
+              render: (row) => {
+                const wildcardSelected = row.selectionSource === "policy-wildcard";
+                const toggleTitle = wildcardSelected
+                  ? "该模型由通配策略启用；请先收窄 policy 后再单独禁用"
+                  : activeProviderDisabled
+                    ? "该 Provider 已关闭，请先恢复 Provider 后再启用模型"
+                    : undefined;
+                return (
                 <div className="flex items-center justify-end gap-1.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150">
                   <Button
                     variant="ghost"
@@ -237,10 +268,10 @@ export function ModelsView({ client }: ModelsViewProps) {
                   </Button>
                   <Switch
                     checked={row.enabled}
-                    disabled={busy === row.ref || activeProviderDisabled}
+                    disabled={busy === row.ref || activeProviderDisabled || wildcardSelected}
                     onCheckedChange={() => void handleToggle(row.ref, row.enabled)}
                     aria-label={`${row.enabled ? "禁用" : "启用"} ${row.ref}`}
-                    title={activeProviderDisabled ? "该 Provider 已关闭，请先恢复 Provider 后再启用模型" : undefined}
+                    title={toggleTitle}
                   />
                   <Button
                     variant="ghost"
@@ -261,7 +292,8 @@ export function ModelsView({ client }: ModelsViewProps) {
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 </div>
-              )
+                );
+              }
             }
           ]}
         />

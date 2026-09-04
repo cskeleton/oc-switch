@@ -9,7 +9,14 @@ describe("createApiClient", () => {
       token: "secret",
       fetchImpl: async (input, init) => {
         calls.push(new Request(input, init));
-        return new Response(JSON.stringify({ ok: true, providerCount: 0, providerModelCount: 0, allowlistModelCount: 0 }), {
+        return new Response(JSON.stringify({
+          ok: true,
+          providerCount: 0,
+          providerModelCount: 0,
+          allowlistModelCount: 0,
+          modelPolicyMode: "legacy",
+          effectiveModelCount: 0
+        }), {
           headers: { "content-type": "application/json" }
         });
       }
@@ -19,7 +26,9 @@ describe("createApiClient", () => {
       ok: true,
       providerCount: 0,
       providerModelCount: 0,
-      allowlistModelCount: 0
+      allowlistModelCount: 0,
+      modelPolicyMode: "legacy",
+      effectiveModelCount: 0
     });
     expect(calls[0]?.headers.get("Authorization")).toBe("Bearer secret");
   });

@@ -12,6 +12,12 @@ interface DashboardProps {
   client: ApiClient;
 }
 
+const modelPolicyModeLabels = {
+  legacy: "传统模式",
+  unrestricted: "无限制策略",
+  restricted: "受限策略"
+} as const;
+
 /** 仪表盘：当前主模型与统计概览 */
 export function Dashboard({ client }: DashboardProps) {
   const [status, setStatus] = useState<StatusResponse | null>(null);
@@ -80,7 +86,12 @@ export function Dashboard({ client }: DashboardProps) {
           <StatCard label="主模型" value={status.primaryModel ?? "未设置"} icon={Star} className="lg:col-span-2" />
           <StatCard label="Provider 数量" value={String(status.providerCount)} icon={Box} />
           <StatCard label="Provider 模型" value={String(status.providerModelCount)} icon={Cpu} />
-          <StatCard label="Allowlist 模型" value={String(status.allowlistModelCount)} icon={ListChecks} />
+          <StatCard
+            label={`有效可选模型（${modelPolicyModeLabels[status.modelPolicyMode]}）`}
+            value={String(status.effectiveModelCount)}
+            icon={ListChecks}
+          />
+          <StatCard label="传统元数据条目" value={String(status.allowlistModelCount)} icon={ListChecks} />
           <HealthCard diff={diff} unavailable={diffUnavailable} className="md:col-span-2 lg:col-span-5" />
           <CaseDuplicateCard
             groups={health?.caseDuplicateGroups ?? []}

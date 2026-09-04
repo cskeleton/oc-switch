@@ -108,7 +108,9 @@ describe("Dashboard", () => {
             primaryModel: "nvidia/deepseek-ai/deepseek-v4-flash",
             providerCount: 3,
             providerModelCount: 5,
-            allowlistModelCount: 4
+            allowlistModelCount: 4,
+            modelPolicyMode: "restricted" as const,
+            effectiveModelCount: 5
           })
         })}
       />
@@ -116,8 +118,10 @@ describe("Dashboard", () => {
 
     expect(await findByText("nvidia/deepseek-ai/deepseek-v4-flash")).toBeTruthy();
     expect(await findByText("3")).toBeTruthy();
-    expect(await findByText("5")).toBeTruthy();
+    expect((await findAllByText("5")).length).toBe(2);
     expect(await findByText("4")).toBeTruthy();
+    expect(await findByText("有效可选模型（受限策略）")).toBeTruthy();
+    expect(await findByText("传统元数据条目")).toBeTruthy();
   });
 
   test("shows configuration health from latest backup diff", async () => {
@@ -129,7 +133,9 @@ describe("Dashboard", () => {
             primaryModel: "minimax-portal/MiniMax-M3",
             providerCount: 3,
             providerModelCount: 5,
-            allowlistModelCount: 4
+            allowlistModelCount: 4,
+            modelPolicyMode: "legacy" as const,
+            effectiveModelCount: 4
           }),
           getDiff: async () => ({
             providersAdded: [],
@@ -163,7 +169,7 @@ describe("Dashboard", () => {
       summary: { duplicateGroupCount: 1, affectedProviderCount: 2, affectedAllowlistCount: 0 }
     }));
     const { findByText, findByLabelText } = render(
-      <Dashboard client={mockClient({ getStatus: async () => ({ ok: true, providerCount: 2, providerModelCount: 2, allowlistModelCount: 0 }), getDiff: async () => { throw new Error("no backup"); }, getHealth })} />
+      <Dashboard client={mockClient({ getStatus: async () => ({ ok: true, providerCount: 2, providerModelCount: 2, allowlistModelCount: 0, modelPolicyMode: "legacy" as const, effectiveModelCount: 0 }), getDiff: async () => { throw new Error("no backup"); }, getHealth })} />
     );
     expect(await findByText(/发现 1 组 Provider 大小写重复/)).toBeTruthy();
     expect(await findByLabelText("合并 deepseek")).toBeTruthy();
@@ -204,6 +210,43 @@ describe("ModelsView", () => {
     await userEvent.click(await findByLabelText("禁用 a/b/c"));
 
     expect(patchModel).toHaveBeenCalledWith("a/b/c", false);
+  });
+
+  test("renders wildcard-selected models as enabled and prevents individual toggles", async () => {
+    const getProviders = mock(async () => ({ providers: [providerSummary({ id: "cpa", enabledModelCount: 1 })] }));
+    const getModels = mock(async () => ({
+      models: [
+        modelSummary({
+          ref: "cpa/m2",
+          enabled: true,
+          selectionSource: "policy-wildcard"
+        })
+      ]
+    }));
+
+    const { findByLabelText, findByText } = renderModelsView(mockClient({ getModels, getProviders }));
+
+    expect(await findByText("通配策略")).toBeTruthy();
+    const toggle = await findByLabelText("禁用 cpa/m2") as HTMLButtonElement;
+    expect(toggle.disabled).toBe(true);
+    expect(toggle.title).toContain("先收窄 policy");
+  });
+
+  test("shows a wildcard blocking error without reporting a successful toggle", async () => {
+    const patchModel = mock(async () => {
+      throw new Error("Cannot disable cpa/m2 while agents.defaults.modelPolicy.allow contains cpa/*; narrow the policy first.");
+    });
+    const getProviders = mock(async () => ({ providers: [providerSummary({ id: "cpa", enabledModelCount: 1 })] }));
+    const getModels = mock(async () => ({
+      models: [modelSummary({ ref: "cpa/m2", enabled: true, selectionSource: "policy-exact" })]
+    }));
+
+    const { findByLabelText, findByText, queryByText } = renderModelsView(mockClient({ getModels, getProviders, patchModel }));
+
+    await userEvent.click(await findByLabelText("禁用 cpa/m2"));
+    expect(patchModel).toHaveBeenCalledWith("cpa/m2", false);
+    expect(await findByText(/Cannot disable cpa\/m2/)).toBeTruthy();
+    expect(queryByText("已禁用 cpa/m2")).toBeNull();
   });
 
   test("filters models by search and provider while marking current primary", async () => {
@@ -1398,6 +1441,16 @@ describe("ProvidersView", () => {
     const closePrimary = await findByLabelText("关闭 Provider minimax-portal");
     expect((closePrimary as HTMLButtonElement).disabled).toBe(true);
   });
+
+  test("keeps Provider shutdown available when only policy-effective models are selectable", async () => {
+    const getProviders = mock(async () => ({
+      providers: [providerSummary({ id: "cpa", enabledModelCount: 0, disabled: false, containsPrimary: false })]
+    }));
+
+    const { findByLabelText } = renderProvidersView(mockClient({ getProviders }));
+
+    expect((await findByLabelText("关闭 Provider cpa") as HTMLButtonElement).disabled).toBe(false);
+  });
 });
 
 describe("PresetsView", () => {
@@ -1563,7 +1616,9 @@ describe("DiffChangelog", () => {
             primaryModel: "a/b",
             providerCount: 1,
             providerModelCount: 1,
-            allowlistModelCount: 1
+            allowlistModelCount: 1,
+            modelPolicyMode: "legacy" as const,
+            effectiveModelCount: 1
           }),
           getDiff: async () => ({
             providersAdded: ["p1", "p2"],
