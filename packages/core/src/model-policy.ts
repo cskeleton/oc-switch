@@ -1,5 +1,5 @@
 import { normalizeProviderId, parseModelRef } from "./model-ref";
-import type { OpenClawConfig } from "./types";
+import type { ModelPolicyMode, ModelSelectionSource, OpenClawConfig } from "./types";
 
 /**
  * `agents.defaults.modelPolicy.allow` 归一层：OpenClaw 2026.8+ 的覆盖 allowlist。
@@ -37,6 +37,13 @@ export function readModelPolicyAllow(config: OpenClawConfig): string[] | undefin
 export function policyRestricts(config: OpenClawConfig): boolean {
   const raw = readModelPolicyAllowRaw(config);
   return raw !== undefined && raw.length > 0;
+}
+
+/** 根据原始 allow 数组区分 legacy、显式开放与受限 selection 模式。 */
+export function getModelPolicyMode(config: OpenClawConfig): ModelPolicyMode {
+  const raw = readModelPolicyAllowRaw(config);
+  if (raw === undefined) return "legacy";
+  return raw.length === 0 ? "unrestricted" : "restricted";
 }
 
 function isWildcard(entry: string): boolean {
@@ -82,6 +89,24 @@ function wildcardEntryMatches(entry: string, ref: string): boolean {
 /** allow 列表（精确 + 通配）是否覆盖 ref。 */
 export function isPolicyAllowsRef(allow: string[], ref: string): boolean {
   return allow.some((entry) => exactEntryMatches(entry, ref) || wildcardEntryMatches(entry, ref));
+}
+
+/** 返回 ref 的有效 selection 来源；无有效 selection 时返回 undefined。 */
+export function getModelSelectionSource(
+  config: OpenClawConfig,
+  ref: string
+): ModelSelectionSource | undefined {
+  const mode = getModelPolicyMode(config);
+  if (mode === "unrestricted") return "unrestricted";
+  if (mode === "legacy") {
+    return Object.keys(config.agents?.defaults?.models ?? {}).some((entry) => exactEntryMatches(entry, ref))
+      ? "legacy"
+      : undefined;
+  }
+
+  const allow = readModelPolicyAllow(config) ?? [];
+  if (allow.some((entry) => exactEntryMatches(entry, ref))) return "policy-exact";
+  return allow.some((entry) => wildcardEntryMatches(entry, ref)) ? "policy-wildcard" : undefined;
 }
 
 /**

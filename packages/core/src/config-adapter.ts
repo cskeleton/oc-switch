@@ -1,4 +1,5 @@
 import { formatModelRef, normalizeProviderId, parseModelRef } from "./model-ref";
+import { getModelPolicyMode, getModelSelectionSource } from "./model-policy";
 import { readPrimaryModelRef } from "./primary-model";
 import type { ModelSummary, OpenClawConfig, ProviderSummary, StatusSummary } from "./types";
 
@@ -6,6 +7,7 @@ export function createConfigAdapter(config: OpenClawConfig) {
   const providers = config.models?.providers ?? {};
   const allowlist = config.agents?.defaults?.models ?? {};
   const primaryModel = readPrimaryModelRef(config);
+  const modelPolicyMode = getModelPolicyMode(config);
 
   const providerIdsByNormalized = new Map<string, string[]>();
   for (const providerId of Object.keys(providers)) {
@@ -31,6 +33,14 @@ export function createConfigAdapter(config: OpenClawConfig) {
     return (providers[providerId]?.models ?? []).map((model) => formatModelRef(providerId, model.id));
   }
 
+  function selectionSourceFor(providerId: string, modelId: string) {
+    const ref = formatModelRef(providerId, modelId);
+    if (modelPolicyMode === "legacy" && !uniqueProviderId(providerId)) {
+      return Object.prototype.hasOwnProperty.call(allowlist, ref) ? "legacy" : undefined;
+    }
+    return getModelSelectionSource(config, ref);
+  }
+
   return {
     listProviders(): ProviderSummary[] {
       return Object.entries(providers).map(([id, provider]) => {
@@ -40,9 +50,9 @@ export function createConfigAdapter(config: OpenClawConfig) {
           api: provider.api,
           baseUrl: provider.baseUrl,
           modelCount: refs.length,
-          enabledModelCount: Object.keys(allowlist).filter((ref) => {
-            const { providerId } = parseModelRef(ref);
-            return uniqueProviderId(id) ? normalizeProviderId(providerId) === normalizeProviderId(id) : providerId === id;
+          enabledModelCount: refs.filter((ref) => {
+            const { providerId, modelId } = parseModelRef(ref);
+            return selectionSourceFor(providerId, modelId) !== undefined;
           }).length,
           containsPrimary: primaryModel
             ? (() => {
@@ -62,13 +72,15 @@ export function createConfigAdapter(config: OpenClawConfig) {
         const canonicalProviderId = uniqueProviderId(providerId) ?? providerId;
         for (const model of provider.models ?? []) {
           const identity = modelIdentity(providerId, model.id);
+          const selectionSource = selectionSourceFor(providerId, model.id);
           const summary: ModelSummary = {
             ref: formatModelRef(canonicalProviderId, model.id),
             providerId: canonicalProviderId,
             modelId: model.id,
             name: model.name,
             alias: undefined,
-            enabled: false,
+            enabled: selectionSource !== undefined,
+            ...(selectionSource ? { selectionSource } : {}),
             isPrimary: primaryModel ? modelIdentity(parseModelRef(primaryModel).providerId, parseModelRef(primaryModel).modelId) === identity : false
           };
           if (model.api !== undefined) summary.api = model.api;
@@ -87,17 +99,18 @@ export function createConfigAdapter(config: OpenClawConfig) {
         const identity = modelIdentity(providerId, modelId);
         const existing = summaries.get(identity);
         if (existing) {
-          existing.enabled = true;
           existing.alias = entry.alias;
           continue;
         }
+        const selectionSource = getModelSelectionSource(config, ref);
         summaries.set(identity, {
           ref: formatModelRef(canonicalProviderId, modelId),
           providerId: canonicalProviderId,
           modelId,
           name: undefined,
           alias: entry.alias,
-          enabled: true,
+          enabled: selectionSource !== undefined,
+          ...(selectionSource ? { selectionSource } : {}),
           isPrimary: primaryModel
             ? modelIdentity(parseModelRef(primaryModel).providerId, parseModelRef(primaryModel).modelId) === identity
             : false
@@ -112,7 +125,13 @@ export function createConfigAdapter(config: OpenClawConfig) {
         primaryModel,
         providerCount: Object.keys(providers).length,
         providerModelCount: Object.values(providers).reduce((sum, provider) => sum + (provider.models?.length ?? 0), 0),
-        allowlistModelCount: Object.keys(allowlist).length
+        allowlistModelCount: Object.keys(allowlist).length,
+        modelPolicyMode,
+        effectiveModelCount: Object.entries(providers).reduce(
+          (sum, [providerId, provider]) =>
+            sum + (provider.models ?? []).filter((model) => selectionSourceFor(providerId, model.id) !== undefined).length,
+          0
+        )
       };
     }
   };

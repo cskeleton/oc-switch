@@ -83,6 +83,7 @@ describe("ConfigAdapter", () => {
       name: undefined,
       alias: "free",
       enabled: true,
+      selectionSource: "legacy",
       isPrimary: false
     }]);
   });
@@ -129,7 +130,82 @@ describe("ConfigAdapter", () => {
       primaryModel: "minimax-portal/MiniMax-M3",
       providerCount: 3,
       providerModelCount: 4,
-      allowlistModelCount: 4
+      allowlistModelCount: 4,
+      modelPolicyMode: "legacy",
+      effectiveModelCount: 4
+    });
+  });
+
+  test("restricted policy 以 wildcard 选择完整本地目录，metadata alias 不改变选择结果", () => {
+    const config: OpenClawConfig = {
+      models: { providers: { cpa: { models: [{ id: "m1" }, { id: "m2" }] } } },
+      agents: {
+        defaults: {
+          models: { "cpa/m1": { alias: "first" } },
+          modelPolicy: { allow: ["cpa/*"] }
+        }
+      }
+    };
+    const adapter = createConfigAdapter(config);
+
+    expect(adapter.listProviders()[0]?.enabledModelCount).toBe(2);
+    expect(adapter.listModels().find((model) => model.ref === "cpa/m2")).toMatchObject({
+      enabled: true,
+      selectionSource: "policy-wildcard"
+    });
+    expect(adapter.listModels().find((model) => model.ref === "cpa/m1")?.alias).toBe("first");
+    expect(adapter.getStatus()).toMatchObject({
+      allowlistModelCount: 1,
+      modelPolicyMode: "restricted",
+      effectiveModelCount: 2
+    });
+  });
+
+  test("缺失 policy 保持 legacy metadata selection", () => {
+    const config: OpenClawConfig = {
+      models: { providers: { cpa: { models: [{ id: "m1" }, { id: "m2" }] } } },
+      agents: { defaults: { models: { "cpa/m1": {} } } }
+    };
+
+    const adapter = createConfigAdapter(config);
+    expect(adapter.listModels().find((model) => model.ref === "cpa/m1")).toMatchObject({
+      enabled: true,
+      selectionSource: "legacy"
+    });
+    expect(adapter.listModels().find((model) => model.ref === "cpa/m2")).toMatchObject({ enabled: false });
+    expect(adapter.getStatus().effectiveModelCount).toBe(1);
+  });
+
+  test("legacy 保留大小写重复 Provider 的精确 metadata 归属", () => {
+    const config: OpenClawConfig = {
+      models: {
+        providers: {
+          CPA: { models: [{ id: "m1" }] },
+          cpa: { models: [{ id: "m1" }] }
+        }
+      },
+      agents: { defaults: { models: { "CPA/m1": {} } } }
+    };
+
+    const providers = createConfigAdapter(config).listProviders();
+    expect(providers.find((provider) => provider.id === "CPA")?.enabledModelCount).toBe(1);
+    expect(providers.find((provider) => provider.id === "cpa")?.enabledModelCount).toBe(0);
+  });
+
+  test("显式空 policy 不创建条目并将整个本地目录视为 unrestricted", () => {
+    const config: OpenClawConfig = {
+      models: { providers: { cpa: { models: [{ id: "m1" }, { id: "m2" }] } } },
+      agents: { defaults: { modelPolicy: { allow: [] } } }
+    };
+
+    const adapter = createConfigAdapter(config);
+    expect(config.agents?.defaults?.modelPolicy?.allow).toEqual([]);
+    expect(config.agents?.defaults?.models).toBeUndefined();
+    expect(adapter.listModels().every((model) => model.enabled && model.selectionSource === "unrestricted")).toBe(true);
+    expect(adapter.getStatus()).toMatchObject({
+      allowlistModelCount: 0,
+      modelPolicyMode: "unrestricted",
+      effectiveModelCount: 2
     });
   });
 });

@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   addPolicyAllow,
+  getModelPolicyMode,
+  getModelSelectionSource,
   isPolicyAllowsRef,
   policyRestricts,
   readModelPolicyAllow,
@@ -13,6 +15,20 @@ function configWithPolicy(allow: unknown): OpenClawConfig {
 }
 
 describe("model-policy 归一层", () => {
+  test("有效 selection 模式区分缺失、显式空数组与非空原始数组", () => {
+    expect(getModelPolicyMode({})).toBe("legacy");
+    expect(getModelPolicyMode(configWithPolicy([]))).toBe("unrestricted");
+    expect(getModelPolicyMode(configWithPolicy(["cpa/*"]))).toBe("restricted");
+    expect(getModelPolicyMode(configWithPolicy([42]))).toBe("restricted");
+  });
+
+  test("restricted selection 优先返回精确命中，否则返回通配命中", () => {
+    const restricted = configWithPolicy(["cpa/*", "cpa/m1"]);
+    expect(getModelSelectionSource(restricted, "cpa/m1")).toBe("policy-exact");
+    expect(getModelSelectionSource(restricted, "cpa/m2")).toBe("policy-wildcard");
+    expect(getModelSelectionSource(restricted, "other/m1")).toBeUndefined();
+  });
+
   test("readModelPolicyAllow 区分键不存在与显式空数组", () => {
     expect(readModelPolicyAllow({})).toBeUndefined();
     expect(readModelPolicyAllow(configWithPolicy(undefined))).toBeUndefined();
