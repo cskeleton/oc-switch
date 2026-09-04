@@ -86,6 +86,55 @@ function wildcardEntryMatches(entry: string, ref: string): boolean {
   return false;
 }
 
+/** 返回受限 policy 中覆盖指定模型的首个通配条目；无通配或非受限模式时不阻断。 */
+export function findPolicyWildcardForRef(config: OpenClawConfig, ref: string): string | undefined {
+  if (!policyRestricts(config)) return undefined;
+  return (readModelPolicyAllow(config) ?? []).find((entry) => wildcardEntryMatches(entry, ref));
+}
+
+/** 返回受限 policy 中属于指定 Provider 的首个通配条目。 */
+export function findPolicyWildcardForProvider(config: OpenClawConfig, providerId: string): string | undefined {
+  if (!policyRestricts(config)) return undefined;
+  return (readModelPolicyAllow(config) ?? []).find((entry) => {
+    if (!isWildcard(entry)) return false;
+    const slashIndex = entry.indexOf("/");
+    return slashIndex > 0 && normalizeProviderId(entry.slice(0, slashIndex)) === normalizeProviderId(providerId);
+  });
+}
+
+/** Provider 停用快照使用：读取可安全移除并在恢复时重放的精确条目。 */
+export function readPolicyExactRefsForProvider(config: OpenClawConfig, providerId: string): string[] {
+  if (!policyRestricts(config)) return [];
+  return (readModelPolicyAllow(config) ?? []).filter((entry) => {
+    if (isWildcard(entry)) return false;
+    try {
+      return normalizeProviderId(parseModelRef(entry).providerId) === normalizeProviderId(providerId);
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** 通配 policy 无法通过单条 metadata/目录变更准确表达，必须在任何写入前拒绝。 */
+export function assertNoPolicyWildcardForRef(config: OpenClawConfig, ref: string, action: string): void {
+  const wildcard = findPolicyWildcardForRef(config, ref);
+  if (wildcard) {
+    throw new Error(
+      `Cannot ${action} ${ref} while agents.defaults.modelPolicy.allow contains ${wildcard}; narrow the policy first.`
+    );
+  }
+}
+
+/** Provider 级破坏性操作同样不得遗留仍可覆盖该 Provider 的用户通配。 */
+export function assertNoPolicyWildcardForProvider(config: OpenClawConfig, providerId: string, action: string): void {
+  const wildcard = findPolicyWildcardForProvider(config, providerId);
+  if (wildcard) {
+    throw new Error(
+      `Cannot ${action} provider ${providerId} while agents.defaults.modelPolicy.allow contains ${wildcard}; narrow the policy first.`
+    );
+  }
+}
+
 /** allow 列表（精确 + 通配）是否覆盖 ref。 */
 export function isPolicyAllowsRef(allow: string[], ref: string): boolean {
   return allow.some((entry) => exactEntryMatches(entry, ref) || wildcardEntryMatches(entry, ref));
@@ -118,6 +167,20 @@ export function addPolicyAllow(config: OpenClawConfig, ref: string): boolean {
   const strings = readModelPolicyAllow(config) ?? [];
   if (isPolicyAllowsRef(strings, ref)) return false;
   readModelPolicyAllowRaw(config)!.push(ref);
+  return true;
+}
+
+/**
+ * 从停用快照恢复精确 policy 条目。
+ * 此路径只接受先前保存的 restricted policy 快照，因此允许把暂时变为 [] 的 allow 恢复为受限状态；
+ * 日常 enable 仍必须使用 addPolicyAllow，以保留用户显式 unrestricted 配置。
+ */
+export function restorePolicyAllow(config: OpenClawConfig, ref: string): boolean {
+  const raw = readModelPolicyAllowRaw(config);
+  if (raw === undefined) return false;
+  const strings = readModelPolicyAllow(config) ?? [];
+  if (isPolicyAllowsRef(strings, ref)) return false;
+  raw.push(ref);
   return true;
 }
 

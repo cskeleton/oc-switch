@@ -7,6 +7,8 @@ export interface DisabledProviderState {
   openclawPath: string;
   disabledAt: string;
   allowlistEntries: Record<string, AllowlistEntry>;
+  /** 停用时被移除的 restricted-policy 精确条目；保留 policy-only ref 的恢复能力。 */
+  policyExactRefs?: string[];
 }
 
 export interface ProviderStatesFile {
@@ -37,6 +39,26 @@ function normalizeAllowlistEntries(entries: Record<string, AllowlistEntry>): Rec
   return normalized;
 }
 
+function normalizePolicyExactRefs(refs: unknown): string[] {
+  if (!Array.isArray(refs)) return [];
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const ref of refs) {
+    if (typeof ref !== "string" || ref.endsWith("/*")) continue;
+    let normalizedRef = ref;
+    try {
+      normalizedRef = normalizeModelRefForStorage(ref);
+    } catch {
+      continue;
+    }
+    if (!seen.has(normalizedRef)) {
+      seen.add(normalizedRef);
+      normalized.push(normalizedRef);
+    }
+  }
+  return normalized;
+}
+
 function normalizeStates(value: Partial<ProviderStatesFile>): ProviderStatesFile {
   const disabledProviders: Record<string, DisabledProviderState> = {};
   for (const [key, rawState] of Object.entries(value.disabledProviders ?? {})) {
@@ -48,7 +70,8 @@ function normalizeStates(value: Partial<ProviderStatesFile>): ProviderStatesFile
     disabledProviders[providerId] = {
       ...state,
       providerId,
-      allowlistEntries: normalizeAllowlistEntries(state.allowlistEntries ?? {})
+      allowlistEntries: normalizeAllowlistEntries(state.allowlistEntries ?? {}),
+      policyExactRefs: normalizePolicyExactRefs(state.policyExactRefs)
     };
   }
   return { version: 1, disabledProviders };
@@ -83,7 +106,8 @@ export function upsertDisabledProviderState(stateDir: string, state: DisabledPro
   states.disabledProviders[providerId] = {
     ...state,
     providerId,
-    allowlistEntries: normalizeAllowlistEntries(state.allowlistEntries)
+    allowlistEntries: normalizeAllowlistEntries(state.allowlistEntries),
+    policyExactRefs: normalizePolicyExactRefs(state.policyExactRefs)
   };
   writeProviderStates(stateDir, states);
 }

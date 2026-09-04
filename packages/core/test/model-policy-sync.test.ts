@@ -11,7 +11,7 @@ import {
 import { readModelPolicyAllow } from "../src/model-policy";
 import { batchAddProviderModels, batchRemoveProviderModels } from "../src/provider-model-batch";
 import { disableProvider, restoreDisabledProvider } from "../src/provider-lifecycle";
-import { addCustomProvider, removeProvider } from "../src/provider-operations";
+import { addCustomProvider, addProviderFromPreset, removeProvider } from "../src/provider-operations";
 import type { OpenClawConfig } from "../src/types";
 
 /** 已迁移（含非空 modelPolicy.allow）的基础配置 */
@@ -93,13 +93,15 @@ describe("modelPolicy.allow 双向同步", () => {
     expect(allow.filter((ref) => ref.startsWith("cpa/"))).toEqual(["cpa/m1", "cpa/b2"]);
   });
 
-  test("removeProvider 移除该 Provider 全部精确条目，残留通配给 warning", () => {
+  test("removeProvider 遇到 Provider 通配 policy 时拒绝且不写入", () => {
     const config = migratedConfig();
     config.agents!.defaults!.modelPolicy!.allow!.push("cpa/*");
-    const result = removeProvider(config, "cpa", { force: false });
-    const allow = readModelPolicyAllow(config) ?? [];
-    expect(allow).toEqual(["other/o1", "cpa/*"]);
-    expect(result.warnings.some((w) => w.includes("cpa/*"))).toBe(true);
+    const before = JSON.stringify(config);
+
+    expect(() => removeProvider(config, "cpa", { force: false })).toThrow(
+      "Cannot remove provider cpa while agents.defaults.modelPolicy.allow contains cpa/*; narrow the policy first."
+    );
+    expect(JSON.stringify(config)).toBe(before);
   });
 
   test("disableProvider / restoreDisabledProvider 往返同步", () => {
@@ -109,6 +111,29 @@ describe("modelPolicy.allow 双向同步", () => {
 
     restoreDisabledProvider(config, "cpa", disabled.disabledState.allowlistEntries);
     expect(readModelPolicyAllow(config)).toContain("cpa/m1");
+  });
+
+  test("Provider 停用和恢复保留没有 metadata 的精确 policy 条目", () => {
+    const config = migratedConfig();
+    config.agents!.defaults!.modelPolicy!.allow = ["cpa/m1", "cpa/policy-only", "other/o1"];
+
+    const disabled = disableProvider(config, "cpa");
+    expect(readModelPolicyAllow(config)).toEqual(["other/o1"]);
+
+    restoreDisabledProvider(config, "cpa", disabled.disabledState.allowlistEntries, disabled.disabledState.policyExactRefs);
+    expect(readModelPolicyAllow(config)).toEqual(expect.arrayContaining(["cpa/m1", "cpa/policy-only", "other/o1"]));
+    expect(config.agents!.defaults!.models?.["cpa/policy-only"]).toBeUndefined();
+  });
+
+  test("恢复曾为最后一个精确条目的 Provider 时不把原 restricted policy 留为 unrestricted", () => {
+    const config = migratedConfig();
+    config.agents!.defaults!.modelPolicy!.allow = ["cpa/m1"];
+
+    const disabled = disableProvider(config, "cpa");
+    expect(readModelPolicyAllow(config)).toEqual([]);
+
+    restoreDisabledProvider(config, "cpa", disabled.disabledState.allowlistEntries, disabled.disabledState.policyExactRefs);
+    expect(readModelPolicyAllow(config)).toEqual(["cpa/m1"]);
   });
 
   test("addCustomProvider enableAllModels 同步", () => {
@@ -169,5 +194,65 @@ describe("modelPolicy.allow 双向同步", () => {
     config.agents!.defaults!.modelPolicy!.allow = ["cpa/*", "other/o1"];
     enableModel(config, "cpa/m2");
     expect(readModelPolicyAllow(config)).toEqual(["cpa/*", "other/o1"]);
+  });
+
+  test("受限通配覆盖的单模型破坏性操作在任何写入前拒绝", () => {
+    const disableConfig = migratedConfig();
+    disableConfig.agents!.defaults!.modelPolicy!.allow = ["cpa/*", "other/o1"];
+    const disableBefore = JSON.stringify(disableConfig);
+    expect(() => disableModel(disableConfig, "cpa/m2")).toThrow(
+      "Cannot disable cpa/m2 while agents.defaults.modelPolicy.allow contains cpa/*; narrow the policy first."
+    );
+    expect(JSON.stringify(disableConfig)).toBe(disableBefore);
+
+    const renameConfig = migratedConfig();
+    renameConfig.agents!.defaults!.modelPolicy!.allow = ["cpa/*", "other/o1"];
+    const renameBefore = JSON.stringify(renameConfig);
+    expect(() => updateProviderModel(renameConfig, "cpa/m1", { id: "m1-renamed", enabled: true })).toThrow(
+      "Cannot rename cpa/m1 while agents.defaults.modelPolicy.allow contains cpa/*; narrow the policy first."
+    );
+    expect(JSON.stringify(renameConfig)).toBe(renameBefore);
+
+    const removeConfig = migratedConfig();
+    removeConfig.agents!.defaults!.modelPolicy!.allow = ["cpa/*", "other/o1"];
+    const removeBefore = JSON.stringify(removeConfig);
+    expect(() => removeProviderModel(removeConfig, "cpa/m1", { force: false })).toThrow(
+      "Cannot remove cpa/m1 while agents.defaults.modelPolicy.allow contains cpa/*; narrow the policy first."
+    );
+    expect(JSON.stringify(removeConfig)).toBe(removeBefore);
+  });
+
+  test("受限通配覆盖的批量删除与 Provider 停用在任何写入前拒绝", () => {
+    const batchConfig = migratedConfig();
+    batchConfig.agents!.defaults!.modelPolicy!.allow = ["cpa/*", "other/o1"];
+    const batchBefore = JSON.stringify(batchConfig);
+    expect(() => batchRemoveProviderModels(batchConfig, "cpa", { modelIds: ["m2"] })).toThrow(
+      "Cannot remove cpa/m2 while agents.defaults.modelPolicy.allow contains cpa/*; narrow the policy first."
+    );
+    expect(JSON.stringify(batchConfig)).toBe(batchBefore);
+
+    const disableProviderConfig = migratedConfig();
+    disableProviderConfig.agents!.defaults!.modelPolicy!.allow = ["cpa/*", "other/o1"];
+    const disableProviderBefore = JSON.stringify(disableProviderConfig);
+    expect(() => disableProvider(disableProviderConfig, "cpa")).toThrow(
+      "Cannot disable provider cpa while agents.defaults.modelPolicy.allow contains cpa/*; narrow the policy first."
+    );
+    expect(JSON.stringify(disableProviderConfig)).toBe(disableProviderBefore);
+  });
+
+  test("预设同步不能借由未勾选模型绕过通配 policy 的 disable 拒绝", () => {
+    const config = migratedConfig();
+    config.agents!.defaults!.modelPolicy!.allow = ["cpa/*", "other/o1"];
+    const before = JSON.stringify(config);
+
+    expect(() => addProviderFromPreset(config, {
+      id: "cpa",
+      name: "CPA",
+      provider: { api: "openai-completions", baseUrl: "https://example.test/v1", apiKeyEnv: "CPA_API_KEY" },
+      models: [{ id: "m1" }]
+    }, [])).toThrow(
+      "Cannot disable cpa/m1 while agents.defaults.modelPolicy.allow contains cpa/*; narrow the policy first."
+    );
+    expect(JSON.stringify(config)).toBe(before);
   });
 });

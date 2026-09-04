@@ -1,5 +1,11 @@
 import { formatModelRef, normalizeProviderId, parseModelRef } from "./model-ref";
-import { addPolicyAllow, removePolicyAllow, removePolicyAllowForProvider } from "./model-policy";
+import {
+  addPolicyAllow,
+  assertNoPolicyWildcardForProvider,
+  assertNoPolicyWildcardForRef,
+  removePolicyAllow,
+  removePolicyAllowForProvider
+} from "./model-policy";
 import { setPrimaryModel } from "./model-operations";
 import { formatEnvRefForOpenClaw, ensureModelName } from "./openclaw-compat";
 import { ensureDefaults, matchingAllowlistRefs, resolveProviderId, type OperationResult } from "./operation-common";
@@ -54,12 +60,14 @@ export function removeProvider(
   providerId: string,
   options: { force: boolean; newPrimary?: string }
 ): OperationResult {
-  ensureDefaults(config);
   const resolvedProviderId = resolveProviderId(config, providerId) ?? providerId;
   const primary = readPrimaryModelRef(config);
   // fallback 依赖保护必须发生在任何 mutation 之前（force 也不可绕过）
   assertProviderFallbackRemovalAllowed(config, resolvedProviderId);
+  assertNoPolicyWildcardForProvider(config, resolvedProviderId, "remove");
   assertProviderPrimaryRemovalAllowed(config, resolvedProviderId, options);
+
+  ensureDefaults(config);
 
   delete config.models!.providers![resolvedProviderId];
 
@@ -68,15 +76,11 @@ export function removeProvider(
       delete config.agents!.defaults!.models![ref];
     }
   }
-  const leftoverWildcards = removePolicyAllowForProvider(config, resolvedProviderId);
+  removePolicyAllowForProvider(config, resolvedProviderId);
 
   const warnings = primary && normalizeProviderId(parseModelRef(primary).providerId) === normalizeProviderId(resolvedProviderId) && options.force
     ? [`Primary model ${primary} now points to a deleted provider`]
     : [];
-  for (const wildcard of leftoverWildcards) {
-    warnings.push(`modelPolicy.allow 仍包含已删除 Provider 的通配条目 ${wildcard}，请人工清理`);
-  }
-
   return { config, warnings };
 }
 
@@ -108,7 +112,6 @@ export function addProviderFromPreset(
   preset: ProviderPreset,
   enabledModelIds: string[] = preset.models.map((model) => model.id)
 ): OperationResult {
-  ensureDefaults(config);
   const providerId = normalizeProviderId(preset.id);
   const existingProviderId = resolveProviderId(config, providerId);
   const existingProvider = existingProviderId ? config.models!.providers![existingProviderId] : undefined;
@@ -126,6 +129,15 @@ export function addProviderFromPreset(
 
   const netNew = preset.models.filter((m) => !existingIds.has(m.id)).length;
   assertProviderModelCapacity(existingProvider, netNew);
+
+  // 预设中未勾选的既有模型等价于 disable；通配 policy 不允许借此路径假装关闭。
+  for (const model of preset.models) {
+    if (!enabledModelIds.includes(model.id)) {
+      assertNoPolicyWildcardForRef(config, formatModelRef(providerId, model.id), "disable");
+    }
+  }
+
+  ensureDefaults(config);
 
   config.models!.providers![providerId] = removeLegacyAuthHeaderRef({
     ...existingProvider,

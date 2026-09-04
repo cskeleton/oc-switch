@@ -1,5 +1,5 @@
 import { formatModelRef, normalizeProviderId, parseModelRef } from "./model-ref";
-import { addPolicyAllow, removePolicyAllow } from "./model-policy";
+import { addPolicyAllow, assertNoPolicyWildcardForRef, removePolicyAllow } from "./model-policy";
 import { ensureModelName } from "./openclaw-compat";
 import { ensureDefaults, matchingAllowlistRefs, resolveProviderId, type OperationResult } from "./operation-common";
 import { readFallbackModelRefs, readPrimaryModelRef } from "./primary-model";
@@ -129,7 +129,7 @@ function assertPrimaryCatalogPresentForKeepEnabledOnly(
 
 function collectAllowlistedModelIds(config: OpenClawConfig, providerId: string): Set<string> {
   const ids = new Set<string>();
-  for (const ref of Object.keys(config.agents!.defaults!.models ?? {})) {
+  for (const ref of Object.keys(config.agents?.defaults?.models ?? {})) {
     const { providerId: refProviderId, modelId } = parseModelRef(ref);
     if (normalizeProviderId(refProviderId) === normalizeProviderId(providerId)) ids.add(modelId);
   }
@@ -142,7 +142,6 @@ export function batchRemoveProviderModels(
   providerId: string,
   input: BatchRemoveProviderModelsInput
 ): BatchRemoveProviderModelsResult {
-  ensureDefaults(config);
   const resolvedProviderId = resolveProviderId(config, providerId);
   const provider = resolvedProviderId ? config.models!.providers![resolvedProviderId] : undefined;
   if (!provider) throw new Error(`Provider ${providerId} not found`);
@@ -163,14 +162,20 @@ export function batchRemoveProviderModels(
     // fallback 依赖保护（fail closed）：将要移除的目录项命中 fallbacks 引用时整单拒绝，
     // 不做静默保留例外；检查先于任何 mutation
     assertNotRemovingFallbackModel(config, providerId, removedModelIds);
+    for (const id of removedModelIds) {
+      assertNoPolicyWildcardForRef(config, formatModelRef(resolvedProviderId!, id), "remove");
+    }
+
+    ensureDefaults(config);
 
     provider.models = models.filter((model) => keepIds.has(model.id));
 
     for (const id of removedModelIds) {
-      for (const ref of matchingAllowlistRefs(config, formatModelRef(resolvedProviderId!, id))) {
-        delete config.agents!.defaults!.models![ref];
-        removePolicyAllow(config, ref);
+      const ref = formatModelRef(resolvedProviderId!, id);
+      for (const allowlistRef of matchingAllowlistRefs(config, ref)) {
+        delete config.agents!.defaults!.models![allowlistRef];
       }
+      removePolicyAllow(config, ref);
     }
 
     return { config, warnings: [], removedModelIds };
@@ -185,15 +190,22 @@ export function batchRemoveProviderModels(
   // fallback 依赖保护：先于任何 mutation
   assertNotRemovingFallbackModel(config, providerId, modelIds);
 
+  for (const id of modelIds) {
+    assertNoPolicyWildcardForRef(config, formatModelRef(resolvedProviderId!, id), "remove");
+  }
+
+  ensureDefaults(config);
+
   const removeSet = new Set(modelIds);
   const removedModelIds = models.filter((model) => removeSet.has(model.id)).map((model) => model.id);
   provider.models = models.filter((model) => !removeSet.has(model.id));
 
   for (const id of modelIds) {
-    for (const ref of matchingAllowlistRefs(config, formatModelRef(resolvedProviderId!, id))) {
-      delete config.agents!.defaults!.models![ref];
-      removePolicyAllow(config, ref);
+    const ref = formatModelRef(resolvedProviderId!, id);
+    for (const allowlistRef of matchingAllowlistRefs(config, ref)) {
+      delete config.agents!.defaults!.models![allowlistRef];
     }
+    removePolicyAllow(config, ref);
   }
 
   return { config, warnings: [], removedModelIds };

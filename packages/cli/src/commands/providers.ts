@@ -238,7 +238,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
     .argument("<name>")
     .action(async (name: string) => {
       const paths = context.activePaths();
-      let disabledState: { allowlistEntries: Record<string, unknown> } | undefined;
+      let disabledState: { allowlistEntries: Record<string, unknown>; policyExactRefs: string[] } | undefined;
       await writeOpenClawTransaction({
         ...paths,
         runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
@@ -254,7 +254,8 @@ export function registerProviderCommands(program: Command, context: CommandConte
             providerId: name,
             openclawPath: paths.openclawPath,
             disabledAt: new Date().toISOString(),
-            allowlistEntries: disabledState.allowlistEntries as never
+            allowlistEntries: disabledState.allowlistEntries as never,
+            policyExactRefs: disabledState.policyExactRefs
           });
         }
       });
@@ -275,7 +276,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
         runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `enable provider ${name}`,
         mutate(config) {
-          return restoreDisabledProvider(config, name, snapshot.allowlistEntries).config;
+          return restoreDisabledProvider(config, name, snapshot.allowlistEntries, snapshot.policyExactRefs).config;
         },
         afterWrite() {
           removeDisabledProviderState(paths.stateDir, name);

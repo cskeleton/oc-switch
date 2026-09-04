@@ -7,7 +7,7 @@ import {
   resolveProviderId,
   type OperationResult
 } from "./operation-common";
-import { addPolicyAllow, removePolicyAllow } from "./model-policy";
+import { addPolicyAllow, assertNoPolicyWildcardForRef, removePolicyAllow } from "./model-policy";
 import { isPrimaryModelRef, readFallbackModelRefs, readPrimaryModelRef, writePrimaryModelRef } from "./primary-model";
 import { assertProviderModelCapacity } from "./provider-model-limits";
 import type { AllowlistEntry, OpenClawConfig, OpenClawModel, ProviderModelInput } from "./types";
@@ -49,6 +49,7 @@ export function setPrimaryModel(config: OpenClawConfig, ref: string): OperationR
 }
 
 export function disableModel(config: OpenClawConfig, ref: string): OperationResult {
+  assertNoPolicyWildcardForRef(config, ref, "disable");
   ensureDefaults(config);
   for (const allowlistRef of matchingAllowlistRefs(config, ref)) {
     delete config.agents!.defaults!.models![allowlistRef];
@@ -170,7 +171,6 @@ export function addProviderModel(
 }
 
 export function updateProviderModel(config: OpenClawConfig, ref: string, input: ProviderModelInput): OperationResult {
-  ensureDefaults(config);
   assertProviderModelInput(input);
   const { providerId, modelId } = parseModelRef(ref);
   const resolvedProviderId = resolveProviderId(config, providerId);
@@ -189,7 +189,12 @@ export function updateProviderModel(config: OpenClawConfig, ref: string, input: 
   // 改名会使旧 ref 从目录消失：若被 fallbacks 引用则拒绝（先于任何 mutation）
   if (input.id !== modelId) {
     assertFallbackRemovalAllowed(config, ref);
+    assertNoPolicyWildcardForRef(config, ref, "rename");
+  } else if (!input.enabled) {
+    assertNoPolicyWildcardForRef(config, ref, "disable");
   }
+
+  ensureDefaults(config);
 
   const existingModel = models[existingIndex];
   provider.models = models.map((model, index) =>
@@ -234,7 +239,6 @@ export function removeProviderModel(
   ref: string,
   options: { force: boolean; newPrimary?: string }
 ): OperationResult {
-  ensureDefaults(config);
   const { providerId, modelId } = parseModelRef(ref);
   const resolvedProviderId = resolveProviderId(config, providerId);
   const provider = resolvedProviderId ? config.models!.providers![resolvedProviderId] : undefined;
@@ -242,7 +246,10 @@ export function removeProviderModel(
 
   // fallback 依赖保护必须发生在任何 mutation 之前（force 也不可绕过）
   assertFallbackRemovalAllowed(config, ref);
+  assertNoPolicyWildcardForRef(config, ref, "remove");
   assertPrimaryRemovalAllowed(config, ref, options);
+
+  ensureDefaults(config);
 
   provider.models = (provider.models ?? []).filter((model) => model.id !== modelId);
   for (const allowlistRef of matchingAllowlistRefs(config, ref)) {

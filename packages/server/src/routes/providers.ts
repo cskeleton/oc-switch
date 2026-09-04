@@ -420,7 +420,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       const paths = runtime.currentPaths();
 
       if (!enabled) {
-        let disabledState: { providerId: string; allowlistEntries: Record<string, unknown> } | undefined;
+        let disabledState: { providerId: string; allowlistEntries: Record<string, unknown>; policyExactRefs: string[] } | undefined;
         const result = await writeOpenClawTransaction({
           ...paths,
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
@@ -436,7 +436,8 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
               providerId,
               openclawPath: paths.openclawPath,
               disabledAt: new Date().toISOString(),
-              allowlistEntries: disabledState.allowlistEntries as never
+              allowlistEntries: disabledState.allowlistEntries as never,
+              policyExactRefs: disabledState.policyExactRefs
             });
           }
         });
@@ -459,7 +460,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `enable provider ${providerId}`,
         mutate(config) {
-          return restoreDisabledProvider(config, providerId, snapshot.allowlistEntries).config;
+          return restoreDisabledProvider(config, providerId, snapshot.allowlistEntries, snapshot.policyExactRefs).config;
         },
         afterWrite() {
           removeDisabledProviderState(paths.stateDir, providerId);
