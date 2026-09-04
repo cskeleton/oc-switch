@@ -94,4 +94,20 @@ describe("assertAllowedSemanticChange", () => {
 
     expect(() => assertAllowedSemanticChange(before, after)).not.toThrow();
   });
+
+  test("allows agents.defaults.modelPolicy.allow changes", () => {
+    const before = cloneSample();
+    const after = cloneSample();
+    before.agents!.defaults!.modelPolicy = {
+      allow: ["nvidia/deepseek-ai/deepseek-v4-flash"]
+    };
+    after.agents!.defaults!.modelPolicy = {
+      allow: [
+        "nvidia/deepseek-ai/deepseek-v4-flash",
+        "opencode/new-model"
+      ]
+    };
+
+    expect(() => assertAllowedSemanticChange(before, after)).not.toThrow();
+  });
 });

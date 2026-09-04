@@ -23,6 +23,15 @@ function isAllowedPath(path: Path): boolean {
     return true;
   }
 
+  if (
+    path[0] === "agents" &&
+    path[1] === "defaults" &&
+    path[2] === "modelPolicy" &&
+    path[3] === "allow"
+  ) {
+    return true;
+  }
+
   return false;
 }
 
