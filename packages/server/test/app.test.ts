@@ -1523,6 +1523,32 @@ describe("server write endpoints", () => {
     expect(written.agents.defaults.models["deepseek/r"]).toEqual({});
   });
 
+  test("POST /api/providers/merge-case-duplicates 成功后清理整个重复组的 disabled snapshots", async () => {
+    const ws = workspace();
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    config.models.providers.deepseek = { models: [{ id: "c" }] };
+    config.models.providers.DeepSeek = { models: [{ id: "r" }] };
+    writeFileSync(ws.paths.openclawPath, JSON.stringify(config));
+    for (const providerId of ["deepseek", "DeepSeek"]) {
+      upsertDisabledProviderState(ws.paths.stateDir, {
+        providerId,
+        openclawPath: ws.paths.openclawPath,
+        disabledAt: "2026-09-04T00:00:00.000Z",
+        allowlistEntries: {}
+      });
+    }
+    const app = createTestApp(ws);
+
+    const { response } = await jsonRequest(app, "/api/providers/merge-case-duplicates", {
+      method: "POST",
+      body: JSON.stringify({ groupKey: "deepseek", canonicalId: "deepseek", removeIds: ["DeepSeek"] })
+    });
+
+    expect(response.status).toBe(200);
+    const states = JSON.parse(readFileSync(join(ws.paths.stateDir, "provider-states.json"), "utf8"));
+    expect(states.disabledProviders.deepseek).toBeUndefined();
+  });
+
   test("merge canonicalId 不在组内 → 400", async () => {
     const ws = workspace();
     const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));

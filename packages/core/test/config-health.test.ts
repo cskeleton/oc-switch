@@ -209,6 +209,32 @@ describe("mergeProviderCaseDuplicates", () => {
     expect(() => mergeProviderCaseDuplicates(config, { groupKey: "deepseek", canonicalId: "deepseek", removeIds: ["DeepSeek"], keepModelIds: [] }))
       .toThrow("Cannot drop the primary model");
   });
+
+  test("keepModelIds 不得把最后一个 restricted 精确 policy 条目清空为 unrestricted", () => {
+    const config: OpenClawConfig = {
+      models: {
+        providers: {
+          deepseek: { models: [{ id: "chat" }] },
+          DeepSeek: { models: [{ id: "chat" }] }
+        }
+      },
+      agents: {
+        defaults: {
+          models: { "DeepSeek/chat": {} },
+          modelPolicy: { allow: ["DeepSeek/chat"] }
+        }
+      }
+    };
+    const before = JSON.stringify(config);
+
+    expect(() => mergeProviderCaseDuplicates(config, {
+      groupKey: "deepseek",
+      canonicalId: "deepseek",
+      removeIds: ["DeepSeek"],
+      keepModelIds: []
+    })).toThrow(/would make \[\] unrestricted/);
+    expect(JSON.stringify(config)).toBe(before);
+  });
 });
 
 describe("对象形态主模型与 fallback 保护", () => {

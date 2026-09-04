@@ -3,6 +3,8 @@ import {
   addPolicyAllow,
   assertNoPolicyWildcardForProvider,
   assertNoPolicyWildcardForRef,
+  assertPolicyExactRefsRemovalAllowed,
+  assertPolicyProviderExactRemovalAllowed,
   removePolicyAllow,
   removePolicyAllowForProvider
 } from "./model-policy";
@@ -65,6 +67,7 @@ export function removeProvider(
   // fallback 依赖保护必须发生在任何 mutation 之前（force 也不可绕过）
   assertProviderFallbackRemovalAllowed(config, resolvedProviderId);
   assertNoPolicyWildcardForProvider(config, resolvedProviderId, "remove");
+  assertPolicyProviderExactRemovalAllowed(config, resolvedProviderId, "remove");
   assertProviderPrimaryRemovalAllowed(config, resolvedProviderId, options);
 
   ensureDefaults(config);
@@ -131,11 +134,13 @@ export function addProviderFromPreset(
   assertProviderModelCapacity(existingProvider, netNew);
 
   // 预设中未勾选的既有模型等价于 disable；通配 policy 不允许借此路径假装关闭。
-  for (const model of preset.models) {
-    if (!enabledModelIds.includes(model.id)) {
-      assertNoPolicyWildcardForRef(config, formatModelRef(providerId, model.id), "disable");
-    }
+  const disabledRefs = preset.models
+    .filter((model) => !enabledModelIds.includes(model.id))
+    .map((model) => formatModelRef(providerId, model.id));
+  for (const ref of disabledRefs) {
+    assertNoPolicyWildcardForRef(config, ref, "disable");
   }
+  assertPolicyExactRefsRemovalAllowed(config, disabledRefs, "disable", `models from provider ${providerId}`);
 
   ensureDefaults(config);
 

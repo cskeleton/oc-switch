@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Command } from "commander";
 import sample from "../../core/test/fixtures/openclaw.sample.json";
 import type { OpenClawConfig, RuntimeDiscoveryResult } from "@oc-switch/core";
-import { MAX_PROVIDER_MODELS } from "@oc-switch/core";
+import { MAX_PROVIDER_MODELS, upsertDisabledProviderState } from "@oc-switch/core";
 import { prepareGatewayEnvTarget, expectedGatewayEnvPath } from "../../core/test/gateway-sync-fixture";
 import { createCommandContext, repoRoot } from "../src/command-context";
 import { registerGatewayCommands } from "../src/commands/gateway";
@@ -677,6 +677,58 @@ describe("cli provider sync", () => {
 
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain("Provider nvidia is disabled");
+  });
+});
+
+describe("cli Provider 生命周期快照清理", () => {
+  test("provider delete 成功后删除同 Provider 的 disabled snapshot", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+    upsertDisabledProviderState(join(dir, ".oc-switch"), {
+      providerId: "nvidia",
+      openclawPath: configPath,
+      disabledAt: "2026-09-04T00:00:00.000Z",
+      allowlistEntries: {}
+    });
+
+    const result = await runCli(["provider", "delete", "nvidia"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    expect(result.code).toBe(0);
+    const states = JSON.parse(readFileSync(join(dir, ".oc-switch", "provider-states.json"), "utf8"));
+    expect(states.disabledProviders.nvidia).toBeUndefined();
+  });
+
+  test("providers merge-duplicates 成功后清理整个重复组的 disabled snapshots", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "openclaw.json");
+    const config = structuredClone(sample) as OpenClawConfig;
+    config.models!.providers!.deepseek = { models: [{ id: "extra" }] };
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    for (const providerId of ["deepseek", "DeepSeek"]) {
+      upsertDisabledProviderState(join(dir, ".oc-switch"), {
+        providerId,
+        openclawPath: configPath,
+        disabledAt: "2026-09-04T00:00:00.000Z",
+        allowlistEntries: {}
+      });
+    }
+
+    const result = await runCli([
+      "providers", "merge-duplicates", "--group", "deepseek", "--keep", "deepseek", "--remove", "DeepSeek"
+    ], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    });
+
+    expect(result.code).toBe(0);
+    const states = JSON.parse(readFileSync(join(dir, ".oc-switch", "provider-states.json"), "utf8"));
+    expect(states.disabledProviders.deepseek).toBeUndefined();
   });
 });
 

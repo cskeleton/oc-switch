@@ -7,7 +7,12 @@ import {
   resolveProviderId,
   type OperationResult
 } from "./operation-common";
-import { addPolicyAllow, assertNoPolicyWildcardForRef, removePolicyAllow } from "./model-policy";
+import {
+  addPolicyAllow,
+  assertNoPolicyWildcardForRef,
+  assertPolicyExactRefsRemovalAllowed,
+  removePolicyAllow
+} from "./model-policy";
 import { isPrimaryModelRef, readFallbackModelRefs, readPrimaryModelRef, writePrimaryModelRef } from "./primary-model";
 import { assertProviderModelCapacity } from "./provider-model-limits";
 import type { AllowlistEntry, OpenClawConfig, OpenClawModel, ProviderModelInput } from "./types";
@@ -50,6 +55,7 @@ export function setPrimaryModel(config: OpenClawConfig, ref: string): OperationR
 
 export function disableModel(config: OpenClawConfig, ref: string): OperationResult {
   assertNoPolicyWildcardForRef(config, ref, "disable");
+  assertPolicyExactRefsRemovalAllowed(config, [ref], "disable", ref);
   ensureDefaults(config);
   for (const allowlistRef of matchingAllowlistRefs(config, ref)) {
     delete config.agents!.defaults!.models![allowlistRef];
@@ -190,8 +196,13 @@ export function updateProviderModel(config: OpenClawConfig, ref: string, input: 
   if (input.id !== modelId) {
     assertFallbackRemovalAllowed(config, ref);
     assertNoPolicyWildcardForRef(config, ref, "rename");
+    if (!input.enabled) {
+      assertNoPolicyWildcardForRef(config, nextRef, "disable");
+    }
+    assertPolicyExactRefsRemovalAllowed(config, input.enabled ? [ref] : [ref, nextRef], "rename", ref);
   } else if (!input.enabled) {
     assertNoPolicyWildcardForRef(config, ref, "disable");
+    assertPolicyExactRefsRemovalAllowed(config, [ref], "disable", ref);
   }
 
   ensureDefaults(config);
@@ -247,6 +258,7 @@ export function removeProviderModel(
   // fallback 依赖保护必须发生在任何 mutation 之前（force 也不可绕过）
   assertFallbackRemovalAllowed(config, ref);
   assertNoPolicyWildcardForRef(config, ref, "remove");
+  assertPolicyExactRefsRemovalAllowed(config, [ref], "remove", ref);
   assertPrimaryRemovalAllowed(config, ref, options);
 
   ensureDefaults(config);

@@ -102,19 +102,6 @@ export function findPolicyWildcardForProvider(config: OpenClawConfig, providerId
   });
 }
 
-/** Provider 停用快照使用：读取可安全移除并在恢复时重放的精确条目。 */
-export function readPolicyExactRefsForProvider(config: OpenClawConfig, providerId: string): string[] {
-  if (!policyRestricts(config)) return [];
-  return (readModelPolicyAllow(config) ?? []).filter((entry) => {
-    if (isWildcard(entry)) return false;
-    try {
-      return normalizeProviderId(parseModelRef(entry).providerId) === normalizeProviderId(providerId);
-    } catch {
-      return false;
-    }
-  });
-}
-
 /** 通配 policy 无法通过单条 metadata/目录变更准确表达，必须在任何写入前拒绝。 */
 export function assertNoPolicyWildcardForRef(config: OpenClawConfig, ref: string, action: string): void {
   const wildcard = findPolicyWildcardForRef(config, ref);
@@ -133,6 +120,58 @@ export function assertNoPolicyWildcardForProvider(config: OpenClawConfig, provid
       `Cannot ${action} provider ${providerId} while agents.defaults.modelPolicy.allow contains ${wildcard}; narrow the policy first.`
     );
   }
+}
+
+function assertPolicyRemovalPreservesRestrictedMode(
+  config: OpenClawConfig,
+  removes: (entry: unknown) => boolean,
+  action: string,
+  subject: string
+): void {
+  const raw = readModelPolicyAllowRaw(config);
+  if (!raw || raw.length === 0) return;
+  const next = raw.filter((entry) => !removes(entry));
+  if (next.length === 0 && next.length !== raw.length) {
+    throw new Error(
+      `Cannot ${action} ${subject} because removing the last agents.defaults.modelPolicy.allow entry would make [] unrestricted; keep another exact entry or narrow the policy first.`
+    );
+  }
+}
+
+/** 精确模型条目删除不得把 restricted policy 意外清空为 unrestricted。 */
+export function assertPolicyExactRefsRemovalAllowed(
+  config: OpenClawConfig,
+  refs: string[],
+  action: string,
+  subject: string
+): void {
+  assertPolicyRemovalPreservesRestrictedMode(
+    config,
+    (entry) => typeof entry === "string" && !isWildcard(entry) && refs.some((ref) => exactEntryMatches(entry, ref)),
+    action,
+    subject
+  );
+}
+
+/** Provider 删除的精确条目同样不得意外把 policy 变成 unrestricted。 */
+export function assertPolicyProviderExactRemovalAllowed(
+  config: OpenClawConfig,
+  providerId: string,
+  action: string
+): void {
+  assertPolicyRemovalPreservesRestrictedMode(
+    config,
+    (entry) => {
+      if (typeof entry !== "string" || isWildcard(entry)) return false;
+      try {
+        return normalizeProviderId(parseModelRef(entry).providerId) === normalizeProviderId(providerId);
+      } catch {
+        return false;
+      }
+    },
+    action,
+    `provider ${providerId}`
+  );
 }
 
 /** allow 列表（精确 + 通配）是否覆盖 ref。 */
@@ -167,20 +206,6 @@ export function addPolicyAllow(config: OpenClawConfig, ref: string): boolean {
   const strings = readModelPolicyAllow(config) ?? [];
   if (isPolicyAllowsRef(strings, ref)) return false;
   readModelPolicyAllowRaw(config)!.push(ref);
-  return true;
-}
-
-/**
- * 从停用快照恢复精确 policy 条目。
- * 此路径只接受先前保存的 restricted policy 快照，因此允许把暂时变为 [] 的 allow 恢复为受限状态；
- * 日常 enable 仍必须使用 addPolicyAllow，以保留用户显式 unrestricted 配置。
- */
-export function restorePolicyAllow(config: OpenClawConfig, ref: string): boolean {
-  const raw = readModelPolicyAllowRaw(config);
-  if (raw === undefined) return false;
-  const strings = readModelPolicyAllow(config) ?? [];
-  if (isPolicyAllowsRef(strings, ref)) return false;
-  raw.push(ref);
   return true;
 }
 

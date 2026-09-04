@@ -1,11 +1,5 @@
 import { formatModelRef, normalizeModelRefForStorage, normalizeProviderId, parseModelRef } from "./model-ref";
-import {
-  addPolicyAllow,
-  assertNoPolicyWildcardForProvider,
-  readPolicyExactRefsForProvider,
-  removePolicyAllowForProvider,
-  restorePolicyAllow
-} from "./model-policy";
+import { assertNoPolicyWildcardForProvider } from "./model-policy";
 import { ensureDefaults, resolveProviderId, type OperationResult } from "./operation-common";
 import { readFallbackModelRefs, readPrimaryModelRef } from "./primary-model";
 import type { AllowlistEntry, OpenClawConfig } from "./types";
@@ -14,7 +8,6 @@ export interface DisableProviderResult extends OperationResult {
   disabledState: {
     providerId: string;
     allowlistEntries: Record<string, AllowlistEntry>;
-    policyExactRefs: string[];
   };
 }
 
@@ -39,8 +32,6 @@ export function disableProvider(config: OpenClawConfig, providerId: string): Dis
 
   // 必须先于 ensureDefaults 与 allowlist 删除，保证通配拒绝不触碰配置。
   assertNoPolicyWildcardForProvider(config, resolvedProviderId, "disable");
-  const policyExactRefs = readPolicyExactRefsForProvider(config, resolvedProviderId);
-
   ensureDefaults(config);
 
   const allowlistEntries: Record<string, AllowlistEntry> = {};
@@ -50,20 +41,17 @@ export function disableProvider(config: OpenClawConfig, providerId: string): Dis
       delete config.agents!.defaults!.models![ref];
     }
   }
-  removePolicyAllowForProvider(config, resolvedProviderId);
-
   return {
     config,
     warnings: [],
-    disabledState: { providerId: normalizeProviderId(resolvedProviderId), allowlistEntries, policyExactRefs }
+    disabledState: { providerId: normalizeProviderId(resolvedProviderId), allowlistEntries }
   };
 }
 
 export function restoreDisabledProvider(
   config: OpenClawConfig,
   providerId: string,
-  allowlistEntries: Record<string, AllowlistEntry>,
-  policyExactRefs: string[] = []
+  allowlistEntries: Record<string, AllowlistEntry>
 ): OperationResult {
   const resolvedProviderId = resolveProviderId(config, providerId);
   if (!resolvedProviderId || !config.models!.providers![resolvedProviderId]) {
@@ -76,24 +64,12 @@ export function restoreDisabledProvider(
       throw new Error(`Snapshot ref ${ref} does not belong to provider ${providerId}`);
     }
   }
-  for (const ref of policyExactRefs) {
-    if (ref.endsWith("/*") || normalizeProviderId(parseModelRef(ref).providerId) !== normalizeProviderId(resolvedProviderId)) {
-      throw new Error(`Snapshot policy ref ${ref} does not belong to provider ${providerId}`);
-    }
-  }
-
   ensureDefaults(config);
 
   for (const [ref, entry] of Object.entries(allowlistEntries)) {
     const modelId = parseModelRef(ref).modelId;
     const restoredRef = formatModelRef(normalizeProviderId(resolvedProviderId), modelId);
     config.agents!.defaults!.models![restoredRef] = structuredClone(entry);
-    addPolicyAllow(config, restoredRef);
-  }
-
-  for (const ref of policyExactRefs) {
-    const { modelId } = parseModelRef(ref);
-    restorePolicyAllow(config, formatModelRef(normalizeProviderId(resolvedProviderId), modelId));
   }
 
   return { config, warnings: [] };

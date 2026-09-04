@@ -404,6 +404,11 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
           const merged = mergeProviderCaseDuplicates(config, input);
           warnings = merged.warnings;
           return merged.config;
+        },
+        afterWrite() {
+          for (const providerId of [input.canonicalId, ...input.removeIds]) {
+            removeDisabledProviderState(runtime.currentPaths().stateDir, providerId);
+          }
         }
       });
       return c.json({ ok: true, warnings, backupId: result.backupDir.split("/").pop() });
@@ -420,7 +425,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       const paths = runtime.currentPaths();
 
       if (!enabled) {
-        let disabledState: { providerId: string; allowlistEntries: Record<string, unknown>; policyExactRefs: string[] } | undefined;
+        let disabledState: { providerId: string; allowlistEntries: Record<string, unknown> } | undefined;
         const result = await writeOpenClawTransaction({
           ...paths,
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
@@ -436,8 +441,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
               providerId,
               openclawPath: paths.openclawPath,
               disabledAt: new Date().toISOString(),
-              allowlistEntries: disabledState.allowlistEntries as never,
-              policyExactRefs: disabledState.policyExactRefs
+              allowlistEntries: disabledState.allowlistEntries as never
             });
           }
         });
@@ -460,7 +464,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `enable provider ${providerId}`,
         mutate(config) {
-          return restoreDisabledProvider(config, providerId, snapshot.allowlistEntries, snapshot.policyExactRefs).config;
+          return restoreDisabledProvider(config, providerId, snapshot.allowlistEntries).config;
         },
         afterWrite() {
           removeDisabledProviderState(paths.stateDir, providerId);

@@ -54,6 +54,11 @@ export function registerProviderCommands(program: Command, context: CommandConte
         reason: `merge case duplicate ${input.groupKey} -> ${input.canonicalId}`,
         mutate(config) {
           return mergeProviderCaseDuplicates(config, input).config;
+        },
+        afterWrite() {
+          for (const providerId of [input.canonicalId, ...input.removeIds]) {
+            removeDisabledProviderState(context.activePaths().stateDir, providerId);
+          }
         }
       });
       console.log(`已合并 ${removeIds.join(", ")} → ${options.keep}（备份 ${result.backupDir.split("/").pop()}）`);
@@ -229,6 +234,9 @@ export function registerProviderCommands(program: Command, context: CommandConte
           : {}),
         mutate(config) {
           return removeProvider(config, name, removeOptions).config;
+        },
+        afterWrite() {
+          removeDisabledProviderState(paths.stateDir, name);
         }
       });
       console.log(`Deleted provider ${name}`);
@@ -238,7 +246,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
     .argument("<name>")
     .action(async (name: string) => {
       const paths = context.activePaths();
-      let disabledState: { allowlistEntries: Record<string, unknown>; policyExactRefs: string[] } | undefined;
+      let disabledState: { allowlistEntries: Record<string, unknown> } | undefined;
       await writeOpenClawTransaction({
         ...paths,
         runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
@@ -254,8 +262,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
             providerId: name,
             openclawPath: paths.openclawPath,
             disabledAt: new Date().toISOString(),
-            allowlistEntries: disabledState.allowlistEntries as never,
-            policyExactRefs: disabledState.policyExactRefs
+            allowlistEntries: disabledState.allowlistEntries as never
           });
         }
       });
@@ -276,7 +283,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
         runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `enable provider ${name}`,
         mutate(config) {
-          return restoreDisabledProvider(config, name, snapshot.allowlistEntries, snapshot.policyExactRefs).config;
+          return restoreDisabledProvider(config, name, snapshot.allowlistEntries).config;
         },
         afterWrite() {
           removeDisabledProviderState(paths.stateDir, name);

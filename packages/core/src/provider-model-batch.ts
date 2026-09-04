@@ -1,5 +1,11 @@
 import { formatModelRef, normalizeProviderId, parseModelRef } from "./model-ref";
-import { addPolicyAllow, assertNoPolicyWildcardForRef, removePolicyAllow } from "./model-policy";
+import {
+  addPolicyAllow,
+  assertNoPolicyWildcardForRef,
+  assertPolicyExactRefsRemovalAllowed,
+  getModelSelectionSource,
+  removePolicyAllow
+} from "./model-policy";
 import { ensureModelName } from "./openclaw-compat";
 import { ensureDefaults, matchingAllowlistRefs, resolveProviderId, type OperationResult } from "./operation-common";
 import { readFallbackModelRefs, readPrimaryModelRef } from "./primary-model";
@@ -127,11 +133,12 @@ function assertPrimaryCatalogPresentForKeepEnabledOnly(
   }
 }
 
-function collectAllowlistedModelIds(config: OpenClawConfig, providerId: string): Set<string> {
+function collectEffectivelyEnabledModelIds(config: OpenClawConfig, providerId: string): Set<string> {
   const ids = new Set<string>();
-  for (const ref of Object.keys(config.agents?.defaults?.models ?? {})) {
-    const { providerId: refProviderId, modelId } = parseModelRef(ref);
-    if (normalizeProviderId(refProviderId) === normalizeProviderId(providerId)) ids.add(modelId);
+  const resolvedProviderId = resolveProviderId(config, providerId) ?? providerId;
+  for (const model of config.models?.providers?.[resolvedProviderId]?.models ?? []) {
+    const ref = formatModelRef(resolvedProviderId, model.id);
+    if (getModelSelectionSource(config, ref) !== undefined) ids.add(model.id);
   }
   return ids;
 }
@@ -151,7 +158,7 @@ export function batchRemoveProviderModels(
   if ("keepEnabledOnly" in input && input.keepEnabledOnly) {
     assertPrimaryCatalogPresentForKeepEnabledOnly(config, providerId, models);
 
-    const keepIds = collectAllowlistedModelIds(config, providerId);
+    const keepIds = collectEffectivelyEnabledModelIds(config, providerId);
     const primary = readPrimaryModelRef(config);
     if (primary) {
       const { providerId: primaryProviderId, modelId: primaryModelId } = parseModelRef(primary);
@@ -165,6 +172,12 @@ export function batchRemoveProviderModels(
     for (const id of removedModelIds) {
       assertNoPolicyWildcardForRef(config, formatModelRef(resolvedProviderId!, id), "remove");
     }
+    assertPolicyExactRefsRemovalAllowed(
+      config,
+      removedModelIds.map((id) => formatModelRef(resolvedProviderId!, id)),
+      "remove",
+      `models from provider ${resolvedProviderId}`
+    );
 
     ensureDefaults(config);
 
@@ -193,6 +206,12 @@ export function batchRemoveProviderModels(
   for (const id of modelIds) {
     assertNoPolicyWildcardForRef(config, formatModelRef(resolvedProviderId!, id), "remove");
   }
+  assertPolicyExactRefsRemovalAllowed(
+    config,
+    modelIds.map((id) => formatModelRef(resolvedProviderId!, id)),
+    "remove",
+    `models from provider ${resolvedProviderId}`
+  );
 
   ensureDefaults(config);
 

@@ -104,36 +104,38 @@ describe("modelPolicy.allow 双向同步", () => {
     expect(JSON.stringify(config)).toBe(before);
   });
 
-  test("disableProvider / restoreDisabledProvider 往返同步", () => {
+  test("disableProvider / restoreDisabledProvider 仅维护独立状态，不改 modelPolicy", () => {
     const config = migratedConfig();
+    const policyBefore = structuredClone(config.agents!.defaults!.modelPolicy);
     const disabled = disableProvider(config, "cpa");
-    expect(readModelPolicyAllow(config)).toEqual(["other/o1"]);
+    expect(config.agents!.defaults!.modelPolicy).toEqual(policyBefore);
 
     restoreDisabledProvider(config, "cpa", disabled.disabledState.allowlistEntries);
-    expect(readModelPolicyAllow(config)).toContain("cpa/m1");
+    expect(config.agents!.defaults!.modelPolicy).toEqual(policyBefore);
   });
 
-  test("Provider 停用和恢复保留没有 metadata 的精确 policy 条目", () => {
+  test("Provider 停用和恢复不删除 policy-only 精确条目", () => {
     const config = migratedConfig();
     config.agents!.defaults!.modelPolicy!.allow = ["cpa/m1", "cpa/policy-only", "other/o1"];
+    const policyBefore = structuredClone(config.agents!.defaults!.modelPolicy);
 
     const disabled = disableProvider(config, "cpa");
-    expect(readModelPolicyAllow(config)).toEqual(["other/o1"]);
+    expect(config.agents!.defaults!.modelPolicy).toEqual(policyBefore);
 
-    restoreDisabledProvider(config, "cpa", disabled.disabledState.allowlistEntries, disabled.disabledState.policyExactRefs);
-    expect(readModelPolicyAllow(config)).toEqual(expect.arrayContaining(["cpa/m1", "cpa/policy-only", "other/o1"]));
+    restoreDisabledProvider(config, "cpa", disabled.disabledState.allowlistEntries);
+    expect(config.agents!.defaults!.modelPolicy).toEqual(policyBefore);
     expect(config.agents!.defaults!.models?.["cpa/policy-only"]).toBeUndefined();
   });
 
-  test("恢复曾为最后一个精确条目的 Provider 时不把原 restricted policy 留为 unrestricted", () => {
+  test("恢复到当前 unrestricted policy 时不写 policy", () => {
     const config = migratedConfig();
-    config.agents!.defaults!.modelPolicy!.allow = ["cpa/m1"];
+    config.agents!.defaults!.modelPolicy!.allow = [];
 
     const disabled = disableProvider(config, "cpa");
     expect(readModelPolicyAllow(config)).toEqual([]);
 
-    restoreDisabledProvider(config, "cpa", disabled.disabledState.allowlistEntries, disabled.disabledState.policyExactRefs);
-    expect(readModelPolicyAllow(config)).toEqual(["cpa/m1"]);
+    restoreDisabledProvider(config, "cpa", disabled.disabledState.allowlistEntries);
+    expect(readModelPolicyAllow(config)).toEqual([]);
   });
 
   test("addCustomProvider enableAllModels 同步", () => {
@@ -196,6 +198,15 @@ describe("modelPolicy.allow 双向同步", () => {
     expect(readModelPolicyAllow(config)).toEqual(["cpa/*", "other/o1"]);
   });
 
+  test("删除最后一个 restricted 精确条目时 fail closed 且配置字节不变", () => {
+    const config = migratedConfig();
+    config.agents!.defaults!.modelPolicy!.allow = ["cpa/m1"];
+    const before = JSON.stringify(config);
+
+    expect(() => disableModel(config, "cpa/m1")).toThrow(/would make \[\] unrestricted/);
+    expect(JSON.stringify(config)).toBe(before);
+  });
+
   test("受限通配覆盖的单模型破坏性操作在任何写入前拒绝", () => {
     const disableConfig = migratedConfig();
     disableConfig.agents!.defaults!.modelPolicy!.allow = ["cpa/*", "other/o1"];
@@ -220,6 +231,17 @@ describe("modelPolicy.allow 双向同步", () => {
       "Cannot remove cpa/m1 while agents.defaults.modelPolicy.allow contains cpa/*; narrow the policy first."
     );
     expect(JSON.stringify(removeConfig)).toBe(removeBefore);
+  });
+
+  test("rename 后同时禁用时也 preflight 新 ref 的 namespace wildcard", () => {
+    const config = migratedConfig();
+    config.agents!.defaults!.modelPolicy!.allow = ["cpa/m1", "cpa/renamed/*", "other/o1"];
+    const before = JSON.stringify(config);
+
+    expect(() => updateProviderModel(config, "cpa/m1", { id: "renamed/m1", enabled: false })).toThrow(
+      "Cannot disable cpa/renamed/m1 while agents.defaults.modelPolicy.allow contains cpa/renamed/*; narrow the policy first."
+    );
+    expect(JSON.stringify(config)).toBe(before);
   });
 
   test("受限通配覆盖的批量删除与 Provider 停用在任何写入前拒绝", () => {
@@ -253,6 +275,27 @@ describe("modelPolicy.allow 双向同步", () => {
     }, [])).toThrow(
       "Cannot disable cpa/m1 while agents.defaults.modelPolicy.allow contains cpa/*; narrow the policy first."
     );
+    expect(JSON.stringify(config)).toBe(before);
+  });
+
+  test("keep-enabled-only 按 restricted effective policy 保留 policy-only exact 与 namespace wildcard 模型", () => {
+    const config = migratedConfig();
+    config.agents!.defaults!.modelPolicy!.allow = ["cpa/m2", "cpa/vertex/*", "other/o1"];
+
+    const result = batchRemoveProviderModels(config, "cpa", { keepEnabledOnly: true });
+
+    expect(result.removedModelIds).toEqual(["m1"]);
+    expect(config.models!.providers!.cpa!.models!.map((model) => model.id)).toEqual(["vertex/gemini-3.8-flash", "m2"]);
+    expect(readModelPolicyAllow(config)).toEqual(["cpa/m2", "cpa/vertex/*", "other/o1"]);
+  });
+
+  test("keep-enabled-only 不得绕过 fallback 保护，失败前配置字节不变", () => {
+    const config = migratedConfig();
+    config.agents!.defaults!.modelPolicy!.allow = ["cpa/m2", "other/o1"];
+    config.agents!.defaults!.model = { primary: "other/o1", fallbacks: ["cpa/m1"] };
+    const before = JSON.stringify(config);
+
+    expect(() => batchRemoveProviderModels(config, "cpa", { keepEnabledOnly: true })).toThrow(/fallbacks/);
     expect(JSON.stringify(config)).toBe(before);
   });
 });

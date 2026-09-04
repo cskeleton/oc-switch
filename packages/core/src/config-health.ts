@@ -1,5 +1,9 @@
 import { formatModelRef } from "./model-ref";
-import { rewritePolicyAllowProviderPrefix } from "./model-policy";
+import {
+  assertPolicyExactRefsRemovalAllowed,
+  readModelPolicyAllow,
+  rewritePolicyAllowProviderPrefix
+} from "./model-policy";
 import { providerEnvVar } from "./openclaw-compat";
 import type { OperationResult } from "./operations";
 import { readFallbackModelRefs, readPrimaryModelRef, writePrimaryModelRef } from "./primary-model";
@@ -308,6 +312,21 @@ export function mergeProviderCaseDuplicates(config: OpenClawConfig, input: Merge
         `Cannot merge: agents.defaults.model.fallbacks references ${ref}. Remove or migrate fallbacks in the OpenClaw config first.`
       );
     }
+  }
+
+  if (keepSet) {
+    const droppedPolicyRefs = (readModelPolicyAllow(config) ?? []).filter((ref) => {
+      if (ref.endsWith("/*")) return false;
+      const slashIndex = ref.indexOf("/");
+      if (slashIndex <= 0) return false;
+      return allIds.includes(ref.slice(0, slashIndex)) && !isKept(ref.slice(slashIndex + 1));
+    });
+    assertPolicyExactRefsRemovalAllowed(
+      config,
+      droppedPolicyRefs,
+      "merge",
+      `models from provider group ${input.groupKey}`
+    );
   }
 
   // 1. 合并 provider 块（base = canonical 块，否则首个存在的 removeId 块），按 keepSet 过滤模型
