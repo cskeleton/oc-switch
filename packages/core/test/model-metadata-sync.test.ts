@@ -92,14 +92,14 @@ describe("planProviderModelMetadataSync", () => {
       const config: OpenClawConfig = {
         models: { providers: { openrouter: { baseUrl: "https://openrouter.ai/api/v1", models: [
           { id: "shared" },               // models.json 有 6 条 shared → 多候选 medium
-          { id: "zzz-no-such-model-9" }   // 两级均落空
+          { id: "qxzjv-7274" }            // 实测对 fixture 全部条目模糊得分 < 0.34（best 0.0965），两级均落空
         ] } } }
       };
       const plan = await planProviderModelMetadataSync(config, { providerId: "openrouter" }, { stateDir: dir, fetchImpl: fixtureFetch(), now: () => BASE_NOW });
       expect(plan.queued.map((item) => item.modelId)).toEqual(["shared"]);
       expect(plan.queued[0]!.candidates[0]!.reason).toBe("resolver-core-model-id");
       expect(plan.queued[0]!.candidates.length).toBeLessThanOrEqual(5);
-      expect(plan.unmatched).toEqual(["zzz-no-such-model-9"]);
+      expect(plan.unmatched).toEqual(["qxzjv-7274"]);
     } finally {
       cleanup();
     }

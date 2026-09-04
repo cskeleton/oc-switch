@@ -6,7 +6,7 @@
  */
 import { loadModelMetadataCatalog, type ModelMetadataSourceStatus, type NormalizedModelMetadata } from "./model-metadata-catalog";
 import { computeMetadataFill, applyMetadataFill, missingMetadataFieldCount, type MetadataFill } from "./model-metadata-fill";
-import { matchFuzzyModelMetadata, FUZZY_SCORE_THRESHOLD } from "./model-metadata-matcher";
+import { matchFuzzyModelMetadata } from "./model-metadata-matcher";
 import {
   readModelMetadataQueue,
   writeModelMetadataQueue,
@@ -128,10 +128,7 @@ export async function planProviderModelMetadataSync(
         continue;
       }
       const fuzzy = matchFuzzyModelMetadata({ providerId: resolvedProviderId, modelId: model.id }, catalogData);
-      // 纯弱召回（整组最佳命中仍低于 SCORE_THRESHOLD）视为落空：不入队，计入 unmatched。
-      // 注：与 brief 实现代码的唯一偏差——brief 测试断言 zzz-no-such-model-9 unmatched，
-      // 但其对 unique-model 的模糊得分为 0.3453，恰高于 WEAK_THRESHOLD 0.34，只能以此闸门调和。
-      if (fuzzy.length > 0 && fuzzy[0]!.score >= FUZZY_SCORE_THRESHOLD) {
+      if (fuzzy.length > 0) {
         queued.push({
           modelId: model.id,
           candidates: fuzzy.map((hit) => ({
