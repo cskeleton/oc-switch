@@ -102,7 +102,9 @@ export function createConfigAdapter(config: OpenClawConfig) {
           existing.alias = entry.alias;
           continue;
         }
-        const selectionSource = getModelSelectionSource(config, ref);
+        const selectionSource = modelPolicyMode === "unrestricted"
+          ? undefined
+          : getModelSelectionSource(config, ref);
         summaries.set(identity, {
           ref: formatModelRef(canonicalProviderId, modelId),
           providerId: canonicalProviderId,

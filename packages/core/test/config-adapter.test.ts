@@ -176,6 +176,28 @@ describe("ConfigAdapter", () => {
     expect(adapter.getStatus().effectiveModelCount).toBe(1);
   });
 
+  test("metadata-only 行仅在 legacy 或 restricted policy 覆盖时有有效 selection", () => {
+    const base: OpenClawConfig = {
+      models: { providers: { cpa: { models: [{ id: "catalog" }] } } },
+      agents: { defaults: { models: { "cpa/metadata-only": { alias: "metadata" } } } }
+    };
+
+    const legacy = createConfigAdapter(base).listModels().find((model) => model.ref === "cpa/metadata-only");
+    expect(legacy).toMatchObject({ enabled: true, selectionSource: "legacy", alias: "metadata" });
+
+    const unrestrictedConfig = structuredClone(base);
+    unrestrictedConfig.agents!.defaults!.modelPolicy = { allow: [] };
+    const unrestricted = createConfigAdapter(unrestrictedConfig).listModels().find((model) => model.ref === "cpa/metadata-only");
+    expect(unrestricted).toMatchObject({ enabled: false, alias: "metadata" });
+    expect(unrestricted?.selectionSource).toBeUndefined();
+    expect(unrestricted && "selectionSource" in unrestricted).toBe(false);
+
+    const restrictedConfig = structuredClone(base);
+    restrictedConfig.agents!.defaults!.modelPolicy = { allow: ["cpa/metadata-only"] };
+    const restricted = createConfigAdapter(restrictedConfig).listModels().find((model) => model.ref === "cpa/metadata-only");
+    expect(restricted).toMatchObject({ enabled: true, selectionSource: "policy-exact", alias: "metadata" });
+  });
+
   test("legacy 保留大小写重复 Provider 的精确 metadata 归属", () => {
     const config: OpenClawConfig = {
       models: {

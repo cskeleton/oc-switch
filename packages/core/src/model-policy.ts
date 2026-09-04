@@ -7,7 +7,7 @@ import type { ModelPolicyMode, ModelSelectionSource, OpenClawConfig } from "./ty
  * OpenClaw 语义（docs.openclaw.ai/concepts/models）：
  * - 非空时是 /model、session override、--model 的唯一 allowlist，覆盖 agents.defaults.models；
  * - 支持精确 ref 与尾部前缀通配（`provider/*`、`provider/namespace/*`）；
- * - 省略该键或设为 [] = 放开任何模型。
+ * - 省略该键 = legacy，沿用 agents.defaults.models；设为 [] = unrestricted，放开本地目录模型。
  *
  * oc-switch 纪律：仅在 allow 存在且非空时同步成员变化；绝不创建该键、绝不清空，
  * 避免给未迁移或已显式放开的配置凭空加限制。读取永不抛错。

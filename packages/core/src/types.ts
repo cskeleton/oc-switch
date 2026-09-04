@@ -93,6 +93,7 @@ export interface ModelSummary {
   name: string | undefined;
   alias: string | undefined;
   enabled: boolean;
+  /** undefined 表示该行没有有效 selection 来源。 */
   selectionSource?: ModelSelectionSource;
   isPrimary: boolean;
   api?: ApiType;
