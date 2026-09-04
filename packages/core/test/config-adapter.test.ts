@@ -232,13 +232,14 @@ describe("ConfigAdapter", () => {
   });
 
   test("disabled Provider 从所有策略模式的有效可选聚合中排除", () => {
-    const scenarios: Array<{ name: string; config: OpenClawConfig; cpaSelectionSource: string }> = [
+    const scenarios: Array<{ name: string; config: OpenClawConfig; cpaRef: string; cpaSelectionSource: string }> = [
       {
         name: "legacy",
         config: {
           models: { providers: { cpa: { models: [{ id: "m1" }, { id: "m2" }] }, other: { models: [{ id: "m1" }] } } },
           agents: { defaults: { models: { "cpa/m1": {}, "cpa/m2": {}, "other/m1": {} } } }
         },
+        cpaRef: "cpa/m2",
         cpaSelectionSource: "legacy"
       },
       {
@@ -247,6 +248,7 @@ describe("ConfigAdapter", () => {
           models: { providers: { cpa: { models: [{ id: "m1" }, { id: "m2" }] }, other: { models: [{ id: "m1" }] } } },
           agents: { defaults: { modelPolicy: { allow: [] } } }
         },
+        cpaRef: "cpa/m2",
         cpaSelectionSource: "unrestricted"
       },
       {
@@ -255,7 +257,17 @@ describe("ConfigAdapter", () => {
           models: { providers: { cpa: { models: [{ id: "m1" }, { id: "m2" }] }, other: { models: [{ id: "m1" }] } } },
           agents: { defaults: { modelPolicy: { allow: ["cpa/*", "other/m1"] } } }
         },
+        cpaRef: "cpa/m2",
         cpaSelectionSource: "policy-wildcard"
+      },
+      {
+        name: "restricted exact",
+        config: {
+          models: { providers: { cpa: { models: [{ id: "m1" }, { id: "m2" }] }, other: { models: [{ id: "m1" }] } } },
+          agents: { defaults: { modelPolicy: { allow: ["cpa/m1", "other/m1"] } } }
+        },
+        cpaRef: "cpa/m1",
+        cpaSelectionSource: "policy-exact"
       }
     ];
 
@@ -266,8 +278,8 @@ describe("ConfigAdapter", () => {
         enabledModelCount: 0
       });
       expect(adapter.getStatus().effectiveModelCount).toBe(1);
-      expect(adapter.listModels().find((model) => model.ref === "cpa/m2")).toMatchObject({
-        enabled: true,
+      expect(adapter.listModels().find((model) => model.ref === scenario.cpaRef)).toMatchObject({
+        enabled: false,
         selectionSource: scenario.cpaSelectionSource
       });
     }

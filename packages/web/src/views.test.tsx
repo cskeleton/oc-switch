@@ -538,6 +538,26 @@ describe("ModelsView", () => {
     expect((await findByLabelText("启用 nvidia/llama-3") as HTMLButtonElement).disabled).toBe(true);
     expect((await findByLabelText("添加模型") as HTMLButtonElement).disabled).toBe(true);
   });
+
+  for (const selectionSource of ["policy-exact", "policy-wildcard"] as const) {
+    test(`保留 ${selectionSource} 来源并在 disabled Provider 下禁用模型控件`, async () => {
+      const getProviders = mock(async () => ({
+        providers: [providerSummary({ id: "cpa", disabled: true, enabledModelCount: 0 })]
+      }));
+      const getModels = mock(async () => ({
+        models: [modelSummary({
+          ref: "cpa/m2",
+          enabled: false,
+          selectionSource
+        })]
+      }));
+
+      const { findByLabelText, findByText } = renderModelsView(mockClient({ getProviders, getModels }));
+
+      expect(await findByText(selectionSource === "policy-exact" ? "精确策略" : "通配策略")).toBeTruthy();
+      expect((await findByLabelText("启用 cpa/m2") as HTMLButtonElement).disabled).toBe(true);
+    });
+  }
 });
 
 describe("ProvidersView", () => {

@@ -11,7 +11,8 @@ import type {
   OcSwitchPaths,
   PresetDirs,
   RuntimeDiscoveryProvider,
-  RuntimeDiscoveryResult
+  RuntimeDiscoveryResult,
+  OpenClawConfig
 } from "@oc-switch/core";
 import {
   createBackup,
@@ -329,6 +330,11 @@ describe("server read endpoints", () => {
 
   test("disabled Provider 从 providers 与 status 的有效可选模型聚合中排除", async () => {
     const ws = workspace();
+    const config = structuredClone(sample) as OpenClawConfig;
+    config.agents!.defaults!.modelPolicy = {
+      allow: ["nvidia/*", "DeepSeek/*", "minimax-portal/*"]
+    };
+    writeFileSync(ws.paths.openclawPath, `${JSON.stringify(config, null, 2)}\n`);
     upsertDisabledProviderState(ws.paths.stateDir, {
       providerId: "nvidia",
       openclawPath: ws.paths.openclawPath,
@@ -338,10 +344,13 @@ describe("server read endpoints", () => {
     const app = createTestApp(ws);
 
     const providers = await jsonRequest(app, "/api/providers");
+    const models = await jsonRequest(app, "/api/models");
     const status = await jsonRequest(app, "/api/status");
     const nvidia = (providers.json.providers as Array<{ id: string; disabled: boolean; enabledModelCount: number }>).find((provider) => provider.id === "nvidia");
+    const disabledModel = (models.json.models as Array<{ ref: string; enabled: boolean; selectionSource?: string }>).find((model) => model.ref === "nvidia/deepseek-ai/deepseek-v4-flash");
 
     expect(nvidia).toMatchObject({ disabled: true, enabledModelCount: 0 });
+    expect(disabledModel).toMatchObject({ enabled: false, selectionSource: "policy-wildcard" });
     expect(status.json.effectiveModelCount).toBe(2);
   });
 

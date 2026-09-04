@@ -17,6 +17,10 @@ export function createConfigAdapter(config: OpenClawConfig, options: ConfigAdapt
     [...(options.disabledProviderIds ?? [])].map((providerId) => normalizeProviderId(providerId))
   );
 
+  function isProviderDisabled(providerId: string): boolean {
+    return disabledProviderIds.has(normalizeProviderId(providerId));
+  }
+
   const providerIdsByNormalized = new Map<string, string[]>();
   for (const providerId of Object.keys(providers)) {
     const normalized = normalizeProviderId(providerId);
@@ -52,7 +56,7 @@ export function createConfigAdapter(config: OpenClawConfig, options: ConfigAdapt
   function listProviderSummaries(): ProviderSummary[] {
     return Object.entries(providers).map(([id, provider]) => {
       const refs = providerModelRefs(id);
-      const disabled = disabledProviderIds.has(normalizeProviderId(id));
+      const disabled = isProviderDisabled(id);
       return {
         id,
         api: provider.api,
@@ -94,7 +98,7 @@ export function createConfigAdapter(config: OpenClawConfig, options: ConfigAdapt
             modelId: model.id,
             name: model.name,
             alias: undefined,
-            enabled: selectionSource !== undefined,
+            enabled: !isProviderDisabled(providerId) && selectionSource !== undefined,
             ...(selectionSource ? { selectionSource } : {}),
             isPrimary: primaryModel ? modelIdentity(parseModelRef(primaryModel).providerId, parseModelRef(primaryModel).modelId) === identity : false
           };
@@ -126,7 +130,7 @@ export function createConfigAdapter(config: OpenClawConfig, options: ConfigAdapt
           modelId,
           name: undefined,
           alias: entry.alias,
-          enabled: selectionSource !== undefined,
+          enabled: !isProviderDisabled(providerId) && selectionSource !== undefined,
           ...(selectionSource ? { selectionSource } : {}),
           isPrimary: primaryModel
             ? modelIdentity(parseModelRef(primaryModel).providerId, parseModelRef(primaryModel).modelId) === identity

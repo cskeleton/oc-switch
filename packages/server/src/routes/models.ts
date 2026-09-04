@@ -10,13 +10,16 @@ import {
   writeOpenClawTransaction
 } from "@oc-switch/core";
 import type { Hono } from "hono";
-import { assertProviderCanEnable, readConfig, type AppRuntime } from "../context";
+import { assertProviderCanEnable, readConfig, readDisabledProviderIds, type AppRuntime } from "../context";
 import { jsonError } from "../errors";
 import { requireBoolean, requireProviderModelInput, requireString } from "../schemas";
 
 export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
   app.get("/api/models", (c) => {
-    const adapter = createConfigAdapter(readConfig(runtime.currentPaths()));
+    const paths = runtime.currentPaths();
+    const adapter = createConfigAdapter(readConfig(paths), {
+      disabledProviderIds: readDisabledProviderIds(paths),
+    });
     return c.json({ models: adapter.listModels() });
   });
 
