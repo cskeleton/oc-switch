@@ -461,6 +461,57 @@ export interface ModelMetadataSuggestionsResponse {
   warnings: string[];
 }
 
+/** POST /api/providers/:id/models/sync-metadata 响应 */
+export interface ModelMetadataSyncUpdatedItem {
+  modelId: string;
+  filled: { name?: string; reasoning?: boolean; contextWindow?: number; maxTokens?: number; input?: string[] };
+  catalogKey: string;
+  matchKind: string;
+}
+
+export interface SyncModelMetadataResponse {
+  ok: boolean;
+  providerId: string;
+  updated: ModelMetadataSyncUpdatedItem[];
+  queued: Array<{ modelId: string; candidateCount: number }>;
+  unmatched: string[];
+  skipped: string[];
+  warnings: string[];
+  backupId?: string;
+}
+
+/** 确认队列候选（metadata 快照字段与 ModelMetadataSuggestion["model"] 同形） */
+export interface ModelMetadataQueueCandidate {
+  catalogKey: string;
+  score: number;
+  reason: string;
+  metadata: ModelMetadataSuggestion["model"];
+}
+
+export interface ModelMetadataQueueItem {
+  providerId: string;
+  modelId: string;
+  candidates: ModelMetadataQueueCandidate[];
+  lastSeenAt: string;
+  dismissed: boolean;
+}
+
+export interface ModelMetadataSyncQueueResponse {
+  items: ModelMetadataQueueItem[];
+}
+
+export type ModelMetadataQueueResolveItem =
+  | { providerId: string; modelId: string; action: "accept"; catalogKey: string }
+  | { providerId: string; modelId: string; action: "dismiss" };
+
+export interface ModelMetadataQueueResolveResponse {
+  ok: boolean;
+  applied: ModelMetadataSyncUpdatedItem[];
+  dismissedCount: number;
+  failed: Array<{ providerId: string; modelId: string; error: string }>;
+  backupId?: string;
+}
+
 export type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 export interface ApiClientOptions {
@@ -620,6 +671,22 @@ export function createApiClient(options: ApiClientOptions) {
       request<BatchRemoveProviderModelsResponse>(`/api/providers/${id}/models/batch-remove`, {
         method: "POST",
         body: JSON.stringify(body)
+      }),
+    syncProviderModelMetadata: (id: string, body: { modelIds?: string[] }) =>
+      request<SyncModelMetadataResponse>(`/api/providers/${id}/models/sync-metadata`, {
+        method: "POST",
+        body: JSON.stringify(body)
+      }),
+    getModelMetadataSyncQueue: (providerId?: string) => {
+      const params = new URLSearchParams();
+      if (providerId) params.set("providerId", providerId);
+      const suffix = params.toString();
+      return request<ModelMetadataSyncQueueResponse>(`/api/model-metadata/sync-queue${suffix ? `?${suffix}` : ""}`);
+    },
+    resolveModelMetadataSyncQueue: (items: ModelMetadataQueueResolveItem[]) =>
+      request<ModelMetadataQueueResolveResponse>("/api/model-metadata/sync-queue/resolve", {
+        method: "POST",
+        body: JSON.stringify({ items })
       }),
     getBackups: () => request<{ backups: BackupEntry[] }>("/api/backups"),
     restoreBackup: (id: string, target?: "backup" | "current") =>

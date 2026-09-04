@@ -273,3 +273,54 @@ test("Provider SecretRef migration API uses explicit preview and confirmed write
   expect(calls[1]?.init?.method).toBe("POST");
   expect(calls[1]?.init?.body).toBe(JSON.stringify({ providerIds: ["nvidia"], confirm: true }));
 });
+
+test("syncProviderModelMetadata posts modelIds and parses report", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const client = createApiClient({
+    baseUrl: "http://localhost:7420",
+    token: "test",
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url: String(url), init });
+      return new Response(JSON.stringify({
+        ok: true, providerId: "openrouter",
+        updated: [{ modelId: "openai/gpt-5.2", filled: { contextWindow: 400000 }, catalogKey: "openrouter/openai/gpt-5.2", matchKind: "provider-exact" }],
+        queued: [{ modelId: "glm-4.6-air", candidateCount: 2 }],
+        unmatched: [], skipped: [], sources: [], warnings: []
+      }), { status: 200 });
+    }
+  });
+  const result = await client.syncProviderModelMetadata("openrouter", { modelIds: ["openai/gpt-5.2"] });
+  expect(calls[0]!.url).toBe("http://localhost:7420/api/providers/openrouter/models/sync-metadata");
+  expect(calls[0]!.init.method).toBe("POST");
+  expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ modelIds: ["openai/gpt-5.2"] });
+  expect(result.updated[0]!.filled.contextWindow).toBe(400000);
+});
+
+test("getModelMetadataSyncQueue passes providerId query", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const client = createApiClient({
+    baseUrl: "http://localhost:7420",
+    token: "test",
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url: String(url), init });
+      return new Response(JSON.stringify({ items: [] }), { status: 200 });
+    }
+  });
+  await client.getModelMetadataSyncQueue("openrouter");
+  expect(calls[0]!.url).toBe("http://localhost:7420/api/model-metadata/sync-queue?providerId=openrouter");
+});
+
+test("resolveModelMetadataSyncQueue posts resolve items", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const client = createApiClient({
+    baseUrl: "http://localhost:7420",
+    token: "test",
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url: String(url), init });
+      return new Response(JSON.stringify({ ok: true, applied: [], dismissedCount: 1, failed: [] }), { status: 200 });
+    }
+  });
+  await client.resolveModelMetadataSyncQueue([{ providerId: "zai", modelId: "glm-4.6-air", action: "dismiss" }]);
+  expect(calls[0]!.url).toBe("http://localhost:7420/api/model-metadata/sync-queue/resolve");
+  expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ items: [{ providerId: "zai", modelId: "glm-4.6-air", action: "dismiss" }] });
+});
