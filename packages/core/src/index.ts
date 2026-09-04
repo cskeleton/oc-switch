@@ -35,6 +35,10 @@ export * from "./provider-model-limits";
 export * from "./provider-model-batch";
 export * from "./model-metadata-catalog";
 export * from "./model-metadata-resolver";
+export * from "./model-metadata-fill";
+export * from "./model-metadata-matcher";
+export * from "./model-metadata-queue";
+export * from "./model-metadata-sync";
 export type {
   RunningOpenClawInstance,
   RunningOpenClawInstance as DiscoveredRunningOpenClawInstance,
