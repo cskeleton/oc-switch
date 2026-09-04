@@ -37,8 +37,9 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 ### ModelRef 与 Allowlist
 
 - **ModelRef**：仅在第一个 `/` 处拆分 provider 与 model，**保留大小写**。
-- **Allowlist**（已启用模型）：`agents.defaults.models`，key 为完整 ModelRef。
-- **modelPolicy.allow**（OpenClaw 2026.8+ 覆盖 allowlist）：`agents.defaults.modelPolicy.allow` 非空时是 OpenClaw 实际生效的可选模型列表（覆盖 `agents.defaults.models`），支持精确 ref 与尾部通配（`provider/*`、`provider/namespace/*`）；缺省或 `[]` = 放开任何模型。core 禁止直接读写该字段，必须经 `packages/core/src/model-policy.ts` 归一层；仅在它存在且非空时随 allowlist 成员变化双向同步（启用→补精确条目，禁用/删除/改名/merge/规范化→同步移除或改写），**绝不创建、绝不清空**；通配条目不被自动增删，残留时给 warning。`config-status` 对「已启用但 policy 未覆盖」报 `model-policy-not-covered` warning。
+- **Model policy 三态**：`agents.defaults.modelPolicy.allow` 缺失=`legacy`，effective enabled 由 `agents.defaults.models` exact ref 决定；存在且为 `[]`=`unrestricted`，本地 Provider 目录模型在 Provider 未 disabled 时有效；存在且非空=`restricted`，仅 exact ref 或尾部 wildcard（`provider/*`、`provider/namespace/*`）命中时有效。restricted 模式下 `agents.defaults.models` 仍是 alias/per-model metadata，不是 authoritative selection allowlist；Provider disabled state 独立且优先阻止有效启用。缺失与空数组必须保持可区分。
+- **Model policy DTO**：固定使用 `ModelPolicyMode = "legacy" | "unrestricted" | "restricted"` 与 `ModelSelectionSource = "legacy" | "unrestricted" | "policy-exact" | "policy-wildcard"`；`ModelSummary.selectionSource`、`StatusSummary.modelPolicyMode`、`StatusSummary.effectiveModelCount` 为新增字段，`allowlistModelCount` 在兼容期保留并继续表示 `agents.defaults.models` 条目数。
+- **modelPolicy.allow 写入安全**：Core 是唯一 writer；仅在 policy 已存在且非空时同步 exact entries，绝不创建、清空、隐式展开、删除或改写用户 wildcard。单模型/Provider disable、rename、batch cleanup 若无法不改 wildcard 地表达，必须 fail closed，`force` 也不可绕过。per-agent `agents.entries.*.modelPolicy.allow` 不在范围内。`config-status` 对已启用但 policy 未覆盖仍报 `model-policy-not-covered` warning。
 - **Provider 模型目录**：`models.providers`；`listModels` 合并两者。
 - **主模型**：`agents.defaults.model`，双形态（见下节）。
 

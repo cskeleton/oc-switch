@@ -20,6 +20,17 @@
 | 9 | VPS `serve --host 0.0.0.0 --token` 可通过浏览器管理 | 单元 + 文档 | `packages/core/test/token-manager.test.ts`；`packages/cli/test/cli.test.ts`（serve rejects 0.0.0.0）；README VPS 章节 |
 | 10 | 无 API Key 泄漏 | 全套件 + smoke | `bun run acceptance`；各测试文件 `not.toContain("sk-")` 断言 |
 
+## Model policy 兼容性验收
+
+| # | 验收项 | 验证方式 | 命令 / 测试 |
+|---|--------|----------|-------------|
+| P1 | claw-like restricted 配置中 `cpa/*` 与 `grok2api/*` 按 provider-wide wildcard 生效，不展开或删除用户 wildcard | Core + REST fixture | `packages/core/test/model-policy.test.ts`；`packages/server/test/app.test.ts` |
+| P2 | policy-only exact refs 识别为 `restricted` / `policy-exact`；不在本地目录的 ref 不虚构模型 | Core + status DTO | `packages/core/test/config-status.test.ts` |
+| P3 | `modelPolicy.allow` 缺失=`legacy`，存在空数组=`unrestricted`，两者不可混淆；restricted 下 `agents.defaults.models` 仅为 metadata | Core + REST | `packages/core/test/model-policy.test.ts`；`packages/server/test/app.test.ts` |
+| P4 | `ModelSummary.selectionSource`、`StatusSummary.modelPolicyMode`、`effectiveModelCount` 正确，兼容保留 `allowlistModelCount` | Core + Web API contract | `packages/core/test/config-adapter.test.ts`；`packages/web/src/api.test.ts` |
+| P5 | exact policy entry 可切换；provider-wide/namespace wildcard 无法安全表达单模型或 Provider disable 时拒绝，`force` 也拒绝 | Core mutation tests | `packages/core/test/model-operations.test.ts`；`packages/core/test/operations.test.ts` |
+| P6 | Provider disabled state 与 policy availability 独立：disabled Provider 不可有效启用，恢复不改 policy；rename、batch cleanup 遵守 wildcard/fallback fail-closed 规则 | Core + acceptance fixture | `packages/core/test/operations.test.ts`；`bun run acceptance` |
+
 ---
 
 ## 模型参数建议与运行上下文（Models.dev）

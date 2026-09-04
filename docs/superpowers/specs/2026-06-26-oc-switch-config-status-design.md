@@ -109,6 +109,21 @@ export interface ConfigStatusReport {
 
 `ConfigHealthReport` 复用 `packages/core/src/config-health.ts` 现有定义，不在此重复。
 
+### 3.1 模型 policy 摘要兼容契约
+
+`ConfigStatusReport` 所消费的模型/状态 DTO 必须使用以下精确类型：
+
+```ts
+export type ModelPolicyMode = "legacy" | "unrestricted" | "restricted";
+export type ModelSelectionSource = "legacy" | "unrestricted" | "policy-exact" | "policy-wildcard";
+```
+
+`ModelSummary` 增加 `selectionSource: ModelSelectionSource`。`StatusSummary` 增加 `modelPolicyMode: ModelPolicyMode` 和 `effectiveModelCount: number`，同时保留 `allowlistModelCount: number` 供既有客户端使用。`allowlistModelCount` 只统计 `agents.defaults.models` 条目，`effectiveModelCount` 统计经过 Provider disabled state 与 model policy 判定后的有效模型；两者不可互换。
+
+`modelPolicy.allow` 的 precedence 固定如下：字段缺失为 `legacy`，effective enabled 由 `agents.defaults.models` exact ref 决定；字段存在且为 `[]` 为 `unrestricted`，本地 Provider 目录中的模型在 Provider 未 disabled 时有效；字段存在且非空为 `restricted`，仅 `modelPolicy.allow` 的 exact ref、`provider/*` provider-wide wildcard 或 `provider/namespace/*` namespace wildcard 命中时有效。restricted 模式下 `agents.defaults.models` 只提供 alias/per-model metadata，不是 authoritative selection allowlist。Provider disabled state 独立于 policy availability，并优先阻止模型有效启用。
+
+读取必须保留缺失与 `[]` 的区别。任何读取 DTO 都必须报告 `selectionSource`：legacy/unrestricted 直接对应模式，restricted 命中 exact 为 `policy-exact`，命中 wildcard 为 `policy-wildcard`。若多个 wildcard 命中，仍不得改写 policy；实现应按最具体匹配优先报告来源（namespace wildcard 优先于 provider-wide wildcard），exact 优先于所有 wildcard。
+
 若 `openclaw.json` 缺失、不可读或 JSON/JSON5 解析失败，`GET /api/config-status` 仍返回 `ConfigStatusReport`，不得直接 400。此时：
 
 - `health` 返回空报告（`caseDuplicateGroups: []`，summary 三项为 0）。
@@ -174,6 +189,12 @@ export interface ConfigStatusReport {
 
 `envWarnings` 中的自由文本警告若已映射到结构化 issue，不再为同一 `source:kind:subject` 重复建 issue。
 
+### 5.2 模型 policy 与 wildcard 状态规则
+
+config-status 可报告模型 selection 的 mode、source 和计数，但不得把用户 wildcard 展开为 exact 条目，也不得因状态读取删除或改写 wildcard。policy-only exact ref 应可被识别为 restricted selection；不在本地 Provider 目录中的 exact ref 可作为 policy stale/coverage 事实供后续实现处理，但不能被计入 `effectiveModelCount`。
+
+当单模型或 Provider 的 disable、rename、批量清理会要求重写 wildcard 才能保持结果时，写入操作必须采用 fail-closed 错误；`force` 不得绕过。Provider disabled state 只能影响 effective availability，不得被解释为 policy entry，也不得改变 `modelPolicy.allow` 的存在性或内容。per-agent `agents.entries.*.modelPolicy.allow` 不属于本契约范围。
+
 ---
 
 ## 6. Core 聚合函数（实现指引）
@@ -238,6 +259,11 @@ UI 接入需另开产品/UI spec，可基于 `issues[]` 与 raw facts drill-down
 - [ ] orphan env key 计入 `summary.orphanEnvKeyCount`；若未同时 missing，产生 `env:orphan:*` issue。
 - [ ] 缺失 provider env key 产生 `env:missing:*` issue（不与 orphan 重复）。
 - [ ] 活动配置路径缺失、不可读或解析失败时，仍返回 report，并产生 `paths:*:openclaw` blocking issue。
+- [ ] restricted 配置中的 `cpa/*` 与 `grok2api/*` 按 provider-wide wildcard 识别，且不展开为 exact entries。
+- [ ] policy-only exact refs 可识别为 restricted/policy-exact，但不虚构本地 Provider 模型目录。
+- [ ] 缺失 policy 与空 policy 分别报告 `legacy` 与 `unrestricted`，不可合并。
+- [ ] `ModelSummary.selectionSource` 与 `StatusSummary.modelPolicyMode` / `effectiveModelCount` 正确，同时保留 `allowlistModelCount`。
+- [ ] wildcard toggle rejection、Provider disabled 与 policy availability、model rename 和 batch cleanup 均遵守 fail-closed 与不改写 wildcard 规则。
 - [ ] 活动 env 路径缺失时产生 `paths:missing:env` warning；不可读时产生 `paths:unreadable:env` blocking issue。
 - [ ] `issues[]` 中所有 `id` 唯一（`source:kind:subject` 无重复）。
 

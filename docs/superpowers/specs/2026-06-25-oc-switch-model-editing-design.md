@@ -87,8 +87,8 @@ Providers 页和 Models 页共用同一个模型表单组件，避免两边字�
 | Name | `provider.models[].name` | OpenClaw 2026.6.8 必填；读取旧配置时允许缺失 |
 
 `models.providers.*.models[].name` 对 OpenClaw 2026.6.8 为必填。读取旧配置时允许缺失并由 config-status 报告；任何 oc-switch 写入路径必须保留已有 name，或从 id 自动生成 fallback name。
-| Alias | `agents.defaults.models[ref].alias` | 可选；仅在 enabled 为 true 时写入 |
-| Enabled | `agents.defaults.models[ref]` | 开启时写入 allowlist，关闭时删除 allowlist entry |
+| Alias | `agents.defaults.models[ref].alias` | 可选；仅在对应 metadata entry 存在时写入 |
+| Enabled | effective selection state | 由 §5.1 的 `ModelPolicyMode` 决定；不得把 `agents.defaults.models` 在 restricted 模式下当作 authoritative allowlist |
 | API | `provider.models[].api` | 可选；支持 `openai-completions`、`anthropic-messages`、`google-generative-ai` |
 | Reasoning | `provider.models[].reasoning` | Checkbox；新增模型默认开启，编辑旧模型时保留“未设置”语义 |
 | 原生上下文窗口（可选） | `provider.models[].contextWindow` | 模型/路由原生能力，可选正整数 |
@@ -142,6 +142,35 @@ ModelRef = `${providerId}/${modelId}`
 - 拆分时只按第一个 `/`
 - Provider 前缀写入时统一转换为小写；model ID 保持大小写敏感并原样存储
 
+### 5.1.1 ModelPolicyMode、有效启用状态与来源
+
+OpenClaw 2026.8+ 的 `agents.defaults.modelPolicy.allow` 是可选字段。读取时必须区分字段缺失和字段存在但为空数组；Core 是唯一负责 `openclaw.json` 写入的层。模型 selection 的模式和优先级如下：
+
+| `modelPolicy.allow` 状态 | `ModelPolicyMode` | effective enabled 判定 | `ModelSelectionSource` |
+| --- | --- | --- | --- |
+| 字段缺失 | `"legacy"` | 完整 ModelRef 存在于 `agents.defaults.models` | `"legacy"` |
+| 字段存在且为 `[]` | `"unrestricted"` | Provider 未被独立 disabled state 禁用，且模型存在于本地 Provider 目录 | `"unrestricted"` |
+| 字段存在且非空 | `"restricted"` | 完整 ModelRef 被 `modelPolicy.allow` 的 exact entry 或适用 trailing wildcard 匹配 | `"policy-exact"` 或 `"policy-wildcard"` |
+
+定义必须固定为：
+
+```ts
+export type ModelPolicyMode = "legacy" | "unrestricted" | "restricted";
+export type ModelSelectionSource = "legacy" | "unrestricted" | "policy-exact" | "policy-wildcard";
+```
+
+优先级为：Provider disabled state 先独立过滤模型；其余模型先按上述 `ModelPolicyMode` 判定 effective enabled，再从 `agents.defaults.models` 读取 alias 和 per-model metadata。`agents.defaults.models` 在 restricted 模式仍保留其 alias/per-model metadata 语义，但不改变 `modelPolicy.allow` 的 selection 结果。`modelPolicy.allow` 支持完整 ModelRef exact entry、`provider/*` provider-wide trailing wildcard、以及 `provider/namespace/*` namespace trailing wildcard；只匹配尾部 `*` 形式，不能把任意中间 `*` 当作 wildcard。缺失与 `[]` 均不得被归一为另一种模式。
+
+### 5.1.2 读取 DTO 与兼容性
+
+现有 `ModelSummary` 必须增加 `selectionSource: ModelSelectionSource`。现有 `StatusSummary` 必须增加 `modelPolicyMode: ModelPolicyMode` 与 `effectiveModelCount: number`，并在兼容期继续保留 `allowlistModelCount: number`；`allowlistModelCount` 仍表示 `agents.defaults.models` 条目数，不得在 restricted 模式改名或借其表达 effective selection 数量。后续 Core、Server、CLI、Web 必须使用上述精确类型名和三种精确 mode 字符串，不得自行引入同义值。
+
+### 5.1.3 wildcard mutation safety
+
+在 restricted 模式下，未被 wildcard 覆盖的 exact policy entry 可以安全地对单个模型启用、禁用、rename 或清理；provider-wide `provider/*` 与 namespace `provider/namespace/*` wildcard 覆盖的模型可以读取和展示，但 oc-switch 绝不隐式扩展、删除或改写用户 wildcard。单模型或 Provider 的 disable 若无法通过增加/删除一个不改变 wildcard 语义的 exact entry 表达，必须 fail closed，并返回明确错误，要求用户先在 OpenClaw 配置中调整 wildcard；`force` 也不得绕过此保护。Provider disabled state 与 model policy availability 是两个独立维度：disabled Provider 的模型不得 effective enabled，但解除 disabled state 不得擅自改变 policy。
+
+Model rename、Provider 删除/关闭、批量删除和「只保留已启用」都必须先评估 exact/wildcard 覆盖和 fallback 保护，再执行原子写入；任何无法保持用户 wildcard 原样的操作整单拒绝。
+
 ### 5.2 新增模型
 
 新增模型时：
@@ -150,8 +179,8 @@ ModelRef = `${providerId}/${modelId}`
 2. 校验 model ID 非空
 3. 校验同 Provider 下不存在相同 model ID
 4. 写入 `models.providers.{providerId}.models[]`
-5. 如果 enabled 为 true，写入 `agents.defaults.models[ref]`
-6. 如果 alias 为空，allowlist entry 仍可写 `{}`，表示启用但无 alias
+5. 按当前 `ModelPolicyMode` 处理 selection：legacy 模式按 `agents.defaults.models` 写入；unrestricted 模式不为 selection 创建或清空 `modelPolicy.allow`；restricted 模式仅在不触碰 wildcard 语义的前提下同步 exact policy entry
+6. 如果模型的 effective enabled 状态为 true，更新其 `agents.defaults.models[ref]` metadata；alias 为空时仍可写 `{}`，但该 entry 在 restricted 模式不代表 selection enabled
 
 ### 5.3 编辑模型
 
@@ -166,15 +195,15 @@ ModelRef = `${providerId}/${modelId}`
    - 如果当前 primary model 等于旧 ref，则改为新 ref
 4. 更新表单覆盖的结构化字段
 5. 未出现在表单里的未知字段保持不变
-6. 根据 enabled 状态写入或删除 allowlist entry
-7. 更新 alias 时保留 allowlist entry 的 `agentRuntime` 与未知字段
+6. 根据当前 policy mode 和 wildcard 安全规则写入或删除 selection entry；不得将 `agents.defaults.models` 当作 restricted 模式的 selection allowlist
+7. 更新 alias 时保留 `agents.defaults.models[ref]` 的 `agentRuntime` 与未知字段
 
 ### 5.4 删除模型
 
 删除模型沿用现有语义：
 
 - 从 `provider.models[]` 删除模型
-- 删除对应 allowlist entry
+- 按当前 policy mode 删除对应 selection exact entry 或 legacy metadata entry；不隐式扩展、删除或改写用户 wildcard
 - 如果该 ref 是 primary model，必须提供新 primary 或显式 force
 
 WebGUI 首选让用户选择新 primary，不默认留下坏引用。
@@ -224,16 +253,18 @@ Core 层新增或扩展操作：
 
 ### 6.2 allowlist 保留规则
 
-启用模型时：
+legacy 模式启用模型时：
 
 - 旧 allowlist entry 存在：保留未知字段，只更新 alias
 - 旧 allowlist entry 不存在：创建新 entry
 - alias 为空：不写 alias 字段，但保留其他字段
 
-禁用模型时：
+legacy 模式禁用模型时：
 
 - 删除对应 allowlist entry
 - 不删除 provider model 定义
+
+restricted 模式的上述规则只适用于 `agents.defaults.models` metadata 的维护；selection 必须遵循 `modelPolicy.allow` exact/wildcard 规则。unrestricted 模式不得为了单个模型操作而创建或清空 `modelPolicy.allow`。
 
 ## 7. Server API
 
@@ -429,11 +460,18 @@ GET /api/model-metadata/suggestions?providerId=<id>&modelId=<raw-id>&refresh=0|1
 覆盖：
 
 - 新增模型写入 provider model 与 allowlist
+- legacy、unrestricted、restricted 三种 policy mode 的 effective enabled 与 selection source 正确
+- restricted 模式下 `agents.defaults.models` 仅作为 alias/per-model metadata
+- exact、provider-wide wildcard、namespace wildcard 的读取与匹配正确，且 wildcard 不被隐式扩展/删除
+- wildcard 无法安全表达单模型或 Provider disable 时 fail closed，`force` 不得绕过
+- 缺失 `modelPolicy.allow` 与空数组保持可区分
 - 新增模型支持 model ID 内部斜杠
 - 编辑模型字段保留未知字段
 - 修改 model ID 迁移 allowlist 与 primary ref
 - alias 更新保留 `agentRuntime` 与未知字段
 - 禁用时只删除 allowlist，不删除 provider model
+- Provider disabled state 与 policy availability 独立；解除/设置 disabled 不重写 policy
+- rename、批量删除、只保留已启用在 wildcard 和 fallback 保护下 fail closed 或保持语义
 - 删除 primary 模型要求新 primary 或 force
 - 重复模型 ID 被拒绝
 - create/edit 写入、修改与清空 `contextTokens`；未知字段不丢失
