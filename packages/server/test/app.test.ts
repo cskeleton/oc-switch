@@ -2789,3 +2789,194 @@ describe("对象形态主模型配置（agents.defaults.model = { primary, fallb
     expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
   });
 });
+
+describe("model metadata sync", () => {
+  /** 以最小配置覆盖 openclaw.json（全小写 Provider ID，写事务归一化为零改动） */
+  function writeConfig(ws: Workspace, config: Record<string, unknown>) {
+    writeFileSync(ws.paths.openclawPath, JSON.stringify(config, null, 2));
+  }
+
+  /** endpoint-provider/special-model：fixture 中 endpoint-exact 唯一 high 置信，自动应用 */
+  function endpointWorkspace(): Workspace {
+    const ws = workspace();
+    writeConfig(ws, {
+      models: {
+        providers: {
+          "endpoint-provider": {
+            baseUrl: "https://api.endpoint.example/v1",
+            apiKey: { source: "env", id: "ENDPOINT_PROVIDER_API_KEY" },
+            api: "openai-completions",
+            models: [{ id: "special-model" }]
+          }
+        }
+      },
+      agents: { defaults: { models: { "endpoint-provider/special-model": { alias: "keep" } } } }
+    });
+    return ws;
+  }
+
+  /** openrouter/shared：models.json 6 条 shared 多候选 medium，sync 后入队 */
+  function openrouterWorkspace(): Workspace {
+    const ws = workspace();
+    writeConfig(ws, {
+      models: {
+        providers: {
+          openrouter: {
+            baseUrl: "https://openrouter.ai/api/v1",
+            apiKey: { source: "env", id: "OPENROUTER_API_KEY" },
+            api: "openai-completions",
+            models: [{ id: "shared" }]
+          }
+        }
+      }
+    });
+    return ws;
+  }
+
+  test("POST /api/providers/:id/models/sync-metadata 返回报告并回填 high 置信模型", async () => {
+    const ws = endpointWorkspace();
+    const { fetchImpl } = metadataFetch(modelsDevSuccessSpecs());
+    const app = createTestApp(ws, fetchImpl);
+    const beforeAgents = (JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as { agents: unknown }).agents;
+
+    const { response, json } = await jsonRequest(app, "/api/providers/endpoint-provider/models/sync-metadata", {
+      method: "POST",
+      body: JSON.stringify({})
+    });
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.providerId).toBe("endpoint-provider");
+    const updated = json.updated as Array<{ modelId: string; filled: Record<string, unknown> }>;
+    expect(updated).toHaveLength(1);
+    expect(updated[0]?.modelId).toBe("special-model");
+    expect(updated[0]?.filled).toMatchObject({ name: "Special Model", contextWindow: 64000, maxTokens: 8192 });
+    expect(json.queued).toEqual([]);
+    expect(json.unmatched).toEqual([]);
+    expect(json.skipped).toEqual([]);
+    expect(typeof json.backupId).toBe("string");
+
+    // 读回 openclaw.json：条目已回填 contextWindow 等字段，agents 段未变
+    const persisted = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as {
+      agents: unknown;
+      models: { providers: Record<string, { models: Array<Record<string, unknown>> }> };
+    };
+    const entry = persisted.models.providers["endpoint-provider"]?.models.find((model) => model.id === "special-model");
+    expect(entry).toMatchObject({ name: "Special Model", contextWindow: 64000, maxTokens: 8192 });
+    expect(persisted.agents).toEqual(beforeAgents);
+  });
+
+  test("sync-metadata 对未知模型 id 返回 4xx", async () => {
+    const ws = endpointWorkspace();
+    const { fetchImpl } = metadataFetch(modelsDevSuccessSpecs());
+    const app = createTestApp(ws, fetchImpl);
+
+    const { response, json } = await jsonRequest(app, "/api/providers/endpoint-provider/models/sync-metadata", {
+      method: "POST",
+      body: JSON.stringify({ modelIds: ["nope"] })
+    });
+
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(response.status).toBeLessThan(500);
+    expect(String(json.error)).toContain("not found");
+  });
+
+  test("sync-queue：同步入队 → GET 查询 → resolve accept 落盘 → resolve dismiss 标记", async () => {
+    const ws = openrouterWorkspace();
+    const { fetchImpl } = metadataFetch(modelsDevSuccessSpecs());
+    const app = createTestApp(ws, fetchImpl);
+
+    // 同步：shared 为多候选 medium，不自动应用、写入确认队列
+    const sync = await jsonRequest(app, "/api/providers/openrouter/models/sync-metadata", {
+      method: "POST",
+      body: JSON.stringify({})
+    });
+    expect(sync.response.status).toBe(200);
+    expect(sync.json.updated).toEqual([]);
+    const queued = sync.json.queued as Array<{ modelId: string; candidateCount: number }>;
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.modelId).toBe("shared");
+    expect(queued[0]?.candidateCount).toBeGreaterThan(0);
+
+    const queried = await jsonRequest(app, "/api/model-metadata/sync-queue?providerId=openrouter");
+    expect(queried.response.status).toBe(200);
+    const items = queried.json.items as Array<{
+      providerId: string;
+      modelId: string;
+      dismissed: boolean;
+      candidates: Array<{ catalogKey: string; metadata: { contextWindow?: number } }>;
+    }>;
+    expect(items).toHaveLength(1);
+    expect(items[0]?.providerId).toBe("openrouter");
+    expect(items[0]?.modelId).toBe("shared");
+    expect(items[0]?.dismissed).toBe(false);
+    const candidate = items[0]?.candidates[0];
+    expect(candidate).toBeTruthy();
+
+    // accept 首个候选：applied 1、config 落盘、队列清空
+    const accepted = await jsonRequest(app, "/api/model-metadata/sync-queue/resolve", {
+      method: "POST",
+      body: JSON.stringify({
+        items: [{ providerId: "openrouter", modelId: "shared", action: "accept", catalogKey: candidate!.catalogKey }]
+      })
+    });
+    expect(accepted.response.status).toBe(200);
+    expect(accepted.json.ok).toBe(true);
+    const applied = accepted.json.applied as Array<{ modelId: string; filled: Record<string, unknown> }>;
+    expect(applied).toHaveLength(1);
+    expect(applied[0]?.modelId).toBe("shared");
+    expect(applied[0]?.filled.contextWindow).toBe(candidate!.metadata.contextWindow);
+    expect(accepted.json.failed).toEqual([]);
+    expect(typeof accepted.json.backupId).toBe("string");
+
+    const persisted = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as {
+      models: { providers: Record<string, { models: Array<Record<string, unknown>> }> };
+    };
+    expect(persisted.models.providers["openrouter"]?.models[0]?.contextWindow).toBe(candidate!.metadata.contextWindow);
+
+    const afterAccept = await jsonRequest(app, "/api/model-metadata/sync-queue?providerId=openrouter");
+    expect(afterAccept.json.items).toEqual([]);
+
+    // 重新同步入队后 dismiss：仅标记，config 未变（无 backupId）
+    const resync = await jsonRequest(app, "/api/providers/openrouter/models/sync-metadata", {
+      method: "POST",
+      body: JSON.stringify({})
+    });
+    expect(resync.response.status).toBe(200);
+
+    const dismissed = await jsonRequest(app, "/api/model-metadata/sync-queue/resolve", {
+      method: "POST",
+      body: JSON.stringify({ items: [{ providerId: "openrouter", modelId: "shared", action: "dismiss" }] })
+    });
+    expect(dismissed.response.status).toBe(200);
+    expect(dismissed.json.dismissedCount).toBe(1);
+    expect(dismissed.json.backupId).toBeUndefined();
+
+    const afterDismiss = await jsonRequest(app, "/api/model-metadata/sync-queue?providerId=openrouter");
+    const dismissedItems = afterDismiss.json.items as Array<{ dismissed: boolean }>;
+    expect(dismissedItems).toHaveLength(1);
+    expect(dismissedItems[0]?.dismissed).toBe(true);
+  });
+
+  test("resolve 对不存在的队列项返回 failed", async () => {
+    const ws = openrouterWorkspace();
+    const { fetchImpl } = metadataFetch(modelsDevSuccessSpecs());
+    const app = createTestApp(ws, fetchImpl);
+    const beforeConfig = readFileSync(ws.paths.openclawPath, "utf8");
+
+    const { response, json } = await jsonRequest(app, "/api/model-metadata/sync-queue/resolve", {
+      method: "POST",
+      body: JSON.stringify({ items: [{ providerId: "openrouter", modelId: "ghost", action: "dismiss" }] })
+    });
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    const failed = json.failed as Array<{ providerId: string; modelId: string; error: string }>;
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({ providerId: "openrouter", modelId: "ghost" });
+    expect(json.backupId).toBeUndefined();
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(beforeConfig);
+    const { json: backupsJson } = await jsonRequest(app, "/api/backups");
+    expect((backupsJson.backups as unknown[]).length).toBe(0);
+  });
+});

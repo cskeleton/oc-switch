@@ -1,6 +1,7 @@
 import {
   addCustomProvider,
   addProviderFromPreset,
+  applyModelMetadataSyncPlan,
   batchAddProviderModels,
   batchRemoveProviderModels,
   createConfigAdapter,
@@ -15,10 +16,12 @@ import {
   loadPreset,
   mergeProviderCaseDuplicates,
   migrateProviderSecretRefs,
+  planProviderModelMetadataSync,
   previewEnvUpdates,
   providerEnvVar,
   readEnvValue,
   readManifest,
+  recordModelMetadataSyncQueue,
   resolveGatewayRuntimeTarget,
   getDisabledProviderState,
   removeDisabledProviderState,
@@ -29,6 +32,7 @@ import {
   writeOpenClawTransaction,
   type ApiType,
   type EnvVariableSummary,
+  type ModelMetadataSyncUpdated,
   type OcSwitchPaths
 } from "@oc-switch/core";
 import type { Context, Hono } from "hono";
@@ -50,7 +54,8 @@ import {
   requireCustomProviderInput,
   requireProviderDiscoverPreviewInput,
   requireMergeCaseDuplicateInput,
-  requireString
+  requireString,
+  requireSyncModelMetadataInput
 } from "../schemas";
 
 function envStatus(summary: EnvVariableSummary | undefined) {
@@ -651,6 +656,54 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
         ok: true,
         removedModelIds,
         backupId: result.backupDir.split("/").pop()
+      });
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/providers/:id/models/sync-metadata", async (c) => {
+    try {
+      const providerId = c.req.param("id");
+      const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+      const input = requireSyncModelMetadataInput(body);
+      const paths = runtime.currentPaths();
+      // 纯元数据回填：已禁用 Provider 也允许（不触碰启用态，与批量删除同理）
+      const plan = await planProviderModelMetadataSync(
+        readConfig(paths),
+        { providerId, ...(input.modelIds !== undefined ? { modelIds: input.modelIds } : {}) },
+        { stateDir: paths.stateDir, fetchImpl: runtime.fetchImpl }
+      );
+      let updated: ModelMetadataSyncUpdated[] = [];
+      let backupId: string | undefined;
+      if (plan.applies.length > 0) {
+        const result = await writeOpenClawTransaction({
+          ...paths,
+          runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
+          reason: `sync model metadata for provider ${providerId}`,
+          mutate(config) {
+            const applied = applyModelMetadataSyncPlan(config, plan);
+            updated = applied.updated;
+            return applied.config;
+          },
+          afterWrite() {
+            recordModelMetadataSyncQueue(paths.stateDir, plan);
+          }
+        });
+        backupId = result.backupDir.split("/").pop();
+      } else {
+        recordModelMetadataSyncQueue(paths.stateDir, plan);
+      }
+      return c.json({
+        ok: true,
+        providerId: plan.providerId,
+        updated,
+        queued: plan.queued.map((item) => ({ modelId: item.modelId, candidateCount: item.candidates.length })),
+        unmatched: plan.unmatched,
+        skipped: plan.skipped,
+        sources: plan.sources,
+        warnings: plan.warnings,
+        ...(backupId !== undefined ? { backupId } : {})
       });
     } catch (error) {
       return jsonError(c, error);

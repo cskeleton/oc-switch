@@ -323,3 +323,34 @@ export function requireProviderDiscoverPreviewInput(body: Record<string, unknown
     ...(alreadyAddedIds !== undefined ? { alreadyAddedIds } : {})
   };
 }
+
+/** sync-metadata 请求体：modelIds 可选，缺省整 provider */
+export function requireSyncModelMetadataInput(body: Record<string, unknown>): { modelIds?: string[] } {
+  if (body.modelIds === undefined) return {};
+  if (!Array.isArray(body.modelIds) || body.modelIds.length === 0) {
+    throw new Error("modelIds must be a non-empty array when provided");
+  }
+  return { modelIds: body.modelIds.map((id, index) => requireString(id, `modelIds.${index}`)) };
+}
+
+/** sync-queue/resolve 请求体 */
+export function requireModelMetadataQueueResolveInput(
+  body: Record<string, unknown>
+): { items: import("@oc-switch/core").ModelMetadataQueueResolveAction[] } {
+  const itemsValue = body.items;
+  if (!Array.isArray(itemsValue) || itemsValue.length === 0) {
+    throw new Error("items must be a non-empty array");
+  }
+  const items = itemsValue.map((item, index) => {
+    if (!item || typeof item !== "object") throw new Error(`items.${index} must be an object`);
+    const entry = item as Record<string, unknown>;
+    const providerId = requireString(entry.providerId, `items.${index}.providerId`);
+    const modelId = requireString(entry.modelId, `items.${index}.modelId`);
+    if (entry.action === "dismiss") return { providerId, modelId, action: "dismiss" as const };
+    if (entry.action === "accept") {
+      return { providerId, modelId, action: "accept" as const, catalogKey: requireString(entry.catalogKey, `items.${index}.catalogKey`) };
+    }
+    throw new Error(`items.${index}.action must be "accept" or "dismiss"`);
+  });
+  return { items };
+}

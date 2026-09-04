@@ -1,8 +1,14 @@
-import { resolveModelMetadataSuggestions } from "@oc-switch/core";
+import {
+  readModelMetadataQueue,
+  resolveModelMetadataQueue,
+  resolveModelMetadataSuggestions,
+  writeModelMetadataQueue,
+  writeOpenClawTransaction
+} from "@oc-switch/core";
 import type { Hono } from "hono";
 import { readConfig, type AppRuntime } from "../context";
 import { jsonError } from "../errors";
-import { requireModelMetadataSuggestionsQuery } from "../schemas";
+import { requireModelMetadataQueueResolveInput, requireModelMetadataSuggestionsQuery } from "../schemas";
 
 /**
  * 只读模型元数据建议端点。
@@ -44,6 +50,53 @@ export function registerModelMetadataRoutes(app: Hono, runtime: AppRuntime): voi
         suggestions: result.suggestions,
         sources: result.sources,
         warnings: result.warnings
+      });
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.get("/api/model-metadata/sync-queue", async (c) => {
+    try {
+      const providerId = c.req.query("providerId")?.trim();
+      const queue = readModelMetadataQueue(runtime.currentPaths().stateDir);
+      const items = providerId ? queue.items.filter((item) => item.providerId === providerId) : queue.items;
+      return c.json({ items });
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/model-metadata/sync-queue/resolve", async (c) => {
+    try {
+      const body = (await c.req.json()) as Record<string, unknown>;
+      const input = requireModelMetadataQueueResolveInput(body);
+      const paths = runtime.currentPaths();
+      // 先试算（不落盘）：无实际字段变更（纯 dismiss / accept 但字段已齐）只更新队列文件，不走写事务
+      const preview = resolveModelMetadataQueue(readConfig(paths), readModelMetadataQueue(paths.stateDir), input.items);
+      if (!preview.configChanged) {
+        writeModelMetadataQueue(paths.stateDir, preview.queue);
+        return c.json({ ok: true, applied: preview.applied, dismissedCount: preview.dismissedCount, failed: preview.failed });
+      }
+      let resolved = preview;
+      const result = await writeOpenClawTransaction({
+        ...paths,
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
+        reason: "resolve model metadata sync queue",
+        mutate(config) {
+          resolved = resolveModelMetadataQueue(config, readModelMetadataQueue(paths.stateDir), input.items);
+          return resolved.config;
+        },
+        afterWrite() {
+          writeModelMetadataQueue(paths.stateDir, resolved.queue);
+        }
+      });
+      return c.json({
+        ok: true,
+        applied: resolved.applied,
+        dismissedCount: resolved.dismissedCount,
+        failed: resolved.failed,
+        backupId: result.backupDir.split("/").pop()
       });
     } catch (error) {
       return jsonError(c, error);
