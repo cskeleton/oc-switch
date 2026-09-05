@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Command } from "commander";
 import sample from "../../core/test/fixtures/openclaw.sample.json";
 import type { OpenClawConfig, RuntimeDiscoveryResult } from "@oc-switch/core";
-import { MAX_PROVIDER_MODELS, upsertDisabledProviderState } from "@oc-switch/core";
+import { MAX_PROVIDER_MODELS, upsertDisabledProviderState, writeModelMetadataQueue } from "@oc-switch/core";
 import { prepareGatewayEnvTarget, expectedGatewayEnvPath } from "../../core/test/gateway-sync-fixture";
 import { createCommandContext, repoRoot } from "../src/command-context";
 import { registerGatewayCommands } from "../src/commands/gateway";
@@ -1203,6 +1203,44 @@ describe("provider sync-metadata / metadata-queue", () => {
     expect(dismiss.stdout).toContain("已忽略 1 项");
     const dismissedList = await runCli(["provider", "metadata-queue", "list"], env);
     expect(dismissedList.stdout).toContain("[已忽略]");
+  });
+
+  test("metadata-queue list --provider 大小写折叠：归一化前大写入队项对小写过滤可见", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-mmsync-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "openclaw.json");
+    writeEndpointConfig(configPath);
+    // 模拟归一化前写入：队列项存大写 provider key
+    writeModelMetadataQueue(join(dir, ".oc-switch"), {
+      version: 1,
+      items: [{
+        providerId: "ENDPOINT-PROVIDER",
+        modelId: "shared",
+        dismissed: false,
+        lastSeenAt: "2026-09-05T00:00:00.000Z",
+        candidates: [{
+          catalogKey: "aaa/shared",
+          score: 1,
+          reason: "resolver-core-model-id",
+          metadata: {
+            catalogKey: "aaa/shared",
+            providerId: "aaa",
+            modelId: "shared",
+            contextWindow: 1000,
+            sourceKind: "models-dev-model",
+            sourceUrl: "https://models.dev/aaa/shared"
+          }
+        }]
+      }]
+    });
+    const env = { OPENCLAW_CONFIG_PATH: configPath, HOME: dir };
+
+    const list = await runCli(["provider", "metadata-queue", "list", "--provider", "endpoint-provider"], env);
+    expect(list.code).toBe(0);
+    expect(list.stdout).toContain("ENDPOINT-PROVIDER/shared");
+    // 不匹配的小写过滤仍为空
+    const other = await runCli(["provider", "metadata-queue", "list", "--provider", "openrouter"], env);
+    expect(other.stdout).toContain("确认队列为空");
   });
 
   test("sync-metadata 无 mock 且目录不可用时 fail closed：报错退出非 0、不写盘", async () => {

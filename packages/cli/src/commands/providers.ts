@@ -9,6 +9,7 @@ import {
   discoverProviderModels,
   editProvider,
   mergeProviderCaseDuplicates,
+  normalizeProviderId,
   loadPreset,
   isProviderDisabled,
   getDisabledProviderState,
@@ -431,7 +432,10 @@ export function registerProviderCommands(program: Command, context: CommandConte
     .option("--provider <id>", "只看指定 provider")
     .action((options: { provider?: string }) => {
       const queue = readModelMetadataQueue(context.activePaths().stateDir);
-      const items = options.provider ? queue.items.filter((item) => item.providerId === options.provider) : queue.items;
+      // --provider 过滤大小写折叠：队列项可能存着归一化前的大写 key
+      const items = options.provider
+        ? queue.items.filter((item) => normalizeProviderId(item.providerId) === normalizeProviderId(options.provider!))
+        : queue.items;
       if (items.length === 0) {
         console.log("确认队列为空");
         return;
