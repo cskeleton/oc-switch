@@ -1523,19 +1523,24 @@ describe("ProvidersView", () => {
     await findByText(/已回填 1/);
   });
 
-  test("providers view shows pending queue count and opens queue dialog; accept applies candidate", async () => {
+  test("providers view shows pending queue count and opens queue dialog; accept applies candidate and keeps dialog open", async () => {
     const queueItem: ModelMetadataQueueItem = {
       providerId: "nvidia", modelId: "vendor/model-c", dismissed: false, lastSeenAt: "2026-09-05T00:00:00.000Z",
       candidates: [{ catalogKey: "nvidia/vendor/model-c", score: 0.9, reason: "shared-model-tokens",
         metadata: { catalogKey: "nvidia/vendor/model-c", providerId: "nvidia", modelId: "vendor/model-c", contextWindow: 128000, sourceKind: "models-dev-model", sourceUrl: "https://models.dev/nvidia/vendor/model-c" } }]
     };
-    const getModelMetadataSyncQueue = mock(async () => ({ items: [queueItem] }));
-    const resolveModelMetadataSyncQueue = mock(async () => ({
-      ok: true, applied: [{ modelId: "vendor/model-c", filled: { contextWindow: 128000 }, catalogKey: "nvidia/vendor/model-c", matchKind: "queue-shared-model-tokens" }],
-      dismissedCount: 0, failed: []
-    }));
+    // resolve 之后队列读回为空
+    let resolved = false;
+    const getModelMetadataSyncQueue = mock(async () => ({ items: resolved ? [] : [queueItem] }));
+    const resolveModelMetadataSyncQueue = mock(async () => {
+      resolved = true;
+      return {
+        ok: true, applied: [{ modelId: "vendor/model-c", filled: { contextWindow: 128000 }, catalogKey: "nvidia/vendor/model-c", matchKind: "queue-shared-model-tokens" }],
+        dismissedCount: 0, failed: []
+      };
+    });
     const getProviders = mock(async () => ({ providers: [providerSummary({ id: "nvidia" })] }));
-    const { findByLabelText } = renderProvidersView(mockClient({ getProviders, getModelMetadataSyncQueue, resolveModelMetadataSyncQueue }));
+    const { findByLabelText, findByText } = renderProvidersView(mockClient({ getProviders, getModelMetadataSyncQueue, resolveModelMetadataSyncQueue }));
     await userEvent.click(await findByLabelText("更多操作 nvidia"));
     await userEvent.click(await findByLabelText("参数待确认 nvidia"));
     await userEvent.click(await findByLabelText("应用候选 nvidia/vendor/model-c"));
@@ -1544,6 +1549,8 @@ describe("ProvidersView", () => {
         { providerId: "nvidia", modelId: "vendor/model-c", action: "accept", catalogKey: "nvidia/vendor/model-c" }
       ])
     );
+    // accept 后对话框保持打开：队列已空 → EmptyState 可见，用户可继续处理或自行关框
+    expect(await findByText("暂无待确认项")).toBeTruthy();
   });
 
   test("provider models dialog batch-syncs selected models metadata", async () => {

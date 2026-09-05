@@ -114,7 +114,9 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
       if (queue && Array.isArray(queue.items)) {
         for (const item of queue.items) {
           if (item.dismissed) continue;
-          counts[item.providerId] = (counts[item.providerId] ?? 0) + 1;
+          // 队列项可能存着归一化前的大写 providerId；聚合 key 统一小写折叠（同 core normalizeProviderId 语义）
+          const key = item.providerId.toLowerCase();
+          counts[key] = (counts[key] ?? 0) + 1;
         }
       }
       setQueueCounts(counts);
@@ -519,11 +521,11 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
                     </DropdownMenuItem>
                     <DropdownMenuItem
                       aria-label={`参数待确认 ${row.id}`}
-                      disabled={(queueCounts[row.id] ?? 0) === 0}
+                      disabled={(queueCounts[row.id.toLowerCase()] ?? 0) === 0}
                       onSelect={() => setQueueTarget(row)}
                     >
                       <ListChecks className="mr-2 h-3.5 w-3.5" />
-                      参数待确认{queueCounts[row.id] ? ` (${queueCounts[row.id]})` : ""}
+                      参数待确认{queueCounts[row.id.toLowerCase()] ? ` (${queueCounts[row.id.toLowerCase()]})` : ""}
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem
@@ -577,7 +579,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
         client={client}
         onClose={() => setQueueTarget(null)}
         onChanged={() => {
-          setQueueTarget(null);
+          // 只刷新数据不关框：对话框内已连续处理多项，关框只走 onClose
           void load();
           onRefresh?.();
         }}

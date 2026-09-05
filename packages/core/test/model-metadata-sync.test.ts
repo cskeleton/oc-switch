@@ -11,6 +11,7 @@ import {
   recordModelMetadataSyncQueue,
   resolveModelMetadataQueue
 } from "../src/model-metadata-sync";
+import { normalizeConfigForStorage } from "../src/config-normalization";
 import { readModelMetadataQueue } from "../src/model-metadata-queue";
 import { MODELS_DEV_API_URL, MODELS_DEV_MODELS_URL } from "../src/model-metadata-catalog";
 import type { FetchImpl } from "../src/provider-sync";
@@ -212,6 +213,52 @@ describe("recordModelMetadataSyncQueue + resolveModelMetadataQueue", () => {
       ]);
       expect(orphan.failed).toHaveLength(1);
       expect(orphan.queue.items).toHaveLength(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("队列项存归一化前的大写 providerId：accept/dismiss 跨大小写命中，重新入队不产生重复项", async () => {
+    const { dir, cleanup } = tempStateDir();
+    try {
+      // 归一化前：config key 为大写 CUSTOM，plan 与入队都使用原始 key
+      const config: OpenClawConfig = {
+        models: { providers: { CUSTOM: { models: [{ id: "claude-sonnet-4.6" }] } } }
+      };
+      const plan = await planProviderModelMetadataSync(config, { providerId: "custom" }, { stateDir: dir, fetchImpl: fixtureFetch(), now: () => BASE_NOW });
+      expect(plan.providerId).toBe("CUSTOM");
+      recordModelMetadataSyncQueue(dir, plan, "2026-09-05T00:00:00.000Z");
+      let queue = readModelMetadataQueue(dir);
+      expect(queue.items).toHaveLength(1);
+      expect(queue.items[0]!.providerId).toBe("CUSTOM");
+
+      // 任意写事务后 config key 被归一化为小写
+      expect(normalizeConfigForStorage(config).changed).toBe(true);
+      expect(config.models!.providers!["custom"]).toBeTruthy();
+
+      // accept 传小写（当前 config key）：命中大写队列项，字段回填、队列移除
+      const accepted = resolveModelMetadataQueue(config, queue, [
+        { providerId: "custom", modelId: "claude-sonnet-4.6", action: "accept", catalogKey: "anthropic/claude-sonnet-4.5" }
+      ]);
+      expect(accepted.failed).toEqual([]);
+      expect(accepted.configChanged).toBe(true);
+      expect(accepted.applied).toHaveLength(1);
+      expect(accepted.queue.items).toHaveLength(0);
+      expect(config.models!.providers!["custom"]!.models![0]!.contextWindow).toBe(200000);
+
+      // resolve 是纯函数不落盘：队列文件里的旧项再 sync 时被折叠 upsert 覆盖，不产生第二条
+      recordModelMetadataSyncQueue(dir, plan, "2026-09-05T01:00:00.000Z");
+      queue = readModelMetadataQueue(dir);
+      expect(queue.items).toHaveLength(1);
+      expect(queue.items[0]!.lastSeenAt).toBe("2026-09-05T01:00:00.000Z");
+
+      // dismiss 传大写（resolveProviderId 返回小写）：折叠后仍命中同一队列项
+      const dismissed = resolveModelMetadataQueue(config, queue, [
+        { providerId: "CUSTOM", modelId: "claude-sonnet-4.6", action: "dismiss" }
+      ]);
+      expect(dismissed.failed).toEqual([]);
+      expect(dismissed.dismissedCount).toBe(1);
+      expect(dismissed.queue.items[0]!.dismissed).toBe(true);
     } finally {
       cleanup();
     }

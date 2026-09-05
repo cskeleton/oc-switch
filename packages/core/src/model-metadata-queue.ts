@@ -4,6 +4,7 @@
  * 损坏即丢弃重建；候选内嵌 metadata 快照，accept 不依赖联网。
  */
 import { readJsonState, writeJsonState } from "./json-state-store";
+import { normalizeProviderId } from "./model-ref";
 import type { NormalizedModelMetadata } from "./model-metadata-catalog";
 
 export const MODEL_METADATA_QUEUE_FILENAME = "model-metadata-sync-queue.json";
@@ -82,6 +83,11 @@ export function writeModelMetadataQueue(stateDir: string, queue: ModelMetadataSy
   writeJsonState({ stateDir, filename: MODEL_METADATA_QUEUE_FILENAME, value: queue });
 }
 
+/** 队列项匹配：providerId 大小写折叠（写事务会把 config key 归一为小写，队列项可能存着归一前的大写 key），modelId 保持大小写敏感 */
+function sameQueueItem(aProviderId: string, aModelId: string, bProviderId: string, bModelId: string): boolean {
+  return normalizeProviderId(aProviderId) === normalizeProviderId(bProviderId) && aModelId === bModelId;
+}
+
 /** 同 (providerId, modelId) upsert：刷新 candidates/lastSeenAt，保留 dismissed */
 export function upsertQueueItem(
   queue: ModelMetadataSyncQueue,
@@ -89,7 +95,7 @@ export function upsertQueueItem(
   now: string
 ): ModelMetadataSyncQueue {
   const index = queue.items.findIndex(
-    (existing) => existing.providerId === item.providerId && existing.modelId === item.modelId
+    (existing) => sameQueueItem(existing.providerId, existing.modelId, item.providerId, item.modelId)
   );
   const next: ModelMetadataQueueItem = {
     providerId: item.providerId,
@@ -111,7 +117,7 @@ export function removeQueueItem(
 ): ModelMetadataSyncQueue {
   return {
     version: 1,
-    items: queue.items.filter((item) => !(item.providerId === providerId && item.modelId === modelId))
+    items: queue.items.filter((item) => !sameQueueItem(item.providerId, item.modelId, providerId, modelId))
   };
 }
 
@@ -124,7 +130,7 @@ export function setQueueItemDismissed(
   return {
     version: 1,
     items: queue.items.map((item) =>
-      item.providerId === providerId && item.modelId === modelId ? { ...item, dismissed } : item
+      sameQueueItem(item.providerId, item.modelId, providerId, modelId) ? { ...item, dismissed } : item
     )
   };
 }

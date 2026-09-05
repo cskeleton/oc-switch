@@ -17,6 +17,7 @@ import {
   type ModelMetadataSyncQueue
 } from "./model-metadata-queue";
 import { resolveModelMetadata, type ModelMetadataCatalogData } from "./model-metadata-resolver";
+import { normalizeProviderId } from "./model-ref";
 import { resolveProviderId } from "./operation-common";
 import type { FetchImpl } from "./provider-sync";
 import type { OpenClawConfig } from "./types";
@@ -163,7 +164,9 @@ export function applyModelMetadataSyncPlan(
   config: OpenClawConfig,
   plan: ModelMetadataSyncPlan
 ): { config: OpenClawConfig; updated: ModelMetadataSyncUpdated[] } {
-  const provider = config.models?.providers?.[plan.providerId];
+  // plan.providerId 是 plan 时的真实 config key；apply 前若经过归一化可能已折叠为小写，兜底解析一次
+  const resolvedProviderId = resolveProviderId(config, plan.providerId) ?? plan.providerId;
+  const provider = config.models?.providers?.[resolvedProviderId];
   if (!provider) throw new Error(`Provider ${plan.providerId} not found`);
   const updated: ModelMetadataSyncUpdated[] = [];
   for (const apply of plan.applies) {
@@ -219,8 +222,11 @@ export function resolveModelMetadataQueue(
   let configChanged = false;
 
   for (const action of actions) {
+    // 队列项可能存着归一化前的大写 providerId，两侧折叠比较（modelId 仍严格相等）
     const resolvedProviderId = resolveProviderId(config, action.providerId) ?? action.providerId;
-    const item = nextQueue.items.find((entry) => entry.providerId === resolvedProviderId && entry.modelId === action.modelId);
+    const item = nextQueue.items.find(
+      (entry) => normalizeProviderId(entry.providerId) === normalizeProviderId(resolvedProviderId) && entry.modelId === action.modelId
+    );
     if (!item) {
       failed.push({ providerId: action.providerId, modelId: action.modelId, error: "queue item not found" });
       continue;
@@ -235,7 +241,9 @@ export function resolveModelMetadataQueue(
       failed.push({ providerId: action.providerId, modelId: action.modelId, error: `catalog candidate ${action.catalogKey} not found` });
       continue;
     }
-    const provider = config.models?.providers?.[item.providerId];
+    // 队列存的 key 与当前 config key 大小写可能不同（归一化前入队），先解析真实 key 再取 provider
+    const itemProviderId = resolveProviderId(config, item.providerId);
+    const provider = itemProviderId ? config.models?.providers?.[itemProviderId] : undefined;
     const model = provider?.models?.find((entry) => entry.id === item.modelId);
     if (!provider || !model) {
       // 孤儿队列项：模型已被删除/改名，移除并报 failed

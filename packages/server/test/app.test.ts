@@ -17,6 +17,7 @@ import type {
 import {
   createBackup,
   upsertDisabledProviderState,
+  writeModelMetadataQueue,
   MAX_PROVIDER_MODELS,
   MODELS_DEV_API_URL,
   MODELS_DEV_MODELS_URL
@@ -2879,6 +2880,68 @@ describe("model metadata sync", () => {
     expect(response.status).toBeGreaterThanOrEqual(400);
     expect(response.status).toBeLessThan(500);
     expect(String(json.error)).toContain("not found");
+  });
+
+  test("已禁用 Provider 仍可 sync-metadata（纯元数据回填，不触碰启用态）", async () => {
+    const ws = endpointWorkspace();
+    upsertDisabledProviderState(ws.paths.stateDir, {
+      providerId: "endpoint-provider",
+      openclawPath: ws.paths.openclawPath,
+      disabledAt: "2026-09-05T00:00:00.000Z",
+      allowlistEntries: {}
+    });
+    const { fetchImpl } = metadataFetch(modelsDevSuccessSpecs());
+    const app = createTestApp(ws, fetchImpl);
+
+    const { response, json } = await jsonRequest(app, "/api/providers/endpoint-provider/models/sync-metadata", {
+      method: "POST",
+      body: JSON.stringify({})
+    });
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    const updated = json.updated as Array<{ modelId: string; filled: Record<string, unknown> }>;
+    expect(updated).toHaveLength(1);
+    expect(updated[0]?.filled).toMatchObject({ contextWindow: 64000, maxTokens: 8192 });
+
+    const persisted = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as {
+      models: { providers: Record<string, { models: Array<Record<string, unknown>> }> };
+    };
+    expect(persisted.models.providers["endpoint-provider"]?.models[0]?.contextWindow).toBe(64000);
+  });
+
+  test("sync-queue GET 的 providerId 过滤大小写折叠：归一化前写入的大写 key 仍可查到", async () => {
+    const ws = openrouterWorkspace();
+    const app = createTestApp(ws);
+    // 模拟归一化前写入：队列项存原始大写 key，config 中 provider 为小写
+    writeModelMetadataQueue(ws.paths.stateDir, {
+      version: 1,
+      items: [{
+        providerId: "OPENROUTER",
+        modelId: "shared",
+        dismissed: false,
+        lastSeenAt: "2026-09-05T00:00:00.000Z",
+        candidates: [{
+          catalogKey: "openrouter/shared",
+          score: 1,
+          reason: "resolver-core-model-id",
+          metadata: {
+            catalogKey: "openrouter/shared",
+            providerId: "openrouter",
+            modelId: "shared",
+            contextWindow: 128000,
+            sourceKind: "models-dev-model",
+            sourceUrl: "https://models.dev/openrouter/shared"
+          }
+        }]
+      }]
+    });
+
+    const { response, json } = await jsonRequest(app, "/api/model-metadata/sync-queue?providerId=openrouter");
+    expect(response.status).toBe(200);
+    const items = json.items as Array<{ providerId: string; modelId: string }>;
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ providerId: "OPENROUTER", modelId: "shared" });
   });
 
   test("sync-queue：同步入队 → GET 查询 → resolve accept 落盘 → resolve dismiss 标记", async () => {

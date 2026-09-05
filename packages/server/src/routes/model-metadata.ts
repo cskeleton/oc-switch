@@ -1,4 +1,5 @@
 import {
+  normalizeProviderId,
   readModelMetadataQueue,
   resolveModelMetadataQueue,
   resolveModelMetadataSuggestions,
@@ -60,7 +61,10 @@ export function registerModelMetadataRoutes(app: Hono, runtime: AppRuntime): voi
     try {
       const providerId = c.req.query("providerId")?.trim();
       const queue = readModelMetadataQueue(runtime.currentPaths().stateDir);
-      const items = providerId ? queue.items.filter((item) => item.providerId === providerId) : queue.items;
+      // providerId 过滤大小写折叠：队列项可能存着归一化前的大写 key
+      const items = providerId
+        ? queue.items.filter((item) => normalizeProviderId(item.providerId) === normalizeProviderId(providerId))
+        : queue.items;
       return c.json({ items });
     } catch (error) {
       return jsonError(c, error);
