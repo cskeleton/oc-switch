@@ -1,7 +1,7 @@
 # oc-switch 模型参数批量同步（models.dev + CPAMP 模糊匹配 + 确认队列）设计
 
 > 日期：2026-09-05
-> 状态：草案，待用户评审
+> 状态：已实现（2026-09-05 Sync Audit 完成，实现偏差已回写对应小节）
 > 目标：为 Provider 目录中**已存在**的模型条目批量回填 models.dev 参数（name / reasoning / contextWindow / maxTokens / input），复用现有确定性 resolver，新增移植自 CPAMP（经 OpenClawUsage）的模糊匹配与确认队列；只填空缺字段，绝不覆盖已有值。
 
 ## 1. 背景
@@ -80,18 +80,18 @@ packages/core/src/model-metadata-sync.ts      # 批量同步 orchestration（读
 
 移植 `OpenClawUsage/pricing-catalog-matcher.js`，改为对 `NormalizedModelMetadata[]` 工作：
 
-- 集中常量：`SCORE_THRESHOLD = 0.55`、`WEAK_THRESHOLD = 0.34`、`MAX_CANDIDATES = 8`、权重 `0.86 / 0.82`
-- `tokenize` / `tokenJaccard` / `levenshtein` / `editSimilarity` / `scoreCandidate`（`max(tokenJaccard×0.86, editSimilarity×0.82)`）
-- `buildCatalogIndex`：按 `modelId.toLowerCase()` 建多索引（catalogKey 全集：modelFacts + providerCatalog）
-- 归一化探测串：复用现有 `model-id-core.ts` 的 `localCoreCandidates` / `stripCatalogDateSuffixes`（取剥离程度最高的 core 作为 probe），**不另引** OpenClawUsage 的 `generateModelKeyCandidates`（noiseSuffixes 概念以 oc-switch 现有常量为准）
-- `isOfficialEntry` 官方条目启发式与 `KNOWN_MODEL_CREATORS` 集合原样移植，用于同一 catalog modelId 多条目时的消歧排序
-- `hasStrictTokenContainment` 守卫原样移植
+- 集中常量：`FUZZY_SCORE_THRESHOLD = 0.55`、`FUZZY_WEAK_THRESHOLD = 0.34`、`FUZZY_MAX_CANDIDATES = 8`、权重 `0.86 / 0.82`
+- `tokenizeModelId` / `tokenJaccard` / `levenshtein` / `editSimilarity` / `scoreCandidate`（`max(tokenJaccard×0.86, editSimilarity×0.82)`）；分词正则保留小数点（`[^a-z0-9.]+`，CPAMP 原为 `[^a-z0-9]+`）：「5.6」「4.6」等版本号须为单 token，否则版本差异会被误算为共享 token
+- 未单建 `buildCatalogIndex` 函数：`matchFuzzyModelMetadata` 内联按 `modelId.toLowerCase()` 分组（catalogKey 全集：modelFacts + providerCatalog），同 id 多条目经 `pickRepresentative`（本 provider → 官方条目 → catalogKey 稳定序）选代表后打分
+- 归一化探测串：复用现有 `model-id-core.ts` 的 `localCoreCandidates`，probe 取其**首个**候选（只剥前缀、不逐段截断，保留最多区分信息；与 OpenClawUsage 取最短候选不同），**不另引** OpenClawUsage 的 `generateModelKeyCandidates`（noiseSuffixes 概念以 oc-switch 现有常量为准）
+- `isOfficialMetadataEntry` 官方条目启发式与 `KNOWN_MODEL_CREATORS` 集合原样移植，仅用于 `pickRepresentative` 消歧排序，不产出独立 reason
+- `hasStrictTokenContainment` 守卫原样移植；因模糊层永不自动应用（§5.3），守卫与 `FUZZY_SCORE_THRESHOLD` 仅用于 reason 标注
 
 ### 5.3 模糊结果分流（与 CPAMP 的关键差异）
 
-- 模糊层命中（score ≥ `WEAK_THRESHOLD`）**一律入队**，即使 score ≥ `SCORE_THRESHOLD` 且唯一——写入真实运行配置比定价参考表保守，用户确认成本一次点击，误应用成本是运行参数错误
-- 候选按 score 降序取前 `MAX_CANDIDATES` 条，附 `score` 与 `reason`（`"shared-model-tokens"` / `"weak-recall"` / `"exact-official"` 等）
-- 低于 `WEAK_THRESHOLD` → 计入 `unmatched`
+- 模糊层命中（score ≥ `FUZZY_WEAK_THRESHOLD`）**一律入队**，即使 score ≥ `FUZZY_SCORE_THRESHOLD` 且唯一——写入真实运行配置比定价参考表保守，用户确认成本一次点击，误应用成本是运行参数错误
+- 候选按 score 降序（同分按 catalogKey 稳定序）取前 `FUZZY_MAX_CANDIDATES` 条，附 `score` 与 `reason`（`"token-containment"` 严格 token 包含 / `"shared-model-tokens"` ≥0.55 / `"weak-recall"` 0.34–0.55）
+- 低于 `FUZZY_WEAK_THRESHOLD` → 计入 `unmatched`
 
 ## 6. 写入语义（fill-empty）
 
@@ -151,13 +151,13 @@ interface ModelMetadataQueueItem {
 
 | 端点 | 说明 |
 |---|---|
-| `POST /api/providers/:id/models/sync-metadata` | body `{ modelIds?: string[] }`；返回 `ModelMetadataSyncReport` |
-| `GET /api/model-metadata/sync-queue?providerId=` | 队列查询（含 dismissed 标记） |
-| `POST /api/model-metadata/sync-queue/resolve` | body `{ items: Array<{ providerId, modelId, action: "accept", catalogKey } \| { providerId, modelId, action: "dismiss" }> }`；accept 按 §6 落盘（合并为一次写盘），返回 `{ resolved, failed, remaining }` |
+| `POST /api/providers/:id/models/sync-metadata` | body `{ modelIds?: string[] }`；返回 `ModelMetadataSyncReport`（另附 `ok: true`，有写盘时附 `backupId`） |
+| `GET /api/model-metadata/sync-queue?providerId=` | 队列查询（含 dismissed 标记），返回 `{ items }` |
+| `POST /api/model-metadata/sync-queue/resolve` | body `{ items: Array<{ providerId, modelId, action: "accept", catalogKey } \| { providerId, modelId, action: "dismiss" }> }`；accept 按 §6 落盘（合并为一次写盘），返回 `{ ok, applied, dismissedCount, failed, backupId? }`；先试算，`configChanged` 才进写事务，纯 dismiss / 无可填字段只更新队列文件 |
 
 ## 9. CLI（packages/cli）
 
-- `provider sync-metadata <id> [--models id1,id2]`：跑同步，打印 updated/queued/unmatched/skipped 摘要
+- `provider sync-metadata <id> [--models id1,id2] [--refresh]`：跑同步，打印 updated/queued/unmatched/skipped 摘要；`--refresh` 绕过 24h 缓存强制刷新 models.dev 目录
 - `provider metadata-queue list [--provider <id>]`
 - `provider metadata-queue accept <providerId> <modelId> --catalog <catalogKey>`
 - `provider metadata-queue dismiss <providerId> <modelId>`
@@ -165,8 +165,8 @@ interface ModelMetadataQueueItem {
 ## 10. Web（packages/web）
 
 - Providers 页 Provider 行操作加「同步参数」→ 完成后 Toast + 报告摘要（更新 n、待确认 n、未匹配 n）
-- 模型列表支持多选 + 「同步参数」（model 级，复用同一 API）
-- 确认队列入口：Providers 页「待确认」徽标（计数），打开对话框用 `DataTable` 展示队列项；每项展开候选（catalogKey、score、关键参数），操作「应用选中候选 / 忽略」；复用 `Button` / `Toast` / `EmptyState` 等共享组件
+- 「模型」弹窗（本地目录）支持多选 + 「同步参数」（model 级，复用同一 API）
+- 确认队列入口：Providers 页 Provider 行操作「参数待确认 (n)」（计数只计未忽略项），打开 `ModelMetadataQueueDialog` 以列表 + radio 展示队列项与候选（catalogKey、匹配度 score、上下文/最大输出），操作「应用 / 忽略」；已忽略项沉底并以 `Pill` 标记；复用 `Button` / `Toast` / `EmptyState` / `Pill` 等共享组件（未使用 `DataTable`）
 - `ModelDialog` 现有「查询参考参数」保持不变
 
 ## 11. 错误处理
@@ -190,6 +190,6 @@ interface ModelMetadataQueueItem {
 
 ## 13. Sync Audit 清单
 
-- [ ] `AGENTS.md`「已实现能力（摘要）」Model 节补批量参数同步；「Learned Workspace Facts」补队列文件与阈值常量
-- [ ] 本 spec 随实现同步偏差
-- [ ] `2026-09-02-oc-switch-model-metadata-core-id-matching-design.md` 无需修订（resolver 契约不变）
+- [x] `AGENTS.md`「已实现能力（摘要）」Model 节补批量参数同步；「Learned Workspace Facts」补队列文件与阈值常量（另在规格索引补本 spec 行）
+- [x] 本 spec 随实现同步偏差（§5.2 probe 取值/分词小数点/索引结构、§5.3 reason 取值、§8 响应形状、§9 `--refresh`、§10 队列入口与对话框形态）
+- [x] `2026-09-02-oc-switch-model-metadata-core-id-matching-design.md` 无需修订（resolver 契约不变：本特性各 commit 未触碰 `model-metadata-resolver.ts` / `model-id-core.ts` / `model-metadata-catalog.ts`）

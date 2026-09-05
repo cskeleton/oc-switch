@@ -78,6 +78,7 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 
 - 增删、按 model policy 三态启用/禁用、切换主模型（`use`）
 - 模型编辑（Web + API）
+- 模型参数批量同步（`provider sync-metadata`、`POST /api/providers/:id/models/sync-metadata`、Providers 页「同步参数」）：从 models.dev 为本地目录条目回填 `name`/`reasoning`/`contextWindow`/`maxTokens`/`input`；确定性 resolver 唯一 high 置信自动回填，其余（非 high、多候选、模糊命中）进确认队列 `~/.oc-switch/model-metadata-sync-queue.json`，Web/CLI/API 三端 accept/dismiss；只填空缺字段，绝不覆盖已有值
 
 ### 配置健康
 
@@ -150,6 +151,7 @@ bun run packages/cli/src/index.ts     # 直接调用 CLI
 | Provider Model Discover | `docs/superpowers/specs/2026-07-09-oc-switch-provider-model-discover-design.md` |
 | Backup Diff Changelog | `docs/superpowers/specs/2026-07-09-oc-switch-backup-diff-changelog-design.md` |
 | Model Metadata Core-ID Matching | `docs/superpowers/specs/2026-09-02-oc-switch-model-metadata-core-id-matching-design.md` |
+| Model Metadata Batch Sync | `docs/superpowers/specs/2026-09-05-oc-switch-model-metadata-batch-sync-design.md` |
 
 ## Learned User Preferences
 
@@ -168,3 +170,4 @@ bun run packages/cli/src/index.ts     # 直接调用 CLI
 - 已禁用 Provider：禁止 batch-add / 启用类写入；批量删除与「只保留已启用」仍应可用，以便把超限目录降到上限以下。
 - 本机 launcher：`./scripts/install-local-launcher.sh` 只安装 `~/bin/oc-switch` 包装；需自行保证 `~/bin` 在 PATH；Web 登录用 API token（`~/.oc-switch/token.json` / `token rotate`），不是 macOS 系统登录密码。
 - OpenClaw 2026.6.11+ 的 `doctor`/`secrets audit` 将 `${ENV_VAR}` 字符串视为 plaintext residue；`{ source: "env", provider: "default", id: "..." }` 才算合规 SecretRef。勿用 `health repair` 把对象格式迁成 `${VAR}` 来消除 doctor 告警。
+- 模型参数批量同步的模糊匹配常量（`FUZZY_SCORE_THRESHOLD = 0.55` / `FUZZY_WEAK_THRESHOLD = 0.34` / `FUZZY_MAX_CANDIDATES = 8`、权重 0.86/0.82）移植自 CPAMP，集中定义于 `packages/core/src/model-metadata-matcher.ts`；模糊命中**永不自动应用**（即使 ≥0.55 且唯一），一律进确认队列；CLI 测试缝 `OC_SWITCH_MOCK_METADATA` 指向 `{ models, api }` JSON 文件，离线应答 models.dev 请求。
