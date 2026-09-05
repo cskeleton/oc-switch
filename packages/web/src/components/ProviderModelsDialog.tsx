@@ -139,6 +139,23 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
     }
   }
 
+  async function runSyncMetadata() {
+    if (!provider || batchBusy) return;
+    setBatchBusy(true);
+    try {
+      // 有勾选同步勾选，无勾选同步该 provider 全部本地模型
+      const body = selectedModelIds.size > 0 ? { modelIds: [...selectedModelIds] } : {};
+      const result = await client.syncProviderModelMetadata(provider.id, body);
+      toast.success(`已回填 ${result.updated.length}，待确认 ${result.queued.length}，未匹配 ${result.unmatched.length}`);
+      await load();
+      onChanged();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "同步参数失败");
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+
   const selectClassName = "flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-base shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring md:text-sm";
   const selectedCount = selectedModelIds.size;
 
@@ -169,6 +186,16 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
                 >
                   <Trash2 className="h-4 w-4" />
                   删除所选{selectedCount > 0 ? ` (${selectedCount})` : ""}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  aria-label="同步所选模型参数"
+                  disabled={batchBusy}
+                  title={selectedCount > 0 ? `同步已选 ${selectedCount} 个模型的参数` : "同步该 Provider 全部本地模型的参数"}
+                  onClick={() => void runSyncMetadata()}
+                >
+                  同步参数
                 </Button>
                 <Button
                   variant="outline"

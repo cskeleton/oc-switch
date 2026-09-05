@@ -1,4 +1,4 @@
-import { Cpu, Edit3, MoreHorizontal, Plus, Power, PowerOff, RefreshCw, Search, Star, Trash2 } from "lucide-react";
+import { Cpu, Edit3, ListChecks, MoreHorizontal, Plus, Power, PowerOff, RefreshCw, Search, Sparkles, Star, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { GatewayApplyBanner } from "../components/GatewayApplyBanner";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -6,6 +6,7 @@ import { CustomProviderDialog } from "../components/CustomProviderDialog";
 import { DataTable } from "../components/DataTable";
 import { EnvMigrationConfirmDialog } from "../components/EnvMigrationConfirmDialog";
 import { MergeCaseDuplicateDialog } from "../components/MergeCaseDuplicateDialog";
+import { ModelMetadataQueueDialog } from "../components/ModelMetadataQueueDialog";
 import { ProviderDiscoverDialog } from "../components/ProviderDiscoverDialog";
 import { ProviderModelsDialog } from "../components/ProviderModelsDialog";
 import { useToast } from "../components/Toast";
@@ -78,6 +79,9 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
   } | null>(null);
   const [modelTarget, setModelTarget] = useState<ProviderSummary | null>(null);
   const [discoverTarget, setDiscoverTarget] = useState<ProviderSummary | null>(null);
+  const [queueTarget, setQueueTarget] = useState<ProviderSummary | null>(null);
+  /** 各 Provider 参数待确认队列计数（只计未忽略项；加载失败静默为空） */
+  const [queueCounts, setQueueCounts] = useState<Record<string, number>>({});
   const [stateTarget, setStateTarget] = useState<ProviderSummary | null>(null);
   const [pendingEnvConfirm, setPendingEnvConfirm] = useState<{
     providerId: string;
@@ -92,10 +96,12 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [{ providers: list }, health, migrationPreview] = await Promise.all([
+      const [{ providers: list }, health, migrationPreview, queue] = await Promise.all([
         client.getProviders(),
         client.getHealth().catch(() => null),
-        client.getProviderSecretRefMigrations().catch(() => null)
+        client.getProviderSecretRefMigrations().catch(() => null),
+        // 队列计数失败不阻塞主列表
+        client.getModelMetadataSyncQueue().catch(() => null)
       ]);
       setProviders(list);
       setDuplicateGroups(health?.caseDuplicateGroups ?? []);
@@ -104,6 +110,14 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
           ? migrationPreview
           : null
       );
+      const counts: Record<string, number> = {};
+      if (queue && Array.isArray(queue.items)) {
+        for (const item of queue.items) {
+          if (item.dismissed) continue;
+          counts[item.providerId] = (counts[item.providerId] ?? 0) + 1;
+        }
+      }
+      setQueueCounts(counts);
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载失败");
     }
@@ -274,6 +288,17 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "保存失败");
       setPendingEnvConfirm(null);
+    }
+  }
+
+  async function runSyncMetadata(row: ProviderSummary) {
+    try {
+      const result = await client.syncProviderModelMetadata(row.id, {});
+      toast.success(`已回填 ${result.updated.length}，待确认 ${result.queued.length}，未匹配 ${result.unmatched.length}，齐全跳过 ${result.skipped.length}`);
+      await load();
+      onRefresh?.();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "同步参数失败");
     }
   }
 
@@ -488,6 +513,18 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
                       <Search className="mr-2 h-3.5 w-3.5" />
                       发现模型
                     </DropdownMenuItem>
+                    <DropdownMenuItem aria-label={`同步参数 ${row.id}`} onSelect={() => void runSyncMetadata(row)}>
+                      <Sparkles className="mr-2 h-3.5 w-3.5" />
+                      同步参数
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      aria-label={`参数待确认 ${row.id}`}
+                      disabled={(queueCounts[row.id] ?? 0) === 0}
+                      onSelect={() => setQueueTarget(row)}
+                    >
+                      <ListChecks className="mr-2 h-3.5 w-3.5" />
+                      参数待确认{queueCounts[row.id] ? ` (${queueCounts[row.id]})` : ""}
+                    </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem
                       aria-label={`删除 ${row.id}`}
@@ -529,6 +566,18 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
               ? `已添加并启用 ${addedCount} 个模型`
               : `已添加 ${addedCount} 个模型`
           );
+          void load();
+          onRefresh?.();
+        }}
+      />
+
+      <ModelMetadataQueueDialog
+        open={Boolean(queueTarget)}
+        providerId={queueTarget?.id}
+        client={client}
+        onClose={() => setQueueTarget(null)}
+        onChanged={() => {
+          setQueueTarget(null);
           void load();
           onRefresh?.();
         }}

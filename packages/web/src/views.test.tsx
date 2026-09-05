@@ -13,6 +13,7 @@ import {
   type ApiClient,
   type CaseDuplicateKind,
   type ConfigHealthReport,
+  type ModelMetadataQueueItem,
   type ModelMetadataSuggestionsResponse,
   type ProviderModelInput
 } from "./api";
@@ -1505,6 +1506,63 @@ describe("ProvidersView", () => {
       expect((await findByLabelText(`${scenario.action} Provider cpa`) as HTMLButtonElement).disabled).toBe(false);
     });
   }
+
+  test("providers view runs metadata sync from row menu and shows summary toast", async () => {
+    const syncProviderModelMetadata = mock(async () => ({
+      ok: true, providerId: "nvidia",
+      updated: [{ modelId: "vendor/model-b", filled: { contextWindow: 128000 }, catalogKey: "nvidia/vendor/model-b", matchKind: "provider-exact" }],
+      queued: [{ modelId: "vendor/model-c", candidateCount: 2 }],
+      unmatched: [], skipped: [], warnings: []
+    }));
+    const getModelMetadataSyncQueue = mock(async () => ({ items: [] }));
+    const getProviders = mock(async () => ({ providers: [providerSummary({ id: "nvidia" })] }));
+    const { findByLabelText, findByText } = renderProvidersView(mockClient({ getProviders, getModelMetadataSyncQueue, syncProviderModelMetadata }));
+    await userEvent.click(await findByLabelText("更多操作 nvidia"));
+    await userEvent.click(await findByLabelText("同步参数 nvidia"));
+    await waitFor(() => expect(syncProviderModelMetadata).toHaveBeenCalledWith("nvidia", {}));
+    await findByText(/已回填 1/);
+  });
+
+  test("providers view shows pending queue count and opens queue dialog; accept applies candidate", async () => {
+    const queueItem: ModelMetadataQueueItem = {
+      providerId: "nvidia", modelId: "vendor/model-c", dismissed: false, lastSeenAt: "2026-09-05T00:00:00.000Z",
+      candidates: [{ catalogKey: "nvidia/vendor/model-c", score: 0.9, reason: "shared-model-tokens",
+        metadata: { catalogKey: "nvidia/vendor/model-c", providerId: "nvidia", modelId: "vendor/model-c", contextWindow: 128000, sourceKind: "models-dev-model", sourceUrl: "https://models.dev/nvidia/vendor/model-c" } }]
+    };
+    const getModelMetadataSyncQueue = mock(async () => ({ items: [queueItem] }));
+    const resolveModelMetadataSyncQueue = mock(async () => ({
+      ok: true, applied: [{ modelId: "vendor/model-c", filled: { contextWindow: 128000 }, catalogKey: "nvidia/vendor/model-c", matchKind: "queue-shared-model-tokens" }],
+      dismissedCount: 0, failed: []
+    }));
+    const getProviders = mock(async () => ({ providers: [providerSummary({ id: "nvidia" })] }));
+    const { findByLabelText } = renderProvidersView(mockClient({ getProviders, getModelMetadataSyncQueue, resolveModelMetadataSyncQueue }));
+    await userEvent.click(await findByLabelText("更多操作 nvidia"));
+    await userEvent.click(await findByLabelText("参数待确认 nvidia"));
+    await userEvent.click(await findByLabelText("应用候选 nvidia/vendor/model-c"));
+    await waitFor(() =>
+      expect(resolveModelMetadataSyncQueue).toHaveBeenCalledWith([
+        { providerId: "nvidia", modelId: "vendor/model-c", action: "accept", catalogKey: "nvidia/vendor/model-c" }
+      ])
+    );
+  });
+
+  test("provider models dialog batch-syncs selected models metadata", async () => {
+    const syncProviderModelMetadata = mock(async () => ({
+      ok: true, providerId: "nvidia", updated: [], queued: [], unmatched: [], skipped: ["vendor/model-b"], warnings: []
+    }));
+    const getProviders = mock(async () => ({ providers: [providerSummary({ id: "nvidia", modelCount: 2 })] }));
+    const getModels = mock(async () => ({
+      models: [
+        modelSummary({ ref: "nvidia/vendor/model-a", enabled: true, isPrimary: true }),
+        modelSummary({ ref: "nvidia/vendor/model-b", enabled: false })
+      ]
+    }));
+    const { findByLabelText } = renderProvidersView(mockClient({ getProviders, getModels, syncProviderModelMetadata }));
+    await userEvent.click(await findByLabelText("管理模型 nvidia"));
+    await userEvent.click(await findByLabelText("选择本地模型 vendor/model-b"));
+    await userEvent.click(await findByLabelText("同步所选模型参数"));
+    await waitFor(() => expect(syncProviderModelMetadata).toHaveBeenCalledWith("nvidia", { modelIds: ["vendor/model-b"] }));
+  });
 });
 
 describe("PresetsView", () => {
