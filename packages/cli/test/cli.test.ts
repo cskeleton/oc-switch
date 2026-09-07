@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
@@ -16,10 +16,23 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
+/**
+ * 在 PATH 最前面放一个假的 `openclaw`，让 plugin-catalog 发现走确定性输出。
+ * 不打桩时 CLI 会 shell-out 到本机真实 openclaw，provider 列表随开发机插件漂移。
+ */
+function prepareOpenClawStub(pluginsListJson: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-openclaw-stub-"));
+  tempDirs.push(dir);
+  const script = join(dir, "openclaw");
+  writeFileSync(script, `#!/bin/sh\ncat <<'OCJSON'\n${pluginsListJson}\nOCJSON\n`);
+  chmodSync(script, 0o755);
+  return dir;
+}
+
 async function runCli(
   args: string[],
   env: Record<string, string>,
-  options: { skipGatewayFixture?: boolean } = {}
+  options: { skipGatewayFixture?: boolean; pluginsListJson?: string } = {}
 ) {
   if (env.HOME && process.platform === "darwin" && !options.skipGatewayFixture) {
     const baseDir = env.OPENCLAW_CONFIG_PATH
@@ -41,9 +54,10 @@ async function runCli(
       }));
     }
   }
+  const stubDir = prepareOpenClawStub(options.pluginsListJson ?? '{"plugins":[]}');
   const proc = Bun.spawn(["bun", "run", "packages/cli/src/index.ts", ...args], {
     cwd: join(import.meta.dir, "../../.."),
-    env: { ...process.env, ...env },
+    env: { ...process.env, ...env, PATH: `${stubDir}:${process.env.PATH ?? ""}` },
     stdout: "pipe",
     stderr: "pipe"
   });
@@ -1290,5 +1304,131 @@ describe("对象形态主模型 CLI", () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("minimax-portal");
     expect(result.stdout).not.toContain("[object Object]");
+  });
+});
+
+describe("cli 插件 provider", () => {
+  /** 落一份插件 manifest 并返回 `openclaw plugins list --json` 的等价输出 */
+  function preparePluginFixture(options: { enabled?: boolean; providerId?: string } = {}) {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-plugin-"));
+    tempDirs.push(dir);
+    const rootDir = join(dir, "opencode");
+    mkdirSync(rootDir, { recursive: true });
+    const providerId = options.providerId ?? "opencode";
+    writeFileSync(join(rootDir, "openclaw.plugin.json"), JSON.stringify({
+      modelCatalog: {
+        providers: {
+          [providerId]: {
+            baseUrl: "https://opencode.ai/zen/v1",
+            api: "openai-completions",
+            models: [{ id: "big-pickle" }, { id: "hy3" }]
+          }
+        }
+      },
+      setup: { providers: [{ id: providerId, envVars: ["OPENCODE_API_KEY"] }] }
+    }));
+    return JSON.stringify({
+      plugins: [{
+        id: "opencode",
+        rootDir,
+        origin: "npm-global",
+        enabled: options.enabled ?? true,
+        status: "loaded",
+        providerIds: [providerId]
+      }]
+    });
+  }
+
+  function writeConfig(): { dir: string; configPath: string } {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "openclaw.json");
+    writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+    return { dir, configPath };
+  }
+
+  test("providers list 列出插件 provider 并标注 plugin", async () => {
+    const { dir, configPath } = writeConfig();
+    const result = await runCli(["providers", "list"], { OPENCLAW_CONFIG_PATH: configPath, HOME: dir }, {
+      pluginsListJson: preparePluginFixture()
+    });
+    expect(result.code).toBe(0);
+    const pluginRow = result.stdout.split("\n").find((line) => line.startsWith("opencode\t"));
+    expect(pluginRow).toBeDefined();
+    expect(pluginRow).toContain("plugin");
+    expect(pluginRow).toContain("enabled");
+    // config 条目不带 plugin 标记
+    expect(result.stdout.split("\n").find((line) => line.startsWith("nvidia\t"))).not.toContain("plugin");
+  });
+
+  test("providers list 对停用插件显示 disabled", async () => {
+    const { dir, configPath } = writeConfig();
+    const result = await runCli(["providers", "list"], { OPENCLAW_CONFIG_PATH: configPath, HOME: dir }, {
+      pluginsListJson: preparePluginFixture({ enabled: false })
+    });
+    expect(result.code).toBe(0);
+    const pluginRow = result.stdout.split("\n").find((line) => line.startsWith("opencode\t"));
+    expect(pluginRow).toContain("disabled");
+    expect(pluginRow).toContain("0/2");
+  });
+
+  test("models list 含插件模型行", async () => {
+    const { dir, configPath } = writeConfig();
+    const result = await runCli(["models", "list"], { OPENCLAW_CONFIG_PATH: configPath, HOME: dir }, {
+      pluginsListJson: preparePluginFixture()
+    });
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("opencode/big-pickle");
+    expect(result.stdout).toContain("opencode/hy3");
+  });
+
+  test("model enable 与 use 接受插件 ref 并落盘", async () => {
+    const { dir, configPath } = writeConfig();
+    const pluginsListJson = preparePluginFixture();
+    const enabled = await runCli(["model", "enable", "opencode/big-pickle", "--alias", "oc-bp"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    }, { pluginsListJson });
+    expect(enabled.code).toBe(0);
+    expect(enabled.stdout).toContain("Enabled opencode/big-pickle");
+
+    const used = await runCli(["use", "opencode/hy3"], { OPENCLAW_CONFIG_PATH: configPath, HOME: dir }, {
+      pluginsListJson
+    });
+    expect(used.code).toBe(0);
+
+    const config = JSON.parse(readFileSync(configPath, "utf8")) as OpenClawConfig;
+    expect(config.agents?.defaults?.models?.["opencode/big-pickle"]).toEqual({ alias: "oc-bp" });
+    expect(config.agents?.defaults?.model).toBe("opencode/hy3");
+  });
+
+  test("model enable 拒绝停用插件的 ref，配置不变", async () => {
+    const { dir, configPath } = writeConfig();
+    const before = readFileSync(configPath, "utf8");
+    const result = await runCli(["model", "enable", "opencode/big-pickle"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    }, { pluginsListJson: preparePluginFixture({ enabled: false }) });
+    expect(result.code).not.toBe(0);
+    expect(readFileSync(configPath, "utf8")).toBe(before);
+  });
+
+  test("provider remove 对插件 provider 显式失败，配置不变", async () => {
+    const { dir, configPath } = writeConfig();
+    const before = readFileSync(configPath, "utf8");
+    const result = await runCli(["provider", "remove", "opencode", "--force"], {
+      OPENCLAW_CONFIG_PATH: configPath,
+      HOME: dir
+    }, { pluginsListJson: preparePluginFixture() });
+    expect(result.code).not.toBe(0);
+    expect(readFileSync(configPath, "utf8")).toBe(before);
+  });
+
+  test("openclaw CLI 缺失时降级为 config-only，不影响既有输出", async () => {
+    const { dir, configPath } = writeConfig();
+    const result = await runCli(["providers", "list"], { OPENCLAW_CONFIG_PATH: configPath, HOME: dir });
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("nvidia");
+    expect(result.stdout).not.toContain("plugin");
   });
 });

@@ -1,9 +1,24 @@
 import { describe, expect, test } from "bun:test";
 import sampleJson from "./fixtures/openclaw.sample.json";
 import { createConfigAdapter } from "../src/config-adapter";
+import type { PluginProvider } from "../src/plugin-catalog";
 import type { OpenClawConfig } from "../src/types";
 
 const sample = sampleJson as OpenClawConfig;
+
+function pluginProvider(overrides: Partial<PluginProvider> = {}): PluginProvider {
+  return {
+    pluginId: "opencode",
+    providerId: "opencode",
+    origin: "npm-global",
+    enabled: true,
+    baseUrl: "https://opencode.ai/zen/v1",
+    api: "openai-completions",
+    models: [{ id: "big-pickle" }, { id: "hy3" }],
+    apiKeyEnvVars: ["OPENCODE_API_KEY"],
+    ...overrides
+  };
+}
 
 describe("ConfigAdapter", () => {
   test("lists providers with model and allowlist counts", () => {
@@ -16,7 +31,8 @@ describe("ConfigAdapter", () => {
         modelCount: 2,
         enabledModelCount: 2,
         containsPrimary: false,
-        disabled: false
+        disabled: false,
+        source: "config"
       },
       {
         id: "DeepSeek",
@@ -25,7 +41,8 @@ describe("ConfigAdapter", () => {
         modelCount: 1,
         enabledModelCount: 1,
         containsPrimary: false,
-        disabled: false
+        disabled: false,
+        source: "config"
       },
       {
         id: "minimax-portal",
@@ -34,7 +51,8 @@ describe("ConfigAdapter", () => {
         modelCount: 1,
         enabledModelCount: 1,
         containsPrimary: true,
-        disabled: false
+        disabled: false,
+        source: "config"
       }
     ]);
   });
@@ -337,5 +355,120 @@ describe("ConfigAdapter 对象形态主模型", () => {
       expect(adapter.getStatus().primaryModel).toBeUndefined();
       expect(adapter.listProviders()).toHaveLength(3);
     }
+  });
+});
+
+describe("ConfigAdapter 插件 provider 合并", () => {
+  test("插件 provider 追加在 config 条目之后并标记 source=plugin", () => {
+    const adapter = createConfigAdapter(sample, { pluginProviders: [pluginProvider()] });
+    const rows = adapter.listProviders();
+    expect(rows.map((row) => row.id)).toEqual(["nvidia", "DeepSeek", "minimax-portal", "opencode"]);
+    expect(rows.slice(0, 3).every((row) => row.source === "config")).toBe(true);
+    expect(rows[3]).toEqual({
+      id: "opencode",
+      api: "openai-completions",
+      baseUrl: "https://opencode.ai/zen/v1",
+      modelCount: 2,
+      // legacy 模式下无 agents.defaults.models 条目 ⇒ 无有效 selection
+      enabledModelCount: 0,
+      containsPrimary: false,
+      disabled: false,
+      source: "plugin"
+    });
+  });
+
+  test("插件 enabled=false 时标记 disabled 且有效可选数归零", () => {
+    const config = structuredClone(sample);
+    config.agents!.defaults!.models!["opencode/big-pickle"] = { alias: "oc-bp" };
+    const rows = createConfigAdapter(config, {
+      pluginProviders: [pluginProvider({ enabled: false })]
+    }).listProviders();
+    expect(rows.find((row) => row.id === "opencode")).toMatchObject({ disabled: true, enabledModelCount: 0 });
+    expect(
+      createConfigAdapter(config, { pluginProviders: [pluginProvider()] })
+        .listProviders()
+        .find((row) => row.id === "opencode")
+    ).toMatchObject({ disabled: false, enabledModelCount: 1 });
+  });
+
+  test("providerId 与 models.providers 冲突时 config 优先，插件条目不重复列出", () => {
+    const config = structuredClone(sample);
+    const rows = createConfigAdapter(config, {
+      pluginProviders: [pluginProvider({ providerId: "NVIDIA" })]
+    }).listProviders();
+    expect(rows.filter((row) => row.id.toLowerCase() === "nvidia")).toHaveLength(1);
+    expect(rows.find((row) => row.id === "nvidia")?.source).toBe("config");
+  });
+
+  test("多个插件声明同名 providerId 时先到先得", () => {
+    const rows = createConfigAdapter(sample, {
+      pluginProviders: [
+        pluginProvider({ pluginId: "first", baseUrl: "https://first.example/v1" }),
+        pluginProvider({ pluginId: "second", providerId: "OpenCode", baseUrl: "https://second.example/v1" })
+      ]
+    }).listProviders();
+    const merged = rows.filter((row) => row.id.toLowerCase() === "opencode");
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.baseUrl).toBe("https://first.example/v1");
+  });
+
+  test("插件模型进入 listModels，并透传 manifest 参数", () => {
+    const adapter = createConfigAdapter(sample, {
+      pluginProviders: [pluginProvider({
+        models: [{ id: "big-pickle", name: "Big Pickle", contextWindow: 200_000, maxTokens: 8192, reasoning: true, input: ["text"] }]
+      })]
+    });
+    expect(adapter.listModels().find((model) => model.ref === "opencode/big-pickle")).toEqual({
+      ref: "opencode/big-pickle",
+      providerId: "opencode",
+      modelId: "big-pickle",
+      name: "Big Pickle",
+      alias: undefined,
+      enabled: false,
+      isPrimary: false,
+      api: "openai-completions",
+      reasoning: true,
+      contextWindow: 200_000,
+      maxTokens: 8192,
+      input: ["text"]
+    });
+  });
+
+  test("插件模型的 legacy metadata 别名会挂到同一行，不产生重复行", () => {
+    const config = structuredClone(sample);
+    config.agents!.defaults!.models!["opencode/hy3"] = { alias: "oc-hy3" };
+    const rows = createConfigAdapter(config, { pluginProviders: [pluginProvider()] }).listModels();
+    const matched = rows.filter((row) => row.ref === "opencode/hy3");
+    expect(matched).toHaveLength(1);
+    expect(matched[0]).toMatchObject({ alias: "oc-hy3", enabled: true, selectionSource: "legacy" });
+  });
+
+  test("主模型指向插件 ref 时 isPrimary / containsPrimary 生效", () => {
+    const config = structuredClone(sample);
+    config.agents!.defaults!.model = "opencode/big-pickle";
+    const adapter = createConfigAdapter(config, { pluginProviders: [pluginProvider()] });
+    expect(adapter.listProviders().find((row) => row.id === "opencode")?.containsPrimary).toBe(true);
+    expect(adapter.listModels().find((row) => row.ref === "opencode/big-pickle")?.isPrimary).toBe(true);
+  });
+
+  test("restricted policy 的通配条目对插件 ref 照常生效", () => {
+    const config = structuredClone(sample);
+    config.agents!.defaults!.modelPolicy = { allow: ["opencode/*"] };
+    const adapter = createConfigAdapter(config, { pluginProviders: [pluginProvider()] });
+    expect(adapter.listProviders().find((row) => row.id === "opencode")?.enabledModelCount).toBe(2);
+    expect(adapter.listModels().find((row) => row.ref === "opencode/hy3")).toMatchObject({
+      enabled: true,
+      selectionSource: "policy-wildcard"
+    });
+  });
+
+  test("getStatus 的 provider/目录计数保持 config-only，effectiveModelCount 计入插件", () => {
+    const config = structuredClone(sample);
+    config.agents!.defaults!.models!["opencode/big-pickle"] = { alias: "oc-bp" };
+    const withoutPlugin = createConfigAdapter(config).getStatus();
+    const withPlugin = createConfigAdapter(config, { pluginProviders: [pluginProvider()] }).getStatus();
+    expect(withPlugin.providerCount).toBe(withoutPlugin.providerCount);
+    expect(withPlugin.providerModelCount).toBe(withoutPlugin.providerModelCount);
+    expect(withPlugin.effectiveModelCount).toBe(withoutPlugin.effectiveModelCount + 1);
   });
 });

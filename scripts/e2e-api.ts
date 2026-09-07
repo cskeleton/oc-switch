@@ -56,7 +56,22 @@ const app = createApp({
     customDir
   },
   fetchImpl: offlineFetch,
-  runtimeDiscoveryProvider: () => e2eDiscovery
+  runtimeDiscoveryProvider: () => e2eDiscovery,
+  // E2E 不得 shell-out 到本机真实 openclaw：provider 列表会随开发机装了哪些插件漂移。
+  // 注入固定插件目录，同时让 E2E 覆盖插件 provider 的只读展示路径。
+  pluginCatalogProvider: () => ({
+    providers: [{
+      pluginId: "opencode",
+      providerId: "opencode",
+      origin: "npm-global",
+      enabled: true,
+      baseUrl: "https://opencode.ai/zen/v1",
+      api: "openai-completions",
+      models: [{ id: "big-pickle" }, { id: "hy3" }],
+      apiKeyEnvVars: ["OPENCODE_API_KEY"]
+    }],
+    diagnostics: []
+  })
 });
 
 Bun.serve({

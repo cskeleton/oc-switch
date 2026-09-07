@@ -19,6 +19,7 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
     const paths = runtime.currentPaths();
     const adapter = createConfigAdapter(readConfig(paths), {
       disabledProviderIds: readDisabledProviderIds(paths),
+      pluginProviders: runtime.currentPluginProviders()
     });
     return c.json({ models: adapter.listModels() });
   });
@@ -27,12 +28,13 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
     try {
       const body = await c.req.json();
       const ref = requireString(body.ref, "ref");
+      const pluginProviders = runtime.currentPluginProviders();
       const result = await writeOpenClawTransaction({
         ...runtime.currentPaths(),
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `set primary model ${ref}`,
         mutate(config) {
-          return setPrimaryModel(config, ref).config;
+          return setPrimaryModel(config, ref, pluginProviders).config;
         }
       });
       return c.json({ ok: true, ref, backupId: result.backupDir.split("/").pop() });
@@ -49,12 +51,13 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
       if (enabled) {
         assertProviderCanEnable(runtime.currentPaths(), parseModelRef(ref).providerId);
       }
+      const pluginProviders = runtime.currentPluginProviders();
       const result = await writeOpenClawTransaction({
         ...runtime.currentPaths(),
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: enabled ? `enable model ${ref}` : `disable model ${ref}`,
         mutate(config) {
-          return enabled ? enableModel(config, ref, body.alias).config : disableModel(config, ref).config;
+          return enabled ? enableModel(config, ref, body.alias, pluginProviders).config : disableModel(config, ref).config;
         }
       });
       return c.json({ ok: true, ref, enabled, backupId: result.backupDir.split("/").pop() });

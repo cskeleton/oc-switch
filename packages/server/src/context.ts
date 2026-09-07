@@ -1,6 +1,7 @@
 import {
   defaultPresetDirs,
   discoverOpenClawRuntime,
+  discoverPluginCatalog,
   getActivePaths,
   isProviderDisabled,
   readProviderStates,
@@ -9,6 +10,8 @@ import {
   type FetchImpl,
   type OcSwitchPaths,
   type OpenClawConfig,
+  type PluginCatalogResult,
+  type PluginProvider,
   type PresetDirs,
   type RuntimeDiscoveryProvider
 } from "@oc-switch/core";
@@ -16,6 +19,11 @@ import JSON5 from "json5";
 import { existsSync, readFileSync } from "node:fs";
 
 import type { GatewayRouteOptions } from "./routes/gateway";
+
+/** 插件 catalog 发现来源（生产 = openclaw plugins list shell-out；测试注入）。 */
+export type PluginCatalogProvider = () => PluginCatalogResult;
+
+const PLUGIN_CATALOG_CACHE_TTL_MS = 30_000;
 
 export interface AppOptions {
   token: string;
@@ -28,6 +36,8 @@ export interface AppOptions {
   runtimeDiscoveryProvider?: RuntimeDiscoveryProvider;
   /** 测试注入：Gateway sync/restart */
   gatewayRouteOptions?: GatewayRouteOptions;
+  /** 测试注入：插件 provider 目录发现 */
+  pluginCatalogProvider?: PluginCatalogProvider;
 }
 
 export interface AppRuntime {
@@ -37,11 +47,15 @@ export interface AppRuntime {
   runtimeDiscoveryProvider: RuntimeDiscoveryProvider;
   currentPaths(): OcSwitchPaths;
   setActivePaths(paths: OcSwitchPaths): void;
+  /** 插件 provider 目录（30s TTL 缓存；失败降级为空列表）。 */
+  currentPluginProviders(): PluginProvider[];
 }
 
 export function createAppRuntime(options: AppOptions): AppRuntime {
   const runtimeDiscoveryProvider =
     options.runtimeDiscoveryProvider ?? discoverOpenClawRuntime;
+  const pluginCatalogProvider = options.pluginCatalogProvider ?? discoverPluginCatalog;
+  let pluginCatalogCache: { at: number; providers: PluginProvider[] } | undefined;
   let activePaths = options.paths ?? getActivePaths({
     runtimeDiscovery: runtimeDiscoveryProvider()
   });
@@ -56,6 +70,20 @@ export function createAppRuntime(options: AppOptions): AppRuntime {
     currentPaths,
     setActivePaths(paths) {
       activePaths = paths;
+    },
+    currentPluginProviders() {
+      const now = Date.now();
+      if (pluginCatalogCache && now - pluginCatalogCache.at < PLUGIN_CATALOG_CACHE_TTL_MS) {
+        return pluginCatalogCache.providers;
+      }
+      let providers: PluginProvider[] = [];
+      try {
+        providers = pluginCatalogProvider().providers;
+      } catch {
+        // 发现失败降级为空，不阻断主流程
+      }
+      pluginCatalogCache = { at: now, providers };
+      return providers;
     }
   };
 }

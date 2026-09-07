@@ -16,6 +16,7 @@ import {
   loadPreset,
   mergeProviderCaseDuplicates,
   migrateProviderSecretRefs,
+  normalizeProviderId,
   planProviderModelMetadataSync,
   previewEnvUpdates,
   providerEnvVar,
@@ -223,16 +224,24 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
   app.get("/api/providers", (c) => {
     const paths = runtime.currentPaths();
     const config = readConfig(paths);
+    const pluginProviders = runtime.currentPluginProviders();
     const adapter = createConfigAdapter(config, {
-      disabledProviderIds: readDisabledProviderIds(paths)
+      disabledProviderIds: readDisabledProviderIds(paths),
+      pluginProviders
     });
     const envInspection = inspectEnvFile({
       content: readEnvContent(paths) ?? "",
       providerRefs: listProviderEnvRefs(config),
       manifest: readManifest(paths.stateDir)
     });
+    const pluginByProviderId = new Map(
+      pluginProviders.map((plugin) => [normalizeProviderId(plugin.providerId), plugin])
+    );
     const providers = adapter.listProviders().map((provider) => {
-      const apiKeyEnv = providerEnvVar(config.models?.providers?.[provider.id]) ?? null;
+      // 插件 provider 的 key 环境变量来自 manifest 声明，不在 models.providers 里
+      const apiKeyEnv = provider.source === "plugin"
+        ? pluginByProviderId.get(normalizeProviderId(provider.id))?.apiKeyEnvVars[0] ?? null
+        : providerEnvVar(config.models?.providers?.[provider.id]) ?? null;
       const summary = apiKeyEnv
         ? envInspection.variables.find((item) => item.envVar === apiKeyEnv)
         : undefined;

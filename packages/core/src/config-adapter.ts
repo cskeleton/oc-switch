@@ -1,11 +1,14 @@
 import { formatModelRef, normalizeProviderId, parseModelRef } from "./model-ref";
 import { getModelPolicyMode, getModelSelectionSource } from "./model-policy";
+import { filterPluginProvidersConflictWithConfig, type PluginProvider } from "./plugin-catalog";
 import { readPrimaryModelRef } from "./primary-model";
 import type { ModelSummary, OpenClawConfig, ProviderSummary, StatusSummary } from "./types";
 
 export interface ConfigAdapterOptions {
   /** 由外层 provider-states 提供；adapter 只负责归一化后的可选模型聚合。 */
   disabledProviderIds?: Iterable<string>;
+  /** OpenClaw 插件 manifest 提供的只读 provider 目录（plugin-catalog.ts）。 */
+  pluginProviders?: PluginProvider[];
 }
 
 export function createConfigAdapter(config: OpenClawConfig, options: ConfigAdapterOptions = {}) {
@@ -16,6 +19,17 @@ export function createConfigAdapter(config: OpenClawConfig, options: ConfigAdapt
   const disabledProviderIds = new Set(
     [...(options.disabledProviderIds ?? [])].map((providerId) => normalizeProviderId(providerId))
   );
+  // config 优先：与 models.providers 冲突的插件 provider 不重复列出；插件间同 id 先到先得
+  const pluginProviders: PluginProvider[] = [];
+  {
+    const seen = new Set<string>();
+    for (const provider of filterPluginProvidersConflictWithConfig(config, options.pluginProviders ?? [])) {
+      const normalized = normalizeProviderId(provider.providerId);
+      if (seen.has(normalized)) continue;
+      seen.add(normalized);
+      pluginProviders.push(provider);
+    }
+  }
 
   function isProviderDisabled(providerId: string): boolean {
     return disabledProviderIds.has(normalizeProviderId(providerId));
@@ -54,7 +68,7 @@ export function createConfigAdapter(config: OpenClawConfig, options: ConfigAdapt
   }
 
   function listProviderSummaries(): ProviderSummary[] {
-    return Object.entries(providers).map(([id, provider]) => {
+    const summaries: ProviderSummary[] = Object.entries(providers).map(([id, provider]) => {
       const refs = providerModelRefs(id);
       const disabled = isProviderDisabled(id);
       return {
@@ -74,9 +88,27 @@ export function createConfigAdapter(config: OpenClawConfig, options: ConfigAdapt
               return uniqueProviderId(id) ? normalizeProviderId(providerId) === normalizeProviderId(id) : providerId === id;
             })()
           : false,
-        disabled
+        disabled,
+        source: "config"
       };
     });
+    for (const plugin of pluginProviders) {
+      summaries.push({
+        id: plugin.providerId,
+        api: plugin.api,
+        baseUrl: plugin.baseUrl,
+        modelCount: plugin.models.length,
+        enabledModelCount: plugin.enabled
+          ? plugin.models.filter((model) => selectionSourceFor(plugin.providerId, model.id) !== undefined).length
+          : 0,
+        containsPrimary: primaryModel
+          ? normalizeProviderId(parseModelRef(primaryModel).providerId) === normalizeProviderId(plugin.providerId)
+          : false,
+        disabled: !plugin.enabled,
+        source: "plugin"
+      });
+    }
+    return summaries;
   }
 
   return {
@@ -106,6 +138,32 @@ export function createConfigAdapter(config: OpenClawConfig, options: ConfigAdapt
           if (model.reasoning !== undefined) summary.reasoning = model.reasoning;
           if (model.contextWindow !== undefined) summary.contextWindow = model.contextWindow;
           if (model.contextTokens !== undefined) summary.contextTokens = model.contextTokens;
+          if (model.maxTokens !== undefined) summary.maxTokens = model.maxTokens;
+          if (model.input !== undefined) summary.input = model.input;
+          summaries.set(identity, summary);
+        }
+      }
+
+      for (const plugin of pluginProviders) {
+        for (const model of plugin.models) {
+          const identity = modelIdentity(plugin.providerId, model.id);
+          const selectionSource = selectionSourceFor(plugin.providerId, model.id);
+          const summary: ModelSummary = {
+            ref: formatModelRef(plugin.providerId, model.id),
+            providerId: plugin.providerId,
+            modelId: model.id,
+            name: model.name,
+            alias: undefined,
+            enabled: plugin.enabled && selectionSource !== undefined,
+            ...(selectionSource ? { selectionSource } : {}),
+            isPrimary: primaryModel
+              ? modelIdentity(parseModelRef(primaryModel).providerId, parseModelRef(primaryModel).modelId) === identity
+              : false
+          };
+          const modelApi = model.api ?? plugin.api;
+          if (modelApi !== undefined) summary.api = modelApi;
+          if (model.reasoning !== undefined) summary.reasoning = model.reasoning;
+          if (model.contextWindow !== undefined) summary.contextWindow = model.contextWindow;
           if (model.maxTokens !== undefined) summary.maxTokens = model.maxTokens;
           if (model.input !== undefined) summary.input = model.input;
           summaries.set(identity, summary);

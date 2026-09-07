@@ -13,6 +13,7 @@ export * from "./config-status";
 export * from "./transaction-writer";
 export * from "./paths";
 export * from "./path-discovery";
+export * from "./plugin-catalog";
 export * from "./path-discovery-linux";
 export * from "./path-discovery-macos";
 export * from "./backup-manager";

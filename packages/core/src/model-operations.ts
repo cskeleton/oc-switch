@@ -2,7 +2,7 @@ import { formatModelRef, normalizeModelRefForStorage, normalizeProviderId, parse
 import { defaultModelName } from "./openclaw-compat";
 import {
   ensureDefaults,
-  hasProviderModel,
+  hasKnownModel,
   matchingAllowlistRefs,
   resolveProviderId,
   type OperationResult
@@ -14,6 +14,7 @@ import {
   removePolicyAllow
 } from "./model-policy";
 import { isPrimaryModelRef, readFallbackModelRefs, readPrimaryModelRef, writePrimaryModelRef } from "./primary-model";
+import type { PluginProvider } from "./plugin-catalog";
 import { assertProviderModelCapacity } from "./provider-model-limits";
 import type { AllowlistEntry, OpenClawConfig, OpenClawModel, ProviderModelInput } from "./types";
 
@@ -44,11 +45,38 @@ function assertPrimaryRemovalAllowed(
   }
 }
 
-export function setPrimaryModel(config: OpenClawConfig, ref: string): OperationResult {
-  ensureDefaults(config);
-  if (!hasProviderModel(config, ref)) {
-    throw new Error(`Model ${ref} is not defined in provider models`);
+/**
+ * 目录校验失败时的报错：命中「插件已停用」时给出可操作提示，
+ * 否则沿用既有的 not defined 文案（外部依赖该文案的测试与提示不变）。
+ */
+function assertKnownModel(
+  config: OpenClawConfig,
+  ref: string,
+  pluginProviders: PluginProvider[]
+): void {
+  if (hasKnownModel(config, ref, pluginProviders)) return;
+  const { providerId, modelId } = parseModelRef(ref);
+  const disabledPlugin = pluginProviders.find(
+    (plugin) =>
+      !plugin.enabled &&
+      normalizeProviderId(plugin.providerId) === normalizeProviderId(providerId) &&
+      plugin.models.some((model) => model.id === modelId)
+  );
+  if (disabledPlugin) {
+    throw new Error(
+      `Model ${ref} belongs to plugin ${disabledPlugin.pluginId}, which is disabled in OpenClaw (plugins.entries.${disabledPlugin.pluginId}.enabled=false); enable the plugin in OpenClaw first`
+    );
   }
+  throw new Error(`Model ${ref} is not defined in provider models`);
+}
+
+export function setPrimaryModel(
+  config: OpenClawConfig,
+  ref: string,
+  pluginProviders: PluginProvider[] = []
+): OperationResult {
+  ensureDefaults(config);
+  assertKnownModel(config, ref, pluginProviders);
   writePrimaryModelRef(config, ref);
   return { config, warnings: [] };
 }
@@ -64,11 +92,14 @@ export function disableModel(config: OpenClawConfig, ref: string): OperationResu
   return { config, warnings: [] };
 }
 
-export function enableModel(config: OpenClawConfig, ref: string, alias?: string): OperationResult {
+export function enableModel(
+  config: OpenClawConfig,
+  ref: string,
+  alias?: string,
+  pluginProviders: PluginProvider[] = []
+): OperationResult {
   ensureDefaults(config);
-  if (!hasProviderModel(config, ref)) {
-    throw new Error(`Model ${ref} is not defined in provider models`);
-  }
+  assertKnownModel(config, ref, pluginProviders);
   const matchingRefs = matchingAllowlistRefs(config, ref);
   const existingRef = matchingRefs[0];
   const existing = existingRef ? config.agents!.defaults!.models![existingRef] ?? {} : {};

@@ -1,4 +1,5 @@
 import { normalizeProviderId, parseModelRef } from "./model-ref";
+import { filterPluginProvidersConflictWithConfig, type PluginProvider } from "./plugin-catalog";
 import type { OpenClawConfig } from "./types";
 
 export interface OperationResult {
@@ -44,4 +45,27 @@ export function hasProviderModel(config: OpenClawConfig, ref: string): boolean {
   const resolvedProviderId = resolveProviderId(config, providerId);
   const provider = resolvedProviderId ? config.models?.providers?.[resolvedProviderId] : undefined;
   return Boolean(provider?.models?.some((model) => model.id === modelId));
+}
+
+/**
+ * 目录存在性校验：本地 models.providers ∪ 启用中的插件 provider catalog。
+ *
+ * - 插件 provider disabled 时其模型不可用于 enable/use（与 OpenClaw 发现层语义一致）。
+ * - providerId 与 models.providers 同名时由 config 接管，插件条目不参与校验，
+ *   与 listProviders / config-status 的冲突规则保持一致（OpenClaw 实际是并集，
+ *   v1 的取舍见 spec §3/§7）。
+ */
+export function hasKnownModel(
+  config: OpenClawConfig,
+  ref: string,
+  pluginProviders: PluginProvider[] = []
+): boolean {
+  if (hasProviderModel(config, ref)) return true;
+  const { providerId, modelId } = parseModelRef(ref);
+  return filterPluginProvidersConflictWithConfig(config, pluginProviders).some(
+    (plugin) =>
+      plugin.enabled &&
+      normalizeProviderId(plugin.providerId) === normalizeProviderId(providerId) &&
+      plugin.models.some((model) => model.id === modelId)
+  );
 }

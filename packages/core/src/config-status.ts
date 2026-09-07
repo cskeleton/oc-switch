@@ -13,6 +13,7 @@ import {
   readModelPolicyAllowRaw
 } from "./model-policy";
 import type { OcSwitchPaths } from "./paths";
+import { filterPluginProvidersConflictWithConfig, type PluginProvider } from "./plugin-catalog";
 import { readProviderStates } from "./provider-states";
 import type { LegacyRunningOpenClawInstance } from "./runtime-discovery-types";
 import type { ModelPolicyMode, OpenClawConfig } from "./types";
@@ -80,6 +81,8 @@ export interface InspectConfigStatusInput {
   paths: OcSwitchPaths;
   envContent: string;
   runningInstances?: LegacyRunningOpenClawInstance[];
+  /** OpenClaw 插件 manifest 提供的 provider 目录；用于避免把插件 ref 误报为 unknown provider */
+  pluginProviders?: PluginProvider[];
 }
 
 function emptyConfigHealthReport(): ConfigHealthReport {
@@ -356,7 +359,8 @@ function listPolicyExactRefs(config: OpenClawConfig): Array<{ ref: string; provi
 
 function buildModelPolicyStatus(
   config: OpenClawConfig,
-  disabledProviders: DisabledProviderStatus[]
+  disabledProviders: DisabledProviderStatus[],
+  pluginProviders: PluginProvider[] = []
 ): ConfigStatusModelPolicy {
   const rawAllow = readModelPolicyAllowRaw(config);
   const providers = config.models?.providers ?? {};
@@ -367,9 +371,16 @@ function buildModelPolicyStatus(
     catalogProviders.push({ id, modelIds: new Set((provider.models ?? []).map((model) => model.id)) });
     providersByNormalizedId.set(normalizedId, catalogProviders);
   }
+  // 插件 provider（OpenClaw 插件 manifest 目录）同样是合法 ref 来源
+  const pluginProvidersByNormalizedId = new Map<string, PluginProvider>();
+  for (const plugin of filterPluginProvidersConflictWithConfig(config, pluginProviders)) {
+    if (!pluginProvidersByNormalizedId.has(normalizeProviderId(plugin.providerId))) {
+      pluginProvidersByNormalizedId.set(normalizeProviderId(plugin.providerId), plugin);
+    }
+  }
 
   const disabledProviderIds = new Set(disabledProviders.map((provider) => normalizeProviderId(provider.providerId)));
-  const effectiveCatalogCount = Object.entries(providers).reduce(
+  let effectiveCatalogCount = Object.entries(providers).reduce(
     (count, [providerId, provider]) => {
       if (disabledProviderIds.has(normalizeProviderId(providerId))) return count;
       return count + (provider.models ?? []).filter((model) =>
@@ -378,6 +389,12 @@ function buildModelPolicyStatus(
     },
     0
   );
+  for (const plugin of pluginProvidersByNormalizedId.values()) {
+    if (!plugin.enabled) continue;
+    effectiveCatalogCount += plugin.models.filter(
+      (model) => getModelSelectionSource(config, `${plugin.providerId}/${model.id}`) !== undefined
+    ).length;
+  }
 
   const exactRefs = listPolicyExactRefs(config);
   const legacyRefs = Object.keys(config.agents?.defaults?.models ?? {});
@@ -386,13 +403,17 @@ function buildModelPolicyStatus(
   const knownProviderUnknownModelRefs: string[] = [];
   for (const exact of exactRefs) {
     const catalogProviders = providersByNormalizedId.get(normalizeProviderId(exact.providerId));
-    if (!catalogProviders) unknownProviderRefs.push(exact.ref);
+    const pluginProvider = pluginProvidersByNormalizedId.get(normalizeProviderId(exact.providerId));
+    if (!catalogProviders && !pluginProvider) unknownProviderRefs.push(exact.ref);
 
     // exact policy 与 metadata 的同一模型判断沿用 Core policy helper 的大小写语义。
     const isPolicyOnly = !legacyRefs.some((legacyRef) => isPolicyAllowsRef([exact.ref], legacyRef));
     if (!isPolicyOnly) continue;
     policyOnlyExactRefs.push(exact.ref);
     if (catalogProviders && !catalogProviders.some((provider) => provider.modelIds.has(exact.modelId))) {
+      knownProviderUnknownModelRefs.push(exact.ref);
+    } else if (!catalogProviders && pluginProvider && !pluginProvider.models.some((model) => model.id === exact.modelId)) {
+      // 插件 provider 存在但模型不在其 manifest catalog 中，同样属于 drift
       knownProviderUnknownModelRefs.push(exact.ref);
     }
   }
@@ -483,7 +504,7 @@ export function inspectConfigStatus(input: InspectConfigStatusInput): ConfigStat
     hiddenModelCount: Object.keys(state.allowlistEntries).length
   }));
   const modelPolicy = input.config
-    ? buildModelPolicyStatus(input.config, disabledProviders)
+    ? buildModelPolicyStatus(input.config, disabledProviders, input.pluginProviders)
     : emptyModelPolicyStatus();
 
   const orphanEnvKeys = listOrphanEnvKeys(input.paths.stateDir);

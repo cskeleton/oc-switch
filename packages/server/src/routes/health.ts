@@ -18,8 +18,11 @@ import { jsonError } from "../errors";
 export function registerHealthRoutes(app: Hono, runtime: AppRuntime): void {
   app.get("/api/status", (c) => {
     const paths = runtime.currentPaths();
+    // 注入插件目录：providerCount / providerModelCount 仍是 config-only，
+    // 但 effectiveModelCount 必须与 /api/config-status 的 effectiveCatalogCount 一致。
     const adapter = createConfigAdapter(readConfig(paths), {
-      disabledProviderIds: readDisabledProviderIds(paths)
+      disabledProviderIds: readDisabledProviderIds(paths),
+      pluginProviders: runtime.currentPluginProviders()
     });
     const status = adapter.getStatus();
     return c.json({ ok: true, ...status });
@@ -48,7 +51,8 @@ export function registerHealthRoutes(app: Hono, runtime: AppRuntime): void {
       ...(config ? { config } : {}),
       ...(configReadError ? { configReadError } : {}),
       paths,
-      envContent
+      envContent,
+      pluginProviders: runtime.currentPluginProviders()
     }));
   });
 

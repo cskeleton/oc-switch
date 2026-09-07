@@ -22,12 +22,37 @@ import type { OpenClawConfig } from "../packages/core/src/types";
 import modelPolicyAcceptance from "../packages/core/test/fixtures/model-policy-acceptance.json";
 import sample from "../packages/core/test/fixtures/openclaw.sample.json";
 import { createApp } from "../packages/server/src/app";
+import type { PluginCatalogProvider } from "../packages/server/src/context";
+import type { PluginProvider } from "../packages/core/src/plugin-catalog";
 
 const repoRoot = join(import.meta.dir, "..");
 const CLI_ENTRY = join(repoRoot, "packages/cli/src/index.ts");
 const fixtureBuiltinDir = join(repoRoot, "packages/core/test/fixtures/presets/builtin");
 const TOKEN = "acceptance-smoke-token";
 const SERVER_PORT = 17_421;
+
+/**
+ * 验收必须与本机安装了哪些 OpenClaw 插件无关：默认注入空插件目录，
+ * 需要覆盖插件路径的场景显式注入固定 catalog。
+ */
+const emptyPluginCatalog: PluginCatalogProvider = () => ({ providers: [], diagnostics: [] });
+
+function acceptancePluginCatalog(overrides: Partial<PluginProvider> = {}): PluginCatalogProvider {
+  return () => ({
+    providers: [{
+      pluginId: "opencode",
+      providerId: "opencode",
+      origin: "npm-global",
+      enabled: true,
+      baseUrl: "https://opencode.ai/zen/v1",
+      api: "openai-completions",
+      models: [{ id: "big-pickle" }, { id: "hy3" }],
+      apiKeyEnvVars: ["OPENCODE_API_KEY"],
+      ...overrides
+    }],
+    diagnostics: []
+  });
+}
 /** fixture 专用密钥，任何响应/探测结果都不得回显 */
 const FIXTURE_SECRET = "acceptance-fixture-secret-NEVER-LEAK";
 
@@ -110,7 +135,8 @@ async function assertModelPolicyAcceptance(rootDir: string, outputs: string[]): 
     const app = createApp({
       token: TOKEN,
       paths: { openclawPath, envPath, stateDir },
-      presetDirs: { builtinDir: fixtureBuiltinDir, customDir }
+      presetDirs: { builtinDir: fixtureBuiltinDir, customDir },
+      pluginCatalogProvider: emptyPluginCatalog
     });
     const headers = { Authorization: `Bearer ${TOKEN}` };
     const statusResponse = await app.request("/api/status", { headers });
@@ -507,7 +533,8 @@ async function assertRuntimeDiscoveryAcceptance(outputs: string[]): Promise<void
       token: TOKEN,
       paths: { openclawPath: openclawA, envPath: envA, stateDir },
       presetDirs: { builtinDir: fixtureBuiltinDir, customDir },
-      runtimeDiscoveryProvider: () => discoveryForApi
+      runtimeDiscoveryProvider: () => discoveryForApi,
+      pluginCatalogProvider: emptyPluginCatalog
     });
     const server = Bun.serve({
       port: SERVER_PORT + 1,
@@ -553,6 +580,121 @@ async function assertRuntimeDiscoveryAcceptance(outputs: string[]): Promise<void
   } finally {
     rmSync(runtimeDir, { recursive: true, force: true });
   }
+}
+
+/**
+ * 插件 provider 只读验收：合并展示、编排放行、破坏性写操作 fail closed。
+ * 全程注入固定插件 catalog，不依赖本机 openclaw。
+ */
+async function assertPluginProviderAcceptance(rootDir: string, outputs: string[]): Promise<void> {
+  const scenarioDir = join(rootDir, "plugin-provider");
+  const stateDir = join(scenarioDir, ".oc-switch");
+  const customDir = join(stateDir, "presets", "custom");
+  const openclawPath = join(scenarioDir, "openclaw.json");
+  const envPath = join(scenarioDir, ".env");
+  mkdirSync(customDir, { recursive: true });
+  const config = JSON.parse(JSON.stringify(sample)) as OpenClawConfig;
+  // 让 policy 指向插件 ref：修正前会被 config-status 误报为 unknown provider
+  config.agents!.defaults!.modelPolicy = { allow: ["opencode/big-pickle", "minimax-portal/MiniMax-M3"] };
+  writeFileSync(openclawPath, `${JSON.stringify(config, null, 2)}\n`);
+  writeFileSync(envPath, "");
+
+  const headers = { Authorization: `Bearer ${TOKEN}` };
+  const paths = { openclawPath, envPath, stateDir };
+  const presetDirs = { builtinDir: fixtureBuiltinDir, customDir };
+
+  // --- 未注入插件目录：插件 ref 被报为 unknown provider（回归基线） ---
+  const baseline = createApp({ token: TOKEN, paths, presetDirs, pluginCatalogProvider: emptyPluginCatalog });
+  const baselineStatus = await (await baseline.request("/api/config-status", { headers })).json() as {
+    modelPolicy: { unknownProviderRefs: string[] };
+  };
+  outputs.push(JSON.stringify(baselineStatus));
+  assert(
+    baselineStatus.modelPolicy.unknownProviderRefs.includes("opencode/big-pickle"),
+    "无插件目录时插件 ref 应仍被视为 unknown provider"
+  );
+
+  // --- 注入启用中的插件目录 ---
+  const app = createApp({ token: TOKEN, paths, presetDirs, pluginCatalogProvider: acceptancePluginCatalog() });
+  const before = readFileSync(openclawPath, "utf8");
+
+  const providersBody = await (await app.request("/api/providers", { headers })).json() as {
+    providers: Array<{ id: string; source: string; disabled: boolean; apiKeyEnv: string | null }>;
+  };
+  const modelsBody = await (await app.request("/api/models", { headers })).json() as {
+    models: Array<{ ref: string; enabled: boolean }>;
+  };
+  const configStatus = await (await app.request("/api/config-status", { headers })).json() as {
+    modelPolicy: { unknownProviderRefs: string[]; effectiveCatalogCount: number };
+  };
+  const statusBody = await (await app.request("/api/status", { headers })).json() as Record<string, unknown>;
+  outputs.push(JSON.stringify({ providersBody, modelsBody, configStatus, statusBody }));
+
+  const pluginRow = providersBody.providers.find((item) => item.id === "opencode");
+  assert(Boolean(pluginRow), "providers 应含插件条目 opencode");
+  assert(pluginRow?.source === "plugin", "插件条目 source 应为 plugin");
+  assert(pluginRow?.disabled === false, "启用中的插件条目不应标记 disabled");
+  assert(pluginRow?.apiKeyEnv === "OPENCODE_API_KEY", "插件条目应取 manifest 声明的 env 变量");
+  assert(
+    providersBody.providers.find((item) => item.id === "nvidia")?.source === "config",
+    "config 条目 source 应为 config"
+  );
+  assert(
+    modelsBody.models.some((item) => item.ref === "opencode/big-pickle" && item.enabled),
+    "policy exact 命中的插件模型应为已启用"
+  );
+  assert(
+    !configStatus.modelPolicy.unknownProviderRefs.includes("opencode/big-pickle"),
+    "插件 ref 不应再被误报为 unknown provider"
+  );
+  assert(
+    statusBody.effectiveModelCount === configStatus.modelPolicy.effectiveCatalogCount,
+    "status 与 config-status 的有效目录计数必须一致"
+  );
+  assert(readFileSync(openclawPath, "utf8") === before, "只读探测不得修改配置");
+
+  // --- 破坏性写操作对插件 provider fail closed ---
+  const deleteResponse = await app.request("/api/providers/opencode", { method: "DELETE", headers });
+  assert(deleteResponse.status === 400, "删除插件 provider 应被拒绝");
+  const stateResponse = await app.request("/api/providers/opencode/state", {
+    method: "PATCH",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ enabled: false })
+  });
+  assert(stateResponse.status === 400, "关闭插件 provider 应被拒绝");
+  assert(readFileSync(openclawPath, "utf8") === before, "被拒绝的写操作不得修改配置");
+
+  // --- 停用插件的 ref 不可启用 ---
+  const disabledApp = createApp({
+    token: TOKEN,
+    paths,
+    presetDirs,
+    pluginCatalogProvider: acceptancePluginCatalog({ enabled: false })
+  });
+  const enableResponse = await disabledApp.request("/api/models", {
+    method: "PATCH",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ ref: "opencode/hy3", enabled: true })
+  });
+  assert(enableResponse.status === 400, "停用插件的模型不应可启用");
+  assert(readFileSync(openclawPath, "utf8") === before, "拒绝启用后配置不得变化");
+
+  // --- 编排放行：主模型可指向插件 ref（写在临时 fixture 上） ---
+  const primaryResponse = await app.request("/api/models/primary", {
+    method: "PUT",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ ref: "opencode/big-pickle" })
+  });
+  assert(primaryResponse.status === 200, "主模型指向插件 ref 应成功");
+  const afterConfig = JSON.parse(readFileSync(openclawPath, "utf8")) as OpenClawConfig;
+  assert(
+    afterConfig.agents?.defaults?.model === "opencode/big-pickle",
+    "主模型应写入插件 ref"
+  );
+  assert(
+    Boolean(afterConfig.models?.providers) && !("opencode" in afterConfig.models!.providers!),
+    "插件 provider 不得被写入 models.providers"
+  );
 }
 
 async function main(): Promise<void> {
@@ -653,7 +795,8 @@ async function main(): Promise<void> {
       presetDirs: {
         builtinDir: fixtureBuiltinDir,
         customDir
-      }
+      },
+      pluginCatalogProvider: emptyPluginCatalog
     });
     const server = Bun.serve({
       port: SERVER_PORT,
@@ -715,6 +858,9 @@ async function main(): Promise<void> {
 
     // Model policy 三态与独立 Provider state 验收（临时脱敏 fixture）
     await assertModelPolicyAcceptance(dir, outputs);
+
+    // 插件 provider 合并展示 / 编排放行 / 破坏性写 fail closed（注入固定 catalog）
+    await assertPluginProviderAcceptance(dir, outputs);
 
     // 汇总扫描所有输出
     for (const text of outputs) {

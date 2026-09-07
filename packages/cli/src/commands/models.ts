@@ -2,6 +2,7 @@ import {
   addProviderModel,
   createConfigAdapter,
   disableModel,
+  discoverPluginCatalog,
   enableModel,
   parseModelRef,
   removeProviderModel,
@@ -14,7 +15,9 @@ import type { CommandContext } from "../command-context";
 export function registerModelCommands(program: Command, context: CommandContext): void {
   const models = program.command("models");
   models.command("list").option("--provider <name>").action((options: { provider?: string }) => {
-    const rows = createConfigAdapter(context.readConfig()).listModels()
+    const rows = createConfigAdapter(context.readConfig(), {
+      pluginProviders: discoverPluginCatalog().providers
+    }).listModels()
       .filter((row) => !options.provider || row.providerId === options.provider);
     for (const row of rows) {
       const flags = [row.enabled ? "enabled" : "disabled", row.isPrimary ? "primary" : ""].filter(Boolean).join(",");
@@ -26,12 +29,13 @@ export function registerModelCommands(program: Command, context: CommandContext)
     .argument("<ref>")
     .action(async (ref: string) => {
       const paths = context.activePaths();
+      const pluginProviders = discoverPluginCatalog().providers;
       await writeOpenClawTransaction({
         ...paths,
         runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `set primary model ${ref}`,
         mutate(config) {
-          return setPrimaryModel(config, ref).config;
+          return setPrimaryModel(config, ref, pluginProviders).config;
         }
       });
       console.log(`Primary model set to ${ref}`);
@@ -59,12 +63,13 @@ export function registerModelCommands(program: Command, context: CommandContext)
     .action(async (ref: string, options: { alias?: string }) => {
       context.assertProviderCanEnable(parseModelRef(ref).providerId);
       const paths = context.activePaths();
+      const pluginProviders = discoverPluginCatalog().providers;
       await writeOpenClawTransaction({
         ...paths,
         runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `enable model ${ref}`,
         mutate(config) {
-          return enableModel(config, ref, options.alias).config;
+          return enableModel(config, ref, options.alias, pluginProviders).config;
         }
       });
       console.log(`Enabled ${ref}`);

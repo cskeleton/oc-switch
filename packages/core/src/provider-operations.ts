@@ -62,7 +62,9 @@ export function removeProvider(
   providerId: string,
   options: { force: boolean; newPrimary?: string }
 ): OperationResult {
-  const resolvedProviderId = resolveProviderId(config, providerId) ?? providerId;
+  // 显式拒绝不存在的 provider（含插件 provider），避免静默 no-op 假成功
+  const resolvedProviderId = resolveProviderId(config, providerId);
+  if (!resolvedProviderId) throw new Error(`Provider ${providerId} not found`);
   const primary = readPrimaryModelRef(config);
   // fallback 依赖保护必须发生在任何 mutation 之前（force 也不可绕过）
   assertProviderFallbackRemovalAllowed(config, resolvedProviderId);

@@ -6,6 +6,7 @@ import sample from "../../core/test/fixtures/openclaw.sample.json";
 import modelsDevApiFixture from "../../core/test/fixtures/model-metadata/api.json";
 import modelsDevModelsFixture from "../../core/test/fixtures/model-metadata/models.json";
 import { createApp } from "../src/app";
+import type { PluginCatalogProvider } from "../src/context";
 import type {
   FetchImpl,
   OcSwitchPaths,
@@ -63,18 +64,26 @@ function workspace(): Workspace {
   };
 }
 
+/**
+ * 默认注入空插件目录：否则测试会 shell-out 到本机真实 `openclaw plugins list`，
+ * 让 provider/model 列表随开发机装了哪些插件而漂移（且每次调用最多 8s）。
+ */
+const emptyPluginCatalog: PluginCatalogProvider = () => ({ providers: [], diagnostics: [] });
+
 function createTestApp(
   ws: Workspace,
   fetchImpl?: FetchImpl,
   extra?: {
     runtimeDiscoveryProvider?: RuntimeDiscoveryProvider;
     gatewayRouteOptions?: import("../src/routes/gateway").GatewayRouteOptions;
+    pluginCatalogProvider?: PluginCatalogProvider;
   }
 ) {
   return createApp({
     token: TOKEN,
     paths: ws.paths,
     presetDirs: ws.presetDirs,
+    pluginCatalogProvider: extra?.pluginCatalogProvider ?? emptyPluginCatalog,
     ...(fetchImpl ? { fetchImpl } : {}),
     ...(extra?.runtimeDiscoveryProvider
       ? { runtimeDiscoveryProvider: extra.runtimeDiscoveryProvider }
@@ -3041,5 +3050,179 @@ describe("model metadata sync", () => {
     expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(beforeConfig);
     const { json: backupsJson } = await jsonRequest(app, "/api/backups");
     expect((backupsJson.backups as unknown[]).length).toBe(0);
+  });
+});
+
+describe("server 插件 provider 接入", () => {
+  /** 注入固定插件目录，避免依赖本机 openclaw 与真实插件 */
+  function pluginCatalog(overrides: Partial<import("@oc-switch/core").PluginProvider> = {}): PluginCatalogProvider {
+    return () => ({
+      providers: [{
+        pluginId: "opencode",
+        providerId: "opencode",
+        origin: "npm-global",
+        enabled: true,
+        baseUrl: "https://opencode.ai/zen/v1",
+        api: "openai-completions",
+        models: [{ id: "big-pickle" }, { id: "hy3" }],
+        apiKeyEnvVars: ["OPENCODE_API_KEY"],
+        ...overrides
+      }],
+      diagnostics: []
+    });
+  }
+
+  test("GET /api/providers 合并插件条目并标记 source=plugin", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws, undefined, { pluginCatalogProvider: pluginCatalog() });
+    const { response, json } = await jsonRequest(app, "/api/providers");
+
+    expect(response.status).toBe(200);
+    const providers = json.providers as Array<{ id: string; source: string }>;
+    expect(providers.map((item) => item.id).sort()).toEqual(["DeepSeek", "minimax-portal", "nvidia", "opencode"]);
+    expect(providers.find((item) => item.id === "opencode")?.source).toBe("plugin");
+    expect(providers.find((item) => item.id === "nvidia")?.source).toBe("config");
+  });
+
+  test("GET /api/providers 用 manifest 声明的 env 变量计算插件条目的 Key 状态", async () => {
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, "# oc-switch:start\nOPENCODE_API_KEY=managed\n# oc-switch:end\n");
+    const app = createTestApp(ws, undefined, { pluginCatalogProvider: pluginCatalog() });
+    const { json } = await jsonRequest(app, "/api/providers");
+
+    expect((json.providers as Array<{ id: string }>).find((item) => item.id === "opencode")).toMatchObject({
+      apiKeyEnv: "OPENCODE_API_KEY",
+      apiKeyEnvManaged: true,
+      apiKeyEnvStatus: "managed"
+    });
+    expect(JSON.stringify(json)).not.toContain("managed=");
+  });
+
+  test("插件未声明 env 变量时 apiKeyEnv 为 null", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws, undefined, { pluginCatalogProvider: pluginCatalog({ apiKeyEnvVars: [] }) });
+    const { json } = await jsonRequest(app, "/api/providers");
+    expect((json.providers as Array<{ id: string }>).find((item) => item.id === "opencode")).toMatchObject({
+      apiKeyEnv: null
+    });
+  });
+
+  test("GET /api/models 含插件模型行", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws, undefined, { pluginCatalogProvider: pluginCatalog() });
+    const { json } = await jsonRequest(app, "/api/models");
+    const refs = (json.models as Array<{ ref: string }>).map((item) => item.ref);
+    expect(refs).toContain("opencode/big-pickle");
+    expect(refs).toContain("opencode/hy3");
+  });
+
+  test("PATCH /api/models 可启用插件 ref，并写入 openclaw.json", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws, undefined, { pluginCatalogProvider: pluginCatalog() });
+    const { response, json } = await jsonRequest(app, "/api/models", {
+      method: "PATCH",
+      body: JSON.stringify({ ref: "opencode/big-pickle", enabled: true, alias: "oc-bp" })
+    });
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    expect(config.agents?.defaults?.models?.["opencode/big-pickle"]).toEqual({ alias: "oc-bp" });
+  });
+
+  test("PATCH /api/models 拒绝停用插件的 ref，且不落盘", async () => {
+    const ws = workspace();
+    const before = readFileSync(ws.paths.openclawPath, "utf8");
+    const app = createTestApp(ws, undefined, {
+      pluginCatalogProvider: pluginCatalog({ enabled: false })
+    });
+    const { response } = await jsonRequest(app, "/api/models", {
+      method: "PATCH",
+      body: JSON.stringify({ ref: "opencode/big-pickle", enabled: true })
+    });
+
+    expect(response.status).toBe(400);
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+  });
+
+  test("PUT /api/models/primary 可把主模型指向插件 ref", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws, undefined, { pluginCatalogProvider: pluginCatalog() });
+    const { response } = await jsonRequest(app, "/api/models/primary", {
+      method: "PUT",
+      body: JSON.stringify({ ref: "opencode/hy3" })
+    });
+
+    expect(response.status).toBe(200);
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    expect(config.agents?.defaults?.model).toBe("opencode/hy3");
+  });
+
+  test("DELETE /api/providers/:id 对插件 provider 显式拒绝", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws, undefined, { pluginCatalogProvider: pluginCatalog() });
+    const { response } = await jsonRequest(app, "/api/providers/opencode", { method: "DELETE" });
+    expect(response.status).toBe(400);
+  });
+
+  test("GET /api/config-status 不再把插件 ref 报为 unknownProviderRefs", async () => {
+    const ws = workspace();
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    config.agents!.defaults!.modelPolicy = { allow: ["opencode/big-pickle", "minimax-portal/MiniMax-M3"] };
+    writeFileSync(ws.paths.openclawPath, JSON.stringify(config, null, 2));
+
+    const withoutPlugin = await jsonRequest(createTestApp(ws), "/api/config-status");
+    expect((withoutPlugin.json.modelPolicy as { unknownProviderRefs: string[] }).unknownProviderRefs)
+      .toEqual(["opencode/big-pickle"]);
+
+    const withPlugin = await jsonRequest(
+      createTestApp(ws, undefined, { pluginCatalogProvider: pluginCatalog() }),
+      "/api/config-status"
+    );
+    expect((withPlugin.json.modelPolicy as { unknownProviderRefs: string[] }).unknownProviderRefs).toEqual([]);
+  });
+
+  test("GET /api/status 的 effectiveModelCount 与 config-status 的 effectiveCatalogCount 一致", async () => {
+    const ws = workspace();
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    config.agents!.defaults!.modelPolicy = { allow: ["opencode/*", "minimax-portal/MiniMax-M3"] };
+    writeFileSync(ws.paths.openclawPath, JSON.stringify(config, null, 2));
+    const app = createTestApp(ws, undefined, { pluginCatalogProvider: pluginCatalog() });
+
+    const status = await jsonRequest(app, "/api/status");
+    const configStatus = await jsonRequest(app, "/api/config-status");
+    expect(status.json.effectiveModelCount)
+      .toBe((configStatus.json.modelPolicy as { effectiveCatalogCount: number }).effectiveCatalogCount);
+    // 插件模型（2）+ 本地 exact（1）
+    expect(status.json.effectiveModelCount).toBe(3);
+    // provider / 目录计数保持 config-only
+    expect(status.json.providerCount).toBe(3);
+    expect(status.json.providerModelCount).toBe(4);
+  });
+
+  test("插件目录发现抛错时降级为空，不影响主流程", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws, undefined, {
+      pluginCatalogProvider: () => { throw new Error("openclaw missing"); }
+    });
+    const { response, json } = await jsonRequest(app, "/api/providers");
+    expect(response.status).toBe(200);
+    expect((json.providers as Array<{ id: string }>).map((item) => item.id).sort())
+      .toEqual(["DeepSeek", "minimax-portal", "nvidia"]);
+  });
+
+  test("插件目录在 30s TTL 内只发现一次", async () => {
+    const ws = workspace();
+    let calls = 0;
+    const app = createTestApp(ws, undefined, {
+      pluginCatalogProvider: () => {
+        calls += 1;
+        return pluginCatalog()();
+      }
+    });
+    await jsonRequest(app, "/api/providers");
+    await jsonRequest(app, "/api/models");
+    await jsonRequest(app, "/api/providers");
+    expect(calls).toBe(1);
   });
 });

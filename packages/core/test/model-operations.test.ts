@@ -9,6 +9,7 @@ import {
   updateProviderModel
 } from "../src/model-operations";
 import { MAX_PROVIDER_MODELS } from "../src/provider-model-limits";
+import type { PluginProvider } from "../src/plugin-catalog";
 import { addProviderFromPreset } from "../src/provider-operations";
 import type { OpenClawConfig } from "../src/types";
 
@@ -459,5 +460,113 @@ describe("model operations 对象形态主模型与 fallback 保护", () => {
       })
     ).toThrow(/agents\.defaults\.model\.fallbacks/);
     expect(config).toEqual(before);
+  });
+});
+
+describe("插件 provider 的模型编排", () => {
+  function pluginProvider(overrides: Partial<PluginProvider> = {}): PluginProvider {
+    return {
+      pluginId: "opencode",
+      providerId: "opencode",
+      origin: "npm-global",
+      enabled: true,
+      baseUrl: "https://opencode.ai/zen/v1",
+      api: "openai-completions",
+      models: [{ id: "big-pickle" }, { id: "hy3" }],
+      apiKeyEnvVars: ["OPENCODE_API_KEY"],
+      ...overrides
+    };
+  }
+
+  test("enableModel 接受启用中插件 provider 的 ref", () => {
+    const config = cloneSample();
+    const result = enableModel(config, "opencode/big-pickle", "oc-bp", [pluginProvider()]);
+    expect(result.config.agents?.defaults?.models?.["opencode/big-pickle"]).toEqual({ alias: "oc-bp" });
+  });
+
+  test("enableModel 对未注入插件目录的 ref 仍拒绝", () => {
+    const config = cloneSample();
+    expect(() => enableModel(config, "opencode/big-pickle")).toThrow(/not defined in provider models/);
+  });
+
+  test("enableModel 拒绝插件 enabled=false 的 ref，报错指向 plugins.entries，配置不变", () => {
+    const config = cloneSample();
+    const before = structuredClone(config);
+    expect(() => enableModel(config, "opencode/big-pickle", undefined, [pluginProvider({ enabled: false })]))
+      .toThrow(/plugins\.entries\.opencode\.enabled=false/);
+    expect(config).toEqual(before);
+  });
+
+  test("enableModel 拒绝插件目录里不存在的模型 id", () => {
+    const config = cloneSample();
+    expect(() => enableModel(config, "opencode/ghost", undefined, [pluginProvider()]))
+      .toThrow(/not defined in provider models/);
+  });
+
+  test("插件 providerId 大小写不一致时照常放行，并按持久化规范折叠前缀", () => {
+    const config = cloneSample();
+    const result = enableModel(config, "OpenCode/hy3", undefined, [pluginProvider()]);
+    expect(result.config.agents?.defaults?.models?.["opencode/hy3"]).toBeDefined();
+    expect(result.config.agents?.defaults?.models?.["OpenCode/hy3"]).toBeUndefined();
+  });
+
+  test("setPrimaryModel 接受启用中插件 ref，拒绝停用插件 ref", () => {
+    const config = cloneSample();
+    expect(setPrimaryModel(config, "opencode/hy3", [pluginProvider()]).config.agents?.defaults?.model)
+      .toBe("opencode/hy3");
+
+    const other = cloneSample();
+    const before = structuredClone(other);
+    expect(() => setPrimaryModel(other, "opencode/hy3", [pluginProvider({ enabled: false })]))
+      .toThrow(/plugins\.entries\.opencode\.enabled=false/);
+    expect(other).toEqual(before);
+  });
+
+  test("providerId 与 models.providers 同名时插件模型不参与目录校验（config 接管）", () => {
+    const config = cloneSample();
+    config.models!.providers!.opencode = { api: "openai-completions", models: [{ id: "local-only" }] };
+    // 本地目录条目照常放行
+    expect(enableModel(structuredClone(config), "opencode/local-only", undefined, [pluginProvider()])
+      .config.agents?.defaults?.models?.["opencode/local-only"]).toBeDefined();
+    // 仅存在于插件 manifest 的模型被拒绝（与 listProviders / config-status 冲突规则一致）
+    expect(() => enableModel(config, "opencode/big-pickle", undefined, [pluginProvider()]))
+      .toThrow(/not defined in provider models/);
+    expect(() => setPrimaryModel(config, "opencode/big-pickle", [pluginProvider()]))
+      .toThrow(/not defined in provider models/);
+  });
+
+  test("restricted policy 下 enableModel 同步插件 exact ref", () => {
+    const config = cloneSample();
+    config.agents!.defaults!.modelPolicy = { allow: ["nvidia/z-ai/glm5.1"] };
+    const result = enableModel(config, "opencode/big-pickle", undefined, [pluginProvider()]);
+    expect(result.config.agents?.defaults?.modelPolicy?.allow).toContain("opencode/big-pickle");
+  });
+
+  test("disableModel 对插件 ref 无需目录校验即可移除 metadata 与 exact policy", () => {
+    const config = cloneSample();
+    config.agents!.defaults!.models!["opencode/big-pickle"] = { alias: "oc-bp" };
+    // 保留另一条 exact，避免撞上「清空 policy 会变 unrestricted」的 fail-closed 断言
+    config.agents!.defaults!.modelPolicy = { allow: ["opencode/big-pickle", "nvidia/z-ai/glm5.1"] };
+    const result = disableModel(config, "opencode/big-pickle");
+    expect(result.config.agents?.defaults?.models?.["opencode/big-pickle"]).toBeUndefined();
+    expect(result.config.agents?.defaults?.modelPolicy?.allow).toEqual(["nvidia/z-ai/glm5.1"]);
+  });
+
+  test("插件 ref 是 policy 最后一条 exact 时 disableModel fail closed", () => {
+    const config = cloneSample();
+    config.agents!.defaults!.modelPolicy = { allow: ["opencode/big-pickle"] };
+    const before = structuredClone(config);
+    expect(() => disableModel(config, "opencode/big-pickle")).toThrow(/unrestricted/);
+    expect(config).toEqual(before);
+  });
+
+  test("插件 provider 的模型不可经 addProviderModel / updateProviderModel / removeProviderModel 写入", () => {
+    for (const mutate of [
+      () => addProviderModel(cloneSample(), "opencode/new-model", { enabled: false }),
+      () => updateProviderModel(cloneSample(), "opencode/big-pickle", { id: "renamed", enabled: false }),
+      () => removeProviderModel(cloneSample(), "opencode/big-pickle", { force: true })
+    ]) {
+      expect(mutate).toThrow();
+    }
   });
 });

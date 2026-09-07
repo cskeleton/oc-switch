@@ -6,6 +6,7 @@ import sample from "./fixtures/openclaw.sample.json";
 import { inspectConfigStatus } from "../src/config-status";
 import { upsertDisabledProviderState } from "../src/provider-states";
 import type { OcSwitchPaths } from "../src/paths";
+import type { PluginProvider } from "../src/plugin-catalog";
 import type { OpenClawConfig } from "../src/types";
 
 const tempDirs: string[] = [];
@@ -25,13 +26,29 @@ function inspect(paths: OcSwitchPaths, overrides: {
   config?: OpenClawConfig;
   configReadError?: string;
   envContent?: string;
+  pluginProviders?: PluginProvider[];
 } = {}) {
   return inspectConfigStatus({
     paths,
     envContent: overrides.envContent ?? "",
     ...(overrides.config ? { config: overrides.config } : {}),
-    ...(overrides.configReadError ? { configReadError: overrides.configReadError } : {})
+    ...(overrides.configReadError ? { configReadError: overrides.configReadError } : {}),
+    ...(overrides.pluginProviders ? { pluginProviders: overrides.pluginProviders } : {})
   });
+}
+
+function pluginProvider(overrides: Partial<PluginProvider> = {}): PluginProvider {
+  return {
+    pluginId: "opencode",
+    providerId: "opencode",
+    origin: "npm-global",
+    enabled: true,
+    baseUrl: "https://opencode.ai/zen/v1",
+    api: "openai-completions",
+    models: [{ id: "big-pickle" }, { id: "hy3" }],
+    apiKeyEnvVars: ["OPENCODE_API_KEY"],
+    ...overrides
+  };
 }
 
 afterEach(() => {
@@ -393,5 +410,78 @@ describe("OpenClaw compatibility issues", () => {
     const report = inspect(paths, { config });
     expect(report.issues.some((issue) => issue.id === "health:secret-ref-migration:vaultBacked")).toBe(false);
     expect(report.summary.blockingIssueCount).toBe(0);
+  });
+});
+
+describe("inspectConfigStatus 插件 provider", () => {
+  /** 只含插件 ref 的 restricted policy，用于隔离验证插件相关判定 */
+  function pluginPolicyConfig(allow: unknown[]): OpenClawConfig {
+    return {
+      models: { providers: {} },
+      agents: { defaults: { modelPolicy: { allow } } }
+    } as unknown as OpenClawConfig;
+  }
+
+  test("插件 provider 的 exact ref 不再误报为 unknownProviderRefs", () => {
+    const { paths } = workspace();
+    const config = pluginPolicyConfig(["opencode/big-pickle"]);
+    expect(inspect(paths, { config }).modelPolicy.unknownProviderRefs).toEqual(["opencode/big-pickle"]);
+    expect(
+      inspect(paths, { config, pluginProviders: [pluginProvider()] }).modelPolicy.unknownProviderRefs
+    ).toEqual([]);
+  });
+
+  test("providerId 大小写不一致时同样折叠判定", () => {
+    const { paths } = workspace();
+    const report = inspect(paths, {
+      config: pluginPolicyConfig(["OpenCode/big-pickle"]),
+      pluginProviders: [pluginProvider()]
+    });
+    expect(report.modelPolicy.unknownProviderRefs).toEqual([]);
+    expect(report.modelPolicy.knownProviderUnknownModelRefs).toEqual([]);
+  });
+
+  test("插件 provider 存在但模型不在 manifest 目录中，计入 knownProviderUnknownModelRefs", () => {
+    const { paths } = workspace();
+    const report = inspect(paths, {
+      config: pluginPolicyConfig(["opencode/ghost-model"]),
+      pluginProviders: [pluginProvider()]
+    });
+    expect(report.modelPolicy.unknownProviderRefs).toEqual([]);
+    expect(report.modelPolicy.knownProviderUnknownModelRefs).toEqual(["opencode/ghost-model"]);
+  });
+
+  test("effectiveCatalogCount 计入启用中插件的有效模型，停用插件不计入", () => {
+    const { paths } = workspace();
+    const config = pluginPolicyConfig(["opencode/*"]);
+    expect(inspect(paths, { config }).modelPolicy.effectiveCatalogCount).toBe(0);
+    expect(
+      inspect(paths, { config, pluginProviders: [pluginProvider()] }).modelPolicy.effectiveCatalogCount
+    ).toBe(2);
+    expect(
+      inspect(paths, { config, pluginProviders: [pluginProvider({ enabled: false })] })
+        .modelPolicy.effectiveCatalogCount
+    ).toBe(0);
+  });
+
+  test("与 models.providers 同名的插件条目被忽略，判定仍以 config 目录为准", () => {
+    const { paths } = workspace();
+    const config = {
+      models: { providers: { opencode: { baseUrl: "https://local/v1", models: [{ id: "local-only" }] } } },
+      agents: { defaults: { modelPolicy: { allow: ["opencode/big-pickle"] } } }
+    } as unknown as OpenClawConfig;
+    const report = inspect(paths, { config, pluginProviders: [pluginProvider()] });
+    expect(report.modelPolicy.unknownProviderRefs).toEqual([]);
+    // config 目录里没有 big-pickle ⇒ 仍属 drift，插件目录不得掩盖
+    expect(report.modelPolicy.knownProviderUnknownModelRefs).toEqual(["opencode/big-pickle"]);
+  });
+
+  test("未传 pluginProviders 时行为与既有版本一致（不新增 issue 类型）", () => {
+    const { paths } = workspace();
+    const config = pluginPolicyConfig(["opencode/big-pickle"]);
+    const withoutPlugin = inspect(paths, { config });
+    const withPlugin = inspect(paths, { config, pluginProviders: [pluginProvider()] });
+    expect(withPlugin.issues.map((issue) => issue.id).sort())
+      .toEqual(withoutPlugin.issues.map((issue) => issue.id).sort());
   });
 });

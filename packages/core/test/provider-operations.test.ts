@@ -496,3 +496,26 @@ describe("provider operations 对象形态主模型与 fallback 保护", () => {
     }
   });
 });
+
+describe("插件 provider 的写操作 fail closed", () => {
+  test("removeProvider 对不存在的 provider 显式报错，而非静默 no-op", () => {
+    const config = cloneSample();
+    const before = structuredClone(config);
+    expect(() => removeProvider(config, "opencode", { force: true })).toThrow(/Provider opencode not found/);
+    expect(config).toEqual(before);
+  });
+
+  test("removeProvider 大小写不一致但存在时仍正常删除", () => {
+    const config = cloneSample();
+    expect(removeProvider(config, "NVIDIA", { force: true }).config.models?.providers?.nvidia).toBeUndefined();
+  });
+
+  test("editProvider / deleteProvider 对插件 provider 显式拒绝", () => {
+    for (const mutate of [
+      () => editProvider(cloneSample(), "opencode", { baseUrl: "https://evil.example/v1" }),
+      () => deleteProvider(cloneSample(), "opencode", { force: true })
+    ]) {
+      expect(mutate).toThrow();
+    }
+  });
+});

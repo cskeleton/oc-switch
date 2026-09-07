@@ -28,6 +28,7 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 
 - **`repoRoot`**：`packages/cli/src/command-context.ts` 导出，须自 `packages/cli/src` **上溯三级**至 monorepo 根（测试脚本定位等用途）。
 - **Web 主题**：双主题用 `styles.css` 的 `@theme inline` + `:root` / `.dark` token。禁止硬编码 `slate-*` / `sky-*` / `red-*`——Tailwind v4 会静默丢弃未声明 token 的工具类且不报错。`brand` / `success` / `warning` / `danger` 等语义色 token 已在 `styles.css` 声明，同样禁止硬编码 `amber-*` / `emerald-*`。
+- **Web 表格换行与宽度**：`DataTable` 的单元格默认 `wrap: "normal"`（按词边界断行）。历史上 `<td>` 是无条件 `break-all`，会把 `openai-completions`、`qwen-token-plan` 这类短标识拦腰截断——列一被挤窄就大面积折行。只有长 URL / 长 ModelRef 才声明 `wrap: "anywhere"`，状态与操作列声明 `wrap: "nowrap"`。`Pill` / `Badge` 自带 `whitespace-nowrap shrink-0`，徽章永不折行。列数多的表必须显式传 `minWidthClass`（可带断点，如 `min-w-[22rem] lg:min-w-[62rem]`）：宽度不足时应横向滚动，而不是继续挤压列宽；同时用 `className: "hidden md:table-cell"` 在窄屏隐藏低价值列，保证 ID / 状态 / 操作 在手机上不横滚即可达。改动后须实测「表格 scrollWidth ≤ 容器 clientWidth」与「页面 body 不横向溢出」，别凭感觉估宽度。**实测别手搓 mock**：自造 API fixture 极易漏掉必填数组（如 `/api/settings` 的 `orphanEnvKeys`），页面会白屏并抛 `Cannot read properties of undefined`，看着像产品 bug 其实是 fixture bug。正确做法是另起一个隔离的 `oc-switch serve`：`HOME` 指向 mkdtemp fixture（stateDir / 备份 / .env 全部隔离），PATH 前置一个假 `openclaw` 脚本回放事先只读捕获的 `plugins list --json`，这样能拿到真实 DTO 与真实插件行（含同名遮蔽、已停用），且不碰用户常驻实例和真实 `openclaw.json`。注意 `overflow-x-auto` 容器 scrollWidth 超出属设计（App.tsx 的移动端 nav tab 条、对话框内表格），`truncate` 元素同理，不要当成回归。
 - **Web 共享组件**：`Button` / `Pill` / `Toast`（`ToastProvider` + `useToast`）/ `EmptyState` / `Skeleton` / `DataTable`（支持列排序）位于 `packages/web/src/components(/ui)`，新代码应直接使用，不得再内联拼 class。
 - **Web 单测 DOM 全局**：`packages/web/src/test-setup.ts` 逐项挑选 happy-dom 全局注入 `globalThis`，缺项不会在启动时报错，只在渲染时抛 `X is not defined` 且堆栈指向组件库内部。已知项：Radix `Switch` 位于 `<form>` 内会额外渲染依赖 `ResizeObserver` 的隐藏 bubble input（表单外不会），故该全局必须注入。引入新 Radix 组件后若测试炸在这类报错上，补 test-setup 而非改组件；单个用例的崩溃会经 `cleanup()` 连带打挂同文件其它用例，别被表象误导。
 - **共享类型**：不新建 shared contracts 包；core 类型由 server/cli/web 各自引用。
@@ -43,6 +44,17 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 - **malformed modelPolicy.allow**：`allow` 非数组按 `legacy` 兼容解释，`ConfigStatusReport.modelPolicy.policyEntryCount` 固定为 `0`，但产生 blocking `health:invalid-model-policy-allow:modelPolicy.allow`；数组中的非字符串条目保留、忽略匹配，并逐项产生 blocking `health:invalid-model-policy-entry:modelPolicy.allow[<zero-based-index>]`。`ConfigStatusReport.modelPolicy` 固定包含 `mode`、`policyEntryCount`、`effectiveCatalogCount`、`unknownProviderRefs`、`policyOnlyExactRefs`、`knownProviderUnknownModelRefs`；unknown refs 只返回 Provider 不存在的字符串 exact refs，policy-only refs 只返回不在 `agents.defaults.models` 的字符串 exact refs，known-provider/unknown-model refs 是其子集；三者均排除 wildcard 和非字符串条目，不返回 secrets。
 - **Provider 模型目录**：`models.providers`；`listModels` 合并两者。
 - **主模型**：`agents.defaults.model`，双形态（见下节）。
+
+### 插件 Provider（OpenClaw 2026.4+）
+
+- **来源**：Provider 可来自 OpenClaw **插件 manifest** 的 `modelCatalog`（bundled 或 npm global），**从不写入** `models.providers`。`packages/core/src/plugin-catalog.ts` 的 `discoverPluginCatalog()` 经 `openclaw plugins list --json` + 读 `<rootDir>/openclaw.plugin.json` 得到只读目录；任何失败（CLI 缺失/8s 超时/JSON 或 manifest 解析失败）**降级为空结果 + diagnostics，绝不抛错**，行为回落到 config-only。
+- **DTO**：`ProviderSummary.source: "config" | "plugin"`（必填）。插件条目的 `disabled = !plugin.enabled`，语义是 OpenClaw 的 `plugins.entries.<id>.enabled=false`，**与 oc-switch 的可逆关闭（`provider-states.json`）无关**，UI/CLI 不得混用同一文案。
+- **冲突规则**：providerId 与 `models.providers` 同名（大小写折叠）时 **config 优先**，插件条目不列出，且该 provider 的**模型级**校验/编排只看本地目录。这是 v1 简化——OpenClaw 实际是并集，取舍与误差见 spec §3/§7。
+- **可写范围**：只有「单模型启停 / 设主模型 / 设 API Key」。`enableModel` / `setPrimaryModel` 用 `hasKnownModel`（本地目录 ∪ **启用中**插件 catalog）校验；插件 `enabled=false` 的 ref 拒绝并在报错中指向 `plugins.entries.<pluginId>.enabled=false`。编辑连接信息、增删改模型、`disableProvider`/`restoreDisabledProvider`、`removeProvider`/`deleteProvider` 对插件 provider 一律**显式拒绝**（不得静默 no-op）。v1 不写 `plugins.entries`，`diff-guard` 白名单不变。
+- **API Key**：只写 `.env` 托管块中 manifest `setup.providers[].envVars` 声明的变量（`providerAuthChoices` 不含变量名）。`apiKeyEnvVars` 把含 `API_KEY` 的变量排到前面并只取首个——否则会把 API Key 写进 `ANTHROPIC_OAUTH_TOKEN` 这类 OAuth 变量。**不写** `models.providers.<id>.apiKey`。
+- **计数语义**：`StatusSummary.providerCount` / `providerModelCount` 保持 config-only；`effectiveModelCount` 必须计入启用中插件 provider 并与 `ConfigStatusReport.modelPolicy.effectiveCatalogCount` **相等**（server 测试锁定该不变量）。
+- **测试隔离（必读）**：server 的 `createApp` 与 CLI 默认使用真实 `discoverPluginCatalog`。测试若不隔离会 shell-out 到开发机真实 `openclaw`，provider/model 列表随本机装了哪些插件漂移（且每次调用最多 8s）。server/acceptance 经 `AppOptions.pluginCatalogProvider` 注入；CLI 测试在 `runCli` 里 PATH 前置一个假 `openclaw` 脚本输出确定性 `plugins list --json`。
+- 详见 `docs/superpowers/specs/2026-09-07-oc-switch-plugin-provider-design.md`。
 
 ### 主模型双形态（agents.defaults.model）
 
@@ -73,16 +85,19 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 - 可逆关闭（`provider disable/enable`、`PATCH /api/providers/:id/state`）：快照 `agents.defaults.models` metadata 至 `provider-states.json`，保留 `models.providers`、不改 `modelPolicy.allow` / `.env`；含主模型时不可关闭
 - 删除级联：移除 `models.providers[<id>]` 与 `agents.defaults.models` 中第一段等于该 ID 的 metadata；restricted exact policy 在可安全表达时同步，通配覆盖则 fail closed；`.env` Key 不自动删，标为 orphan；含当前主模型须先切换
 - 大小写重复：`inspectConfigHealth` / `mergeProviderCaseDuplicates`；`GET /api/health`（legacy，仅大小写检查）；CLI `health` / `providers merge-duplicates`；`addCustomProvider` 含大小写防重复
+- 插件 Provider 只读接入：`providers list` 标注 `plugin`、`GET /api/providers` 返回 `source`、Providers 页「插件」徽章 + 编辑/删除/发现模型/同步参数/关闭恢复禁用 + 「设置 Key」走 `.env` upsert；`ProviderModelsDialog` 对插件 provider 全只读
 
 ### Model
 
 - 增删、按 model policy 三态启用/禁用、切换主模型（`use`）
+- 插件 Provider 的模型可启停与设为主模型（CLI `model enable/disable`、`use`；`PATCH /api/models`、`PUT /api/models/primary`；Models 页 Switch/Star），编辑与删除入口隐藏
 - 模型编辑（Web + API）
 - 模型参数批量同步（`provider sync-metadata`、`POST /api/providers/:id/models/sync-metadata`、Providers 页「同步参数」）：从 models.dev 为本地目录条目回填 `name`/`reasoning`/`contextWindow`/`maxTokens`/`input`；确定性 resolver 唯一 high 置信自动回填，其余（非 high、多候选、模糊命中）进确认队列 `~/.oc-switch/model-metadata-sync-queue.json`，Web/CLI/API 三端 accept/dismiss；只填空缺字段，绝不覆盖已有值
 
 ### 配置健康
 
 - `GET /api/config-status` 返回 `ConfigStatusReport` v1；`issues[]` 为去重行动列表（key：`source:kind:subject`）
+- 插件 Provider 的 policy ref 不再误报 `unknownProviderRefs`；`effectiveCatalogCount` 计入启用中插件的有效模型（v1 仍看不到运行时 shard 里的 live 模型，相关 ref 会被判为 model drift）
 
 ### 路径与环境
 
@@ -152,6 +167,7 @@ bun run packages/cli/src/index.ts     # 直接调用 CLI
 | Backup Diff Changelog | `docs/superpowers/specs/2026-07-09-oc-switch-backup-diff-changelog-design.md` |
 | Model Metadata Core-ID Matching | `docs/superpowers/specs/2026-09-02-oc-switch-model-metadata-core-id-matching-design.md` |
 | Model Metadata Batch Sync | `docs/superpowers/specs/2026-09-05-oc-switch-model-metadata-batch-sync-design.md` |
+| Plugin Provider | `docs/superpowers/specs/2026-09-07-oc-switch-plugin-provider-design.md` |
 
 ## Learned User Preferences
 

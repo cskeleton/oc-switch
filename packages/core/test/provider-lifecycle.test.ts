@@ -86,3 +86,12 @@ describe("provider disable 对象形态主模型与 fallback 保护", () => {
     expect(() => disableProvider(config, "minimax-portal")).toThrow(/contains the primary model/);
   });
 });
+
+describe("插件 provider 不可经可逆关闭通道操作", () => {
+  test("disableProvider / restoreDisabledProvider 对插件 provider 显式报 not found", () => {
+    // 插件 provider 不在 models.providers 里；关闭状态由 OpenClaw 的 plugins.entries 掌管
+    expect(() => disableProvider(cloneSample(), "opencode")).toThrow(/Provider opencode not found/);
+    expect(() => restoreDisabledProvider(cloneSample(), "opencode", {}))
+      .toThrow(/Provider opencode not found/);
+  });
+});

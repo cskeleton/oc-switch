@@ -6,6 +6,7 @@ import {
   batchRemoveProviderModels,
   createConfigAdapter,
   disableProvider,
+  discoverPluginCatalog,
   discoverProviderModels,
   editProvider,
   mergeProviderCaseDuplicates,
@@ -67,10 +68,15 @@ export function registerProviderCommands(program: Command, context: CommandConte
   const providers = program.command("providers");
   providers.command("list").action(() => {
     const paths = context.activePaths();
-    const rows = createConfigAdapter(context.readConfig()).listProviders();
+    const rows = createConfigAdapter(context.readConfig(), {
+      pluginProviders: discoverPluginCatalog().providers
+    }).listProviders();
     for (const row of rows) {
-      const status = isProviderDisabled(paths.stateDir, row.id) ? "disabled" : "enabled";
-      console.log(`${row.id}\t${row.api ?? "unknown"}\t${status}\t${row.enabledModelCount}/${row.modelCount}`);
+      const status = row.source === "plugin"
+        ? (row.disabled ? "disabled" : "enabled")
+        : isProviderDisabled(paths.stateDir, row.id) ? "disabled" : "enabled";
+      const marker = row.source === "plugin" ? "\tplugin" : "";
+      console.log(`${row.id}\t${row.api ?? "unknown"}\t${status}\t${row.enabledModelCount}/${row.modelCount}${marker}`);
     }
   });
 

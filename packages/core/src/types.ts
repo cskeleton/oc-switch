@@ -84,6 +84,8 @@ export interface ProviderSummary {
   enabledModelCount: number;
   containsPrimary: boolean;
   disabled: boolean;
+  /** config = openclaw.json 的 models.providers；plugin = OpenClaw 插件 manifest 提供的只读目录。 */
+  source: "config" | "plugin";
 }
 
 export interface ModelSummary {
