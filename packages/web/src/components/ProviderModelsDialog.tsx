@@ -158,6 +158,8 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
 
   const selectClassName = "flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-base shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring md:text-sm";
   const selectedCount = selectedModelIds.size;
+  // 插件 provider 的模型目录来自插件 manifest，只读：批量删除 / 只保留已启用 / 同步参数 / 增删改一律不可用
+  const isPlugin = provider?.source === "plugin";
 
   return (
     <>
@@ -170,9 +172,11 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
               <div className="flex flex-col space-y-1.5">
                 <DialogTitle>{provider.id} 模型</DialogTitle>
                 <DialogDescription>
-                  {provider.disabled
-                    ? "该 Provider 已关闭：不可新增或启用模型，仍可批量清理目录。"
-                    : `管理 ${provider.id} 下的模型`}
+                  {isPlugin
+                    ? "插件 Provider 的模型目录只读：可在 Models 页启停模型与设为主模型，不能在此增删改。"
+                    : provider.disabled
+                      ? "该 Provider 已关闭：不可新增或启用模型，仍可批量清理目录。"
+                      : `管理 ${provider.id} 下的模型`}
                 </DialogDescription>
               </div>
               <div className="flex flex-wrap gap-2 mr-6">
@@ -180,8 +184,8 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
                   variant="destructive"
                   size="sm"
                   aria-label="删除所选模型"
-                  disabled={selectedCount === 0 || batchBusy}
-                  title="关闭状态下仍可批量清理目录（不可新增/启用）"
+                  disabled={isPlugin || selectedCount === 0 || batchBusy}
+                  title={isPlugin ? "插件 Provider 的模型目录只读" : "关闭状态下仍可批量清理目录（不可新增/启用）"}
                   onClick={() => setConfirmBatchDelete(true)}
                 >
                   <Trash2 className="h-4 w-4" />
@@ -191,8 +195,12 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
                   variant="outline"
                   size="sm"
                   aria-label="同步所选模型参数"
-                  disabled={batchBusy}
-                  title={selectedCount > 0 ? `同步已选 ${selectedCount} 个模型的参数` : "同步该 Provider 全部本地模型的参数"}
+                  disabled={isPlugin || batchBusy}
+                  title={
+                    isPlugin
+                      ? "插件 Provider 的模型参数由插件 manifest 提供，无法回填"
+                      : selectedCount > 0 ? `同步已选 ${selectedCount} 个模型的参数` : "同步该 Provider 全部本地模型的参数"
+                  }
                   onClick={() => void runSyncMetadata()}
                 >
                   同步参数
@@ -201,8 +209,8 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
                   variant="outline"
                   size="sm"
                   aria-label="只保留已启用模型"
-                  disabled={batchBusy || scopedModels.length === 0}
-                  title="关闭状态下仍可清理未启用模型，便于目录降到上限以内"
+                  disabled={isPlugin || batchBusy || scopedModels.length === 0}
+                  title={isPlugin ? "插件 Provider 的模型目录只读" : "关闭状态下仍可清理未启用模型，便于目录降到上限以内"}
                   onClick={() => setConfirmKeepEnabledOnly(true)}
                 >
                   只保留已启用
@@ -210,8 +218,12 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
                 <Button
                   size="sm"
                   aria-label="添加模型"
-                  disabled={provider.disabled}
-                  title={provider.disabled ? "该 Provider 已关闭，请先恢复 Provider 后再启用模型" : undefined}
+                  disabled={isPlugin || provider.disabled}
+                  title={
+                    isPlugin
+                      ? "插件 Provider 的模型目录只读，无法添加模型"
+                      : provider.disabled ? "该 Provider 已关闭，请先恢复 Provider 后再启用模型" : undefined
+                  }
                   onClick={() => setCreating(true)}
                 >
                   <Plus className="h-4 w-4" />
@@ -227,28 +239,35 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
                 rows={scopedModels}
                 rowKey={(row) => row.ref}
                 emptyMessage="该 Provider 暂无模型"
+                minWidthClass="min-w-[38rem]"
                 columns={[
                   {
                     key: "select",
                     header: "",
+                    wrap: "nowrap",
                     className: "w-10",
                     render: (row) => (
                       <input
                         type="checkbox"
                         aria-label={`选择本地模型 ${row.modelId}`}
                         checked={selectedModelIds.has(row.modelId)}
-                        disabled={row.isPrimary || batchBusy}
-                        title={row.isPrimary ? "主模型不可批量删除，请先切换主模型" : undefined}
+                        disabled={isPlugin || row.isPrimary || batchBusy}
+                        title={
+                          isPlugin
+                            ? "插件 Provider 的模型目录只读"
+                            : row.isPrimary ? "主模型不可批量删除，请先切换主模型" : undefined
+                        }
                         onChange={() => toggleSelect(row.modelId, row.isPrimary)}
                         className="mt-0.5"
                       />
                     )
                   },
-                  { key: "ref", header: "引用", render: (row) => row.ref },
+                  { key: "ref", header: "引用", wrap: "anywhere", render: (row) => row.ref },
                   { key: "alias", header: "别名", render: (row) => row.alias ?? "-" },
                   {
                     key: "enabled",
                     header: "状态",
+                    wrap: "nowrap",
                     render: (row) => {
                       if (row.isPrimary) return <Pill variant="brand">主模型</Pill>;
                       return row.enabled
@@ -259,7 +278,11 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
                   {
                     key: "actions",
                     header: "操作",
+                    wrap: "nowrap",
                     render: (row) => (
+                      isPlugin ? (
+                        <span className="text-xs text-muted-foreground">只读</span>
+                      ) : (
                       <div className="flex flex-wrap gap-1.5">
                         <Button variant="outline" size="sm" aria-label={`编辑模型 ${row.ref}`} onClick={() => setEditing(row)}>
                           <Edit3 className="h-3 w-3" />
@@ -276,6 +299,7 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
                           删除
                         </Button>
                       </div>
+                      )
                     )
                   }
                 ]}

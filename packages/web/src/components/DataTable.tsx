@@ -14,7 +14,20 @@ export interface Column<T> {
   sortValue?: (row: T) => string | number;
   /** 列对齐；right 会自动加 tabular-nums 供数字列使用 */
   align?: "left" | "right" | "center";
+  /**
+   * 单元格换行策略：
+   * - `normal`（默认）按词边界换行，长到放不下的单词才断开——短标识（provider id、API 类型）不会被拦腰截断
+   * - `nowrap` 永不换行，超出由外层横向滚动兜底（状态、操作等固定宽度列）
+   * - `anywhere` 允许任意位置断开（长 URL、长 ref）
+   */
+  wrap?: "normal" | "nowrap" | "anywhere";
 }
+
+const wrapClass: Record<NonNullable<Column<unknown>["wrap"]>, string> = {
+  normal: "break-words",
+  nowrap: "whitespace-nowrap",
+  anywhere: "break-all",
+};
 
 export interface DataTableProps<T> {
   columns: Column<T>[];
@@ -27,6 +40,11 @@ export interface DataTableProps<T> {
   defaultSort?: { key: string; dir?: "asc" | "desc" };
   /** 行级附加 className（如已关闭行 opacity-60） */
   rowClassName?: (row: T) => string | undefined;
+  /**
+   * 表格最小宽度（Tailwind min-w-* 值），低于该宽度时横向滚动而不是继续挤压列宽。
+   * 列多的表必须调高，否则列被压窄后单元格内容会大量折行。
+   */
+  minWidthClass?: string;
 }
 
 type SortDir = "asc" | "desc";
@@ -43,7 +61,10 @@ function compareValues(a: string | number, b: string | number): number {
   return String(a).localeCompare(String(b), "zh");
 }
 
-/** 响应式数据表格：支持表头点击排序与沉底分组；窄屏保持 40rem 最小宽度并横向滚动，长文本在单元格内换行 */
+/**
+ * 响应式数据表格：支持表头点击排序与沉底分组；宽度不足时横向滚动而非挤压列宽。
+ * 单元格默认按词边界换行（`wrap: "normal"`），长 URL 之类需显式声明 `wrap: "anywhere"`。
+ */
 export function DataTable<T>({
   columns,
   rows,
@@ -52,6 +73,7 @@ export function DataTable<T>({
   pinnedBottom,
   defaultSort,
   rowClassName,
+  minWidthClass = "min-w-[40rem]",
 }: DataTableProps<T>) {
   const [sort, setSort] = useState<{ key: string; dir: SortDir } | null>(null);
 
@@ -98,7 +120,7 @@ export function DataTable<T>({
 
   return (
     <div className="overflow-x-auto rounded-lg border border-border">
-      <table className="w-full min-w-[40rem] text-sm">
+      <table className={cn("w-full text-sm", minWidthClass)}>
         <thead className="bg-muted/80 text-left text-muted-foreground">
           <tr>
             {columns.map((col) => {
@@ -113,7 +135,7 @@ export function DataTable<T>({
                   key={col.key}
                   aria-sort={ariaSort}
                   className={cn(
-                    "px-3 py-2 font-medium",
+                    "whitespace-nowrap px-3 py-2 font-medium",
                     col.align ? alignClass[col.align] : undefined,
                     col.className,
                   )}
@@ -154,7 +176,8 @@ export function DataTable<T>({
                 <td
                   key={col.key}
                   className={cn(
-                    "px-3 py-2 align-top break-all",
+                    "px-3 py-2 align-top",
+                    wrapClass[col.wrap ?? "normal"],
                     col.align ? alignClass[col.align] : undefined,
                     col.className,
                   )}

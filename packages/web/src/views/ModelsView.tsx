@@ -62,13 +62,20 @@ export function ModelsView({ client }: ModelsViewProps) {
       setProviders(providerList ?? []);
       setDuplicateGroups(health?.caseDuplicateGroups ?? []);
 
-      // Auto-select first provider
-      const pIds = [...new Set([
-        ... (providerList ?? []).map((p) => p.id),
-        ... list.map((m) => m.providerId)
-      ])].sort((a, b) => a.localeCompare(b));
-      if (pIds.length > 0) {
-        setSelectedProviderId(prev => prev || pIds[0] || null);
+      // 自动选中：必须与左栏渲染顺序（启用在前、已关闭沉底）一致，
+      // 否则插件带来大量停用 provider 后会默认选中列表中部的停用项。
+      const ids = [...new Set([
+        ...(providerList ?? []).map((p) => p.id),
+        ...list.map((m) => m.providerId)
+      ])];
+      const disabledIds = new Set((providerList ?? []).filter((p) => p.disabled).map((p) => p.id));
+      const byId = (a: string, b: string) => a.localeCompare(b);
+      const firstId = [
+        ...ids.filter((id) => !disabledIds.has(id)).sort(byId),
+        ...ids.filter((id) => disabledIds.has(id)).sort(byId)
+      ][0];
+      if (firstId) {
+        setSelectedProviderId(prev => prev || firstId);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载失败");
@@ -209,6 +216,11 @@ export function ModelsView({ client }: ModelsViewProps) {
 
   const activeProvider = providers.find(p => p.id === selectedProviderId);
   const activeProviderDisabled = Boolean(activeProvider?.disabled);
+  // 插件 provider 目录来自插件 manifest，只读：可启停 / 设主模型，不可增删改模型
+  const activeProviderIsPlugin = activeProvider?.source === "plugin";
+  const providerDisabledHint = activeProviderIsPlugin
+    ? "该插件已在 OpenClaw 的 plugins.entries 中停用，请先在 OpenClaw 侧启用后再启用模型"
+    : "该 Provider 已关闭，请先恢复 Provider 后再启用模型";
 
   function renderModelTable(list: ModelSummary[], opacityClass: string = "") {
     return (
@@ -217,12 +229,15 @@ export function ModelsView({ client }: ModelsViewProps) {
           rows={list}
           rowKey={(row) => row.ref}
           emptyMessage="没有匹配的模型"
+          minWidthClass="min-w-[20rem] sm:min-w-[34rem]"
           columns={[
             {
               key: "ref",
               header: "引用",
+              // ref 是长路径（provider/vendor/model），允许任意位置断行
+              wrap: "anywhere",
               render: (row) => (
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   {row.isPrimary ? (
                     <Star aria-label="当前主模型" className="h-3.5 w-3.5 shrink-0 fill-brand text-brand" />
                   ) : null}
@@ -241,18 +256,20 @@ export function ModelsView({ client }: ModelsViewProps) {
             {
               key: "alias",
               header: "别名",
+              className: "hidden sm:table-cell",
               render: (row) => row.alias ?? "—"
             },
             {
               key: "actions",
               header: "操作",
+              wrap: "nowrap",
               className: "w-40 text-right pr-4",
               render: (row) => {
                 const wildcardSelected = row.selectionSource === "policy-wildcard";
                 const toggleTitle = wildcardSelected
                   ? "该模型由通配策略启用；请先收窄 policy 后再单独禁用"
                   : activeProviderDisabled
-                    ? "该 Provider 已关闭，请先恢复 Provider 后再启用模型"
+                    ? providerDisabledHint
                     : undefined;
                 return (
                 <div className="flex items-center justify-end gap-1.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150">
@@ -273,24 +290,28 @@ export function ModelsView({ client }: ModelsViewProps) {
                     aria-label={`${row.enabled ? "禁用" : "启用"} ${row.ref}`}
                     title={toggleTitle}
                   />
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setEditTarget(row)}
-                    aria-label={`编辑模型 ${row.ref}`}
-                    className="text-muted-foreground hover:text-foreground"
-                  >
-                    <Edit3 className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => openDelete(row)}
-                    aria-label={`删除模型 ${row.ref}`}
-                    className="text-muted-foreground hover:text-destructive"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
+                  {activeProviderIsPlugin ? null : (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => setEditTarget(row)}
+                        aria-label={`编辑模型 ${row.ref}`}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        <Edit3 className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => openDelete(row)}
+                        aria-label={`删除模型 ${row.ref}`}
+                        className="text-muted-foreground hover:text-destructive"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </>
+                  )}
                 </div>
                 );
               }
@@ -329,7 +350,12 @@ export function ModelsView({ client }: ModelsViewProps) {
         <nav className="space-y-1">
           {filteredProviderIds.map((pId) => {
             const isSelected = pId === selectedProviderId;
-            const isDisabled = Boolean(providers.find((provider) => provider.id === pId)?.disabled);
+            const navProvider = providers.find((provider) => provider.id === pId);
+            const isDisabled = Boolean(navProvider?.disabled);
+            const isPlugin = navProvider?.source === "plugin";
+            const navSuffix = isPlugin
+              ? (isDisabled ? "插件·已停用" : "插件")
+              : (isDisabled ? "已关闭" : "");
             return (
               <button
                 key={pId}
@@ -346,18 +372,23 @@ export function ModelsView({ client }: ModelsViewProps) {
                 {isSelected ? (
                   <span className="absolute left-0.5 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-brand" />
                 ) : null}
-                <span className="flex items-center gap-1">
-                  {pId}
+                <span className="flex min-w-0 items-center gap-1">
+                  {/* provider id 可能很长（qwen-token-plan），截断而不是折行——完整值给 title */}
+                  <span className="truncate" title={pId}>{pId}</span>
                   {dupIdInfo.has(pId) ? (
-                    <span className={`text-[10px] ${dupIdInfo.get(pId)!.isCanonical ? "text-success" : "text-warning"}`}>
+                    <span className={cn(
+                      "shrink-0 text-[10px]",
+                      dupIdInfo.get(pId)!.isCanonical ? "text-success" : "text-warning"
+                    )}>
                       {dupIdInfo.get(pId)!.isCanonical ? `（推荐）` : `（重复）`}
                     </span>
                   ) : null}
-                  {isDisabled ? (
-                    <span className="text-[10px] text-muted-foreground">（已关闭）</span>
+                  {/* 来源与状态合并成单个后缀：两个括号会把 260px 侧栏挤到折行 */}
+                  {navSuffix ? (
+                    <span className="shrink-0 text-[10px] text-muted-foreground">（{navSuffix}）</span>
                   ) : null}
                 </span>
-                <Badge variant="secondary" className="px-1.5 py-0 text-[10px] leading-none shrink-0 font-normal">
+                <Badge variant="secondary" className="ml-1 shrink-0 px-1.5 py-0 text-[10px] font-normal leading-none">
                   {providerCounts[pId] || 0}
                 </Badge>
               </button>
@@ -382,8 +413,12 @@ export function ModelsView({ client }: ModelsViewProps) {
           <Button
             size="sm"
             aria-label="添加模型"
-            disabled={activeProviderDisabled}
-            title={activeProviderDisabled ? "该 Provider 已关闭，请先恢复 Provider 后再启用模型" : undefined}
+            disabled={activeProviderDisabled || activeProviderIsPlugin}
+            title={
+              activeProviderIsPlugin
+                ? "插件 provider 的模型目录只读，无法在 oc-switch 添加模型"
+                : activeProviderDisabled ? providerDisabledHint : undefined
+            }
             onClick={() => setCreating(true)}
           >
             <Plus className="h-4 w-4" />
@@ -394,7 +429,16 @@ export function ModelsView({ client }: ModelsViewProps) {
         {error ? <p className="text-sm font-medium text-destructive">{error}</p> : null}
 
         {activeProviderDisabled ? (
-          <p className="text-sm text-muted-foreground">该 Provider 已关闭，请先在 Providers 页恢复后再启用模型。</p>
+          <p className="text-sm text-muted-foreground">
+            {activeProviderIsPlugin
+              ? "该插件已在 OpenClaw 的 plugins.entries 中停用；请先在 OpenClaw 侧启用该插件后再启用其模型。"
+              : "该 Provider 已关闭，请先在 Providers 页恢复后再启用模型。"}
+          </p>
+        ) : null}
+        {activeProviderIsPlugin && !activeProviderDisabled ? (
+          <p className="text-sm text-muted-foreground">
+            插件 Provider 的模型目录由 OpenClaw 插件提供，只读；可启停模型与设为主模型，不能增删改。
+          </p>
         ) : null}
 
         {selectedProviderId ? (

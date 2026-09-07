@@ -1,4 +1,4 @@
-import { Cpu, Edit3, ListChecks, MoreHorizontal, Plus, Power, PowerOff, RefreshCw, Search, Sparkles, Star, Trash2 } from "lucide-react";
+import { Cpu, Edit3, KeyRound, ListChecks, MoreHorizontal, Plus, Power, PowerOff, RefreshCw, Search, Sparkles, Star, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { GatewayApplyBanner } from "../components/GatewayApplyBanner";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -51,6 +51,14 @@ function isEditableApiType(value: string): value is ApiType {
   return EDITABLE_API_TYPES.includes(value as ApiType);
 }
 
+/**
+ * 插件 provider 来自 OpenClaw 插件 manifest 的 modelCatalog，不在 openclaw.json 的
+ * models.providers 里，因此目录本身只读：可编排（启停模型 / 设主模型 / 设 Key），
+ * 不可编辑连接信息、增删模型或经 oc-switch 关闭整个 provider。
+ */
+const PLUGIN_READONLY_HINT = "插件 provider 目录只读，请在 OpenClaw 插件侧调整";
+const PLUGIN_STATE_HINT = "插件启停由 OpenClaw 的 plugins.entries 控制，oc-switch 暂不写该字段";
+
 interface ProvidersViewProps {
   client: ApiClient;
   onRefresh?: () => void;
@@ -84,6 +92,8 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
   const [queueCounts, setQueueCounts] = useState<Record<string, number>>({});
   const [stateTarget, setStateTarget] = useState<ProviderSummary | null>(null);
   const [pendingEnvConfirm, setPendingEnvConfirm] = useState<{
+    /** provider = 走 PATCH /api/providers/:id；plugin-key = 只走 .env upsert */
+    kind: "provider" | "plugin-key";
     providerId: string;
     changes: { baseUrl?: string; api?: ApiType; apiKey?: string };
     warnings: string[];
@@ -92,6 +102,10 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
   } | null>(null);
   const [secretRefMigrations, setSecretRefMigrations] = useState<ProviderSecretRefMigrationPreview | null>(null);
   const [showSecretRefMigration, setShowSecretRefMigration] = useState(false);
+  /** 插件 provider 的 API Key 设置（直接走 .env 托管块 upsert，不碰 models.providers） */
+  const [pluginKeyTarget, setPluginKeyTarget] = useState<ProviderSummary | null>(null);
+  const [pluginKeyValue, setPluginKeyValue] = useState("");
+  const [pluginKeyError, setPluginKeyError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -262,6 +276,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
         const envPreview = preview.envPreview;
         if (envPreview?.requiresConfirmation) {
           setPendingEnvConfirm({
+            kind: "provider",
             providerId: editTarget.id,
             changes,
             warnings: envPreview.warnings,
@@ -281,11 +296,18 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
   async function confirmEnvMigration() {
     if (!pendingEnvConfirm) return;
     setError(null);
+    const flags = {
+      ...(pendingEnvConfirm.confirmMigration ? { confirmMigration: true } : {}),
+      ...(pendingEnvConfirm.confirmComplex ? { confirmComplex: true } : {})
+    };
+    if (pendingEnvConfirm.kind === "plugin-key") {
+      await confirmPluginKey(flags);
+      return;
+    }
     try {
       await submitProviderUpdate(pendingEnvConfirm.providerId, {
         ...pendingEnvConfirm.changes,
-        ...(pendingEnvConfirm.confirmMigration ? { confirmMigration: true } : {}),
-        ...(pendingEnvConfirm.confirmComplex ? { confirmComplex: true } : {})
+        ...flags
       });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "保存失败");
@@ -317,6 +339,68 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "更新 Provider 状态失败");
       setStateTarget(null);
+    }
+  }
+
+  function openPluginKey(row: ProviderSummary) {
+    setError(null);
+    setPluginKeyError(null);
+    setPluginKeyValue("");
+    setPluginKeyTarget(row);
+  }
+
+  function closePluginKey() {
+    setPluginKeyTarget(null);
+    setPluginKeyValue("");
+    setPluginKeyError(null);
+  }
+
+  /** 写插件 provider 的 API Key：只 upsert manifest 声明的环境变量，不写 openclaw.json */
+  async function confirmPluginKey(flags: { confirmMigration?: boolean; confirmComplex?: boolean } = {}) {
+    if (!pluginKeyTarget?.apiKeyEnv) return;
+    const envVar = pluginKeyTarget.apiKeyEnv;
+    const value = pluginKeyValue;
+    if (!value) {
+      setPluginKeyError("请输入 API Key");
+      return;
+    }
+    setPluginKeyError(null);
+    try {
+      const preview = await client.previewEnvVar({ type: "upsert", envVar });
+      if (preview.requiresConfirmation && !flags.confirmMigration && !flags.confirmComplex) {
+        setPendingEnvConfirm({
+          kind: "plugin-key",
+          providerId: pluginKeyTarget.id,
+          changes: { apiKey: value },
+          warnings: preview.warnings,
+          ...(preview.requiresMigration ? { confirmMigration: true } : {}),
+          ...(preview.requiresComplex ? { confirmComplex: true } : {})
+        });
+        return;
+      }
+      const result = await client.updateEnvVar({
+        type: "upsert",
+        envVar,
+        value,
+        note: `plugin provider ${pluginKeyTarget.id}`,
+        ...flags
+      });
+      const providerId = pluginKeyTarget.id;
+      closePluginKey();
+      setPendingEnvConfirm(null);
+      toast.success(formatEnvWriteSuccess({
+        label: `Provider ${providerId} 的 API Key`,
+        envWrite: result.envWrite,
+        gatewayEnvSync: result.gatewayEnvSync,
+        fallback: `Provider ${providerId} 的 API Key 已写入 ${envVar}`
+      }));
+      showGatewayApply(result);
+      await load();
+      onRefresh?.();
+    } catch (err) {
+      // 迁移确认分支失败时必须一并关掉确认框，否则错误被盖在弹窗下面看不到
+      setPendingEnvConfirm(null);
+      setPluginKeyError(err instanceof Error ? err.message : "保存失败");
     }
   }
 
@@ -412,18 +496,25 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
         pinnedBottom={(row) => row.disabled}
         defaultSort={{ key: "id" }}
         rowClassName={(row) => (row.disabled ? "opacity-60" : undefined)}
+        // 窄屏只保留 ID / 状态 / 操作（其余列按断点隐藏），宽屏才需要 64rem 免挤压
+        minWidthClass="min-w-[22rem] sm:min-w-[34rem] lg:min-w-[62rem]"
         columns={[
           {
             key: "id",
             header: "ID",
             sortable: true,
             sortValue: (row) => row.id,
+            // 窄屏 8rem：12rem 会让 ID+状态+操作 超出 390px 视口，把「更多操作」挤出屏幕
+            className: "min-w-[8rem] sm:min-w-[12rem]",
             render: (row) => (
-              <span className="inline-flex items-center gap-1.5">
+              <span className="inline-flex flex-wrap items-center gap-x-1.5 gap-y-1">
                 {row.containsPrimary ? (
                   <Star aria-label="包含当前主模型" className="h-3.5 w-3.5 fill-brand text-brand" />
                 ) : null}
                 <span className={row.containsPrimary ? "font-medium" : undefined}>{row.id}</span>
+                {row.source === "plugin" ? (
+                  <Pill variant="muted" title={PLUGIN_READONLY_HINT}>插件</Pill>
+                ) : null}
                 {groupByProviderId.has(row.id) ? (
                   <span className="ml-1 inline-flex items-center gap-2">
                     <Pill variant="warning">⚠ 重复</Pill>
@@ -447,10 +538,19 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
               </span>
             )
           },
-          { key: "api", header: "API 类型", render: (row) => row.api ?? "—" },
+          {
+            key: "api",
+            header: "API 类型",
+            wrap: "nowrap",
+            className: "hidden sm:table-cell",
+            render: (row) => row.api ?? "—"
+          },
           {
             key: "baseUrl",
             header: "Base URL",
+            // URL 是唯一需要任意位置断开的列
+            wrap: "anywhere",
+            className: "hidden min-w-[14rem] lg:table-cell",
             render: (row) => <span className="font-mono text-xs">{row.baseUrl ?? "—"}</span>
           },
           {
@@ -459,27 +559,42 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
             sortable: true,
             sortValue: (row) => row.modelCount,
             align: "right",
+            wrap: "nowrap",
+            className: "hidden sm:table-cell",
             render: (row) => row.modelCount
           },
           {
             key: "enabled",
             header: "有效可选",
             align: "right",
+            wrap: "nowrap",
+            className: "hidden md:table-cell",
             render: (row) => row.enabledModelCount
           },
           {
             key: "status",
             header: "状态",
             sortable: true,
+            wrap: "nowrap",
             // 升序时已启用(0)在前、已关闭(1)在后
             sortValue: (row) => (row.disabled ? 1 : 0),
-            render: (row) =>
-              row.disabled ? <Pill variant="muted">已关闭</Pill> : <Pill variant="success">已启用</Pill>
+            render: (row) => {
+              if (!row.disabled) return <Pill variant="success">已启用</Pill>;
+              // 插件的 disabled 来自 plugins.entries.<id>.enabled=false，不是 oc-switch 的可逆关闭
+              return row.source === "plugin"
+                ? <Pill variant="muted" title={PLUGIN_STATE_HINT}>已停用</Pill>
+                : <Pill variant="muted">已关闭</Pill>;
+            }
           },
           {
             key: "actions",
             header: "操作",
-            render: (row) => (
+            wrap: "nowrap",
+            className: "w-[7.5rem]",
+            render: (row) => {
+              // 插件 provider 目录只读：编辑 / 增删模型 / 同步参数 / 删除 / 关闭恢复一律禁用
+              const isPlugin = row.source === "plugin";
+              return (
               <div className="flex items-center gap-1">
                 <Button
                   variant="ghost"
@@ -494,8 +609,14 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
                   variant="ghost"
                   size="icon"
                   aria-label={`${row.disabled ? "恢复" : "关闭"} Provider ${row.id}`}
-                  disabled={!row.disabled && row.containsPrimary}
-                  title={!row.disabled && row.containsPrimary ? "该 Provider 包含当前主模型，请先切换主模型后再关闭" : row.disabled ? "恢复" : "关闭"}
+                  disabled={isPlugin || (!row.disabled && row.containsPrimary)}
+                  title={
+                    isPlugin
+                      ? PLUGIN_STATE_HINT
+                      : !row.disabled && row.containsPrimary
+                        ? "该 Provider 包含当前主模型，请先切换主模型后再关闭"
+                        : row.disabled ? "恢复" : "关闭"
+                  }
                   onClick={() => setStateTarget(row)}
                 >
                   {row.disabled ? <Power className="h-4 w-4" /> : <PowerOff className="h-4 w-4" />}
@@ -507,21 +628,43 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
-                    <DropdownMenuItem aria-label={`编辑 ${row.id}`} onSelect={() => openEdit(row)}>
+                    {isPlugin ? (
+                      <DropdownMenuItem
+                        aria-label={`设置 Key ${row.id}`}
+                        disabled={!row.apiKeyEnv}
+                        onSelect={() => openPluginKey(row)}
+                      >
+                        <KeyRound className="mr-2 h-3.5 w-3.5" />
+                        设置 Key{row.apiKeyEnv ? ` (${row.apiKeyEnv})` : "（插件未声明环境变量）"}
+                      </DropdownMenuItem>
+                    ) : null}
+                    <DropdownMenuItem
+                      aria-label={`编辑 ${row.id}`}
+                      disabled={isPlugin}
+                      onSelect={() => openEdit(row)}
+                    >
                       <Edit3 className="mr-2 h-3.5 w-3.5" />
                       编辑
                     </DropdownMenuItem>
-                    <DropdownMenuItem aria-label={`发现模型 ${row.id}`} onSelect={() => setDiscoverTarget(row)}>
+                    <DropdownMenuItem
+                      aria-label={`发现模型 ${row.id}`}
+                      disabled={isPlugin}
+                      onSelect={() => setDiscoverTarget(row)}
+                    >
                       <Search className="mr-2 h-3.5 w-3.5" />
                       发现模型
                     </DropdownMenuItem>
-                    <DropdownMenuItem aria-label={`同步参数 ${row.id}`} onSelect={() => void runSyncMetadata(row)}>
+                    <DropdownMenuItem
+                      aria-label={`同步参数 ${row.id}`}
+                      disabled={isPlugin}
+                      onSelect={() => void runSyncMetadata(row)}
+                    >
                       <Sparkles className="mr-2 h-3.5 w-3.5" />
                       同步参数
                     </DropdownMenuItem>
                     <DropdownMenuItem
                       aria-label={`参数待确认 ${row.id}`}
-                      disabled={(queueCounts[row.id.toLowerCase()] ?? 0) === 0}
+                      disabled={isPlugin || (queueCounts[row.id.toLowerCase()] ?? 0) === 0}
                       onSelect={() => setQueueTarget(row)}
                     >
                       <ListChecks className="mr-2 h-3.5 w-3.5" />
@@ -530,6 +673,7 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
                     <DropdownMenuSeparator />
                     <DropdownMenuItem
                       aria-label={`删除 ${row.id}`}
+                      disabled={isPlugin}
                       className="text-destructive focus:bg-destructive/10 focus:text-destructive"
                       onSelect={() => void openDelete(row)}
                     >
@@ -539,7 +683,8 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
-            )
+              );
+            }
           }
         ]}
       />
@@ -698,6 +843,45 @@ export function ProvidersView({ client, onRefresh }: ProvidersViewProps) {
               取消
             </Button>
             <Button onClick={() => void confirmEdit()}>保存 Provider</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 插件 Provider 的 API Key：只写 .env 托管块中 manifest 声明的环境变量 */}
+      <Dialog open={Boolean(pluginKeyTarget)} onOpenChange={(val) => { if (!val) closePluginKey(); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>设置插件 Provider 的 API Key</DialogTitle>
+            <DialogDescription className="break-all">
+              {pluginKeyTarget?.id}{pluginKeyTarget?.apiKeyEnv ? ` → ${pluginKeyTarget.apiKeyEnv}` : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              插件 Provider 的密钥只经环境变量生效，不写入 openclaw.json。保存后需同步并重启 Gateway 才会被运行中的进程加载。
+            </p>
+            <label className="block text-sm">
+              <span className="mb-1 block text-muted-foreground">API Key 新值</span>
+              <Input
+                type="password"
+                aria-label="插件 Provider API Key 新值"
+                value={pluginKeyValue}
+                onChange={(event) => setPluginKeyValue(event.target.value)}
+                autoComplete="off"
+              />
+            </label>
+            {pluginKeyTarget?.apiKeyEnvStatus === "unmanaged" && pluginKeyTarget.apiKeyEnv ? (
+              <p className="text-sm text-warning">
+                {pluginKeyTarget.apiKeyEnv} 当前在托管块外；保存时会迁移到 oc-switch 托管区。
+              </p>
+            ) : null}
+            {pluginKeyError ? <p className="text-sm text-destructive">{pluginKeyError}</p> : null}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={closePluginKey}>
+              取消
+            </Button>
+            <Button onClick={() => void confirmPluginKey()}>保存 API Key</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

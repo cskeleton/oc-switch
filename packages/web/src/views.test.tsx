@@ -1336,9 +1336,10 @@ describe("ProvidersView", () => {
         enabledModelCount: 1,
         containsPrimary: false,
         disabled: false,
+        source: "config" as const,
         apiKeyEnv: "NVIDIA_API_KEY",
         apiKeyEnvManaged: false,
-        apiKeyEnvStatus: "unmanaged"
+        apiKeyEnvStatus: "unmanaged" as const
       }] }),
       getHealth: async () => ({ caseDuplicateGroups: [], summary: { duplicateGroupCount: 0, affectedProviderCount: 0, affectedAllowlistCount: 0 } }),
       previewUpdateProvider,
@@ -3271,5 +3272,163 @@ describe("ModelDialog 参考参数建议", () => {
     expect((getByLabelText("最大输出长度") as HTMLInputElement).value).toBe("128000");
     expect((getByLabelText("运行上下文预算") as HTMLInputElement).value).toBe("50000");
     expect(getByRole("button", { name: "image" }).getAttribute("aria-pressed")).toBe("true");
+  });
+});
+
+describe("插件 Provider 的 Web 呈现", () => {
+  const pluginRow = () => providerSummary({
+    id: "opencode",
+    source: "plugin",
+    api: "openai-completions",
+    baseUrl: "https://opencode.ai/zen/v1",
+    modelCount: 2,
+    enabledModelCount: 1,
+    apiKeyEnv: "OPENCODE_API_KEY",
+    apiKeyEnvManaged: true,
+    apiKeyEnvStatus: "managed"
+  });
+
+  test("Providers 页给插件行打「插件」徽章，config 行不打", async () => {
+    const getProviders = mock(async () => ({
+      providers: [providerSummary({ id: "nvidia" }), pluginRow()]
+    }));
+    const { findByText, getAllByText } = renderProvidersView(mockClient({ getProviders }));
+
+    expect(await findByText("opencode")).toBeTruthy();
+    expect(getAllByText("插件")).toHaveLength(1);
+  });
+
+  test("插件行的关闭/恢复按钮禁用", async () => {
+    const getProviders = mock(async () => ({ providers: [pluginRow()] }));
+    const { findByLabelText } = renderProvidersView(mockClient({ getProviders }));
+
+    const stateButton = await findByLabelText("关闭 Provider opencode");
+    expect((stateButton as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  test("插件行的编辑/发现模型/同步参数/删除菜单项禁用", async () => {
+    const getProviders = mock(async () => ({ providers: [pluginRow()] }));
+    const { findByLabelText } = renderProvidersView(mockClient({ getProviders }));
+
+    await userEvent.click(await findByLabelText("更多操作 opencode"));
+    for (const label of ["编辑 opencode", "发现模型 opencode", "同步参数 opencode", "删除 opencode"]) {
+      expect((await findByLabelText(label)).getAttribute("aria-disabled")).toBe("true");
+    }
+  });
+
+  test("插件停用时状态列显示「已停用」而非 oc-switch 的「已关闭」", async () => {
+    const getProviders = mock(async () => ({
+      providers: [providerSummary({ id: "opencode", source: "plugin", disabled: true, enabledModelCount: 0 })]
+    }));
+    const { findByText, queryByText } = renderProvidersView(mockClient({ getProviders }));
+
+    // 行上已有「插件」徽章，状态文案收窄为「已停用」以免挤压表格列宽；完整解释在 title
+    expect(await findByText("已停用")).toBeTruthy();
+    expect(queryByText("已关闭")).toBeNull();
+  });
+
+  test("插件行「设置 Key」写 .env 托管块，不调用 updateProvider", async () => {
+    const getProviders = mock(async () => ({ providers: [pluginRow()] }));
+    const previewEnvVar = mock(async () => ({
+      affectedKeys: ["OPENCODE_API_KEY"],
+      requiresConfirmation: false,
+      requiresMigration: false,
+      requiresComplex: false,
+      warnings: [],
+      backupWillIncludeSecrets: true
+    }));
+    const updateEnvVar = mock(async () => ({
+      ok: true as const,
+      affectedKeys: ["OPENCODE_API_KEY"],
+      envWrite: {
+        verified: true,
+        entries: [{ envVar: "OPENCODE_API_KEY", verified: true, managed: true, maskedValue: "sk-abc********123456" }]
+      }
+    }));
+    const updateProvider = mock(async () => ({ ok: true }));
+
+    const { findByLabelText, getByText, queryByText } = renderProvidersView(mockClient({
+      getProviders,
+      previewEnvVar,
+      updateEnvVar,
+      updateProvider
+    }));
+
+    await userEvent.click(await findByLabelText("更多操作 opencode"));
+    await userEvent.click(await findByLabelText("设置 Key opencode"));
+    await userEvent.type(
+      await findByLabelText("插件 Provider API Key 新值"),
+      "sk-abcdefghijklmnopqrstuvwxyz123456"
+    );
+    await userEvent.click(getByText("保存 API Key"));
+
+    await waitFor(() => expect(updateEnvVar).toHaveBeenCalled());
+    expect(updateEnvVar).toHaveBeenCalledWith(expect.objectContaining({
+      type: "upsert",
+      envVar: "OPENCODE_API_KEY",
+      value: "sk-abcdefghijklmnopqrstuvwxyz123456"
+    }));
+    expect(updateProvider).not.toHaveBeenCalled();
+    // 明文密钥不得回显在界面上
+    expect(queryByText("sk-abcdefghijklmnopqrstuvwxyz123456")).toBeNull();
+  });
+
+  test("插件未声明 env 变量时「设置 Key」禁用", async () => {
+    const getProviders = mock(async () => ({
+      providers: [providerSummary({ id: "opencode", source: "plugin", apiKeyEnv: null })]
+    }));
+    const { findByLabelText } = renderProvidersView(mockClient({ getProviders }));
+
+    await userEvent.click(await findByLabelText("更多操作 opencode"));
+    expect((await findByLabelText("设置 Key opencode")).getAttribute("aria-disabled")).toBe("true");
+  });
+
+  test("Models 页插件模型可启停与设主模型，但不显示编辑/删除", async () => {
+    const getProviders = mock(async () => ({
+      providers: [providerSummary({ id: "opencode", source: "plugin", modelCount: 2, enabledModelCount: 1 })]
+    }));
+    const getModels = mock(async () => ({
+      models: [
+        modelSummary({ ref: "opencode/big-pickle", enabled: true, selectionSource: "legacy" }),
+        modelSummary({ ref: "opencode/hy3", enabled: false })
+      ]
+    }));
+    const patchModel = mock(async () => ({ ok: true, ref: "opencode/hy3", enabled: true }));
+
+    const { findByLabelText, queryByLabelText } = renderModelsView(mockClient({ getProviders, getModels, patchModel }));
+
+    await userEvent.click(await findByLabelText("启用 opencode/hy3"));
+    await waitFor(() => expect(patchModel).toHaveBeenCalled());
+    expect(await findByLabelText("设为主模型 opencode/big-pickle")).toBeTruthy();
+    expect(queryByLabelText("编辑模型 opencode/hy3")).toBeNull();
+    expect(queryByLabelText("删除模型 opencode/hy3")).toBeNull();
+  });
+
+  test("Models 页对插件 provider 禁用「添加模型」并说明目录只读", async () => {
+    const getProviders = mock(async () => ({
+      providers: [providerSummary({ id: "opencode", source: "plugin" })]
+    }));
+    const getModels = mock(async () => ({ models: [modelSummary({ ref: "opencode/hy3", enabled: false })] }));
+    const { findByLabelText, findByText } = renderModelsView(mockClient({ getProviders, getModels }));
+
+    expect(((await findByLabelText("添加模型")) as HTMLButtonElement).disabled).toBe(true);
+    expect(await findByText(/模型目录由 OpenClaw 插件提供，只读/)).toBeTruthy();
+  });
+
+  test("ProviderModelsDialog 对插件 provider 只读", async () => {
+    const getProviders = mock(async () => ({
+      providers: [providerSummary({ id: "opencode", source: "plugin", modelCount: 1 })]
+    }));
+    const getModels = mock(async () => ({ models: [modelSummary({ ref: "opencode/hy3", enabled: false })] }));
+    const { findByLabelText, findByText, queryByLabelText } = renderProvidersView(mockClient({ getProviders, getModels }));
+
+    await userEvent.click(await findByLabelText("管理模型 opencode"));
+    expect(await findByText(/插件 Provider 的模型目录只读/)).toBeTruthy();
+    expect(((await findByLabelText("添加模型")) as HTMLButtonElement).disabled).toBe(true);
+    expect(((await findByLabelText("删除所选模型")) as HTMLButtonElement).disabled).toBe(true);
+    expect(((await findByLabelText("只保留已启用模型")) as HTMLButtonElement).disabled).toBe(true);
+    expect(((await findByLabelText("同步所选模型参数")) as HTMLButtonElement).disabled).toBe(true);
+    expect(queryByLabelText("编辑模型 opencode/hy3")).toBeNull();
+    expect(queryByLabelText("删除模型 opencode/hy3")).toBeNull();
   });
 });

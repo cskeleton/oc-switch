@@ -4,7 +4,7 @@ import { cn } from "../../lib/utils"
 
 // 状态徽章：10% 透明度底色 + 实色文字，双主题自适应
 const pillVariants = cva(
-  "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
+  "inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium",
   {
     variants: {
       variant: {

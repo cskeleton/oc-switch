@@ -324,3 +324,45 @@ test("resolveModelMetadataSyncQueue posts resolve items", async () => {
   expect(calls[0]!.url).toBe("http://localhost:7420/api/model-metadata/sync-queue/resolve");
   expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ items: [{ providerId: "zai", modelId: "glm-4.6-air", action: "dismiss" }] });
 });
+
+describe("插件 provider 字段透传", () => {
+  test("getProviders 原样透传 source 字段", async () => {
+    const client = createApiClient({
+      baseUrl: "http://localhost:7420",
+      token: "token",
+      fetchImpl: async () => new Response(JSON.stringify({
+        providers: [
+          {
+            id: "nvidia",
+            api: "openai-completions",
+            baseUrl: "https://integrate.api.nvidia.com/v1",
+            modelCount: 2,
+            enabledModelCount: 2,
+            containsPrimary: false,
+            disabled: false,
+            source: "config",
+            apiKeyEnv: "NVIDIA_API_KEY",
+            apiKeyEnvManaged: true,
+            apiKeyEnvStatus: "managed"
+          },
+          {
+            id: "opencode",
+            api: "openai-completions",
+            baseUrl: "https://opencode.ai/zen/v1",
+            modelCount: 2,
+            enabledModelCount: 0,
+            containsPrimary: false,
+            disabled: false,
+            source: "plugin",
+            apiKeyEnv: "OPENCODE_API_KEY",
+            apiKeyEnvManaged: false,
+            apiKeyEnvStatus: "missing"
+          }
+        ]
+      }), { headers: { "content-type": "application/json" } })
+    });
+
+    const { providers } = await client.getProviders();
+    expect(providers.map((provider) => provider.source)).toEqual(["config", "plugin"]);
+  });
+});

@@ -702,26 +702,32 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
                     rows={providerVars}
                     rowKey={(item) => item.envVar}
                     emptyMessage="暂无 Provider 环境变量"
+                    minWidthClass="min-w-[19rem] md:min-w-[34rem] lg:min-w-[52rem]"
                     columns={[
                       {
                         key: "envVar",
                         header: "变量",
+                        wrap: "anywhere",
+                        className: "min-w-[11rem]",
                         render: (item) => <span className="font-mono text-xs">{item.envVar}</span>
                       },
                       {
                         key: "provider",
                         header: "Provider",
+                        className: "hidden lg:table-cell",
                         render: (item) => <span className="text-muted-foreground">{item.providerIds.join(", ")}</span>
                       },
-                      { key: "status", header: "状态", render: renderStatusPill },
+                      { key: "status", header: "状态", wrap: "nowrap", render: renderStatusPill },
                       {
                         key: "risk",
                         header: "风险",
+                        className: "hidden md:table-cell",
                         render: (item) => <span className="text-muted-foreground">{renderRisk(item)}</span>
                       },
                       {
                         key: "value",
                         header: "新值",
+                        className: "min-w-[9rem]",
                         render: (item) => (
                           <input
                             type="password"
@@ -736,6 +742,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
                       {
                         key: "actions",
                         header: "操作",
+                        wrap: "nowrap",
                         render: (item) => (
                           <Button
                             size="sm"
@@ -772,20 +779,25 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
                       rows={extraVars}
                       rowKey={(item) => item.envVar}
                       emptyMessage="暂无额外托管变量"
+                      minWidthClass="min-w-[19rem] md:min-w-[32rem] lg:min-w-[46rem]"
                       columns={[
                         {
                           key: "envVar",
                           header: "变量",
+                          wrap: "anywhere",
+                          className: "min-w-[11rem]",
                           render: (item) => <span className="font-mono text-xs">{item.envVar}</span>
                         },
                         {
                           key: "risk",
                           header: "状态",
+                          wrap: "nowrap",
                           render: (item) => <span className="text-muted-foreground">{renderRisk(item)}</span>
                         },
                         {
                           key: "note",
                           header: "备注",
+                          className: "hidden lg:table-cell",
                           render: (item) => <span className="text-muted-foreground">{item.note ?? "—"}</span>
                         },
                         {

@@ -66,21 +66,39 @@ export function BackupsView({ client, onRefresh }: BackupsViewProps) {
         rowKey={(row) => row.id}
         emptyMessage="尚无备份记录"
         defaultSort={{ key: "createdAt", dir: "desc" }}
+        minWidthClass="min-w-[20rem] md:min-w-[38rem] lg:min-w-[52rem]"
         columns={[
-          { key: "id", header: "ID", render: (row) => row.id },
+          { key: "id", header: "ID", wrap: "anywhere", className: "hidden min-w-[11rem] font-mono text-xs md:table-cell", render: (row) => row.id },
           {
             key: "createdAt",
             header: "时间",
             sortable: true,
             sortValue: (row) => row.createdAt,
+            wrap: "nowrap",
             render: (row) => row.createdAt
           },
-          { key: "reason", header: "原因", render: (row) => row.reason },
-          { key: "openclawPath", header: "openclaw.json", render: (row) => row.openclawPath },
-          { key: "envPath", header: ".env", render: (row) => row.envPath },
+          { key: "reason", header: "原因", className: "min-w-[10rem]", render: (row) => row.reason },
+          {
+            key: "paths",
+            header: "路径",
+            wrap: "anywhere",
+            className: "hidden min-w-[12rem] lg:table-cell",
+            // 两列完整路径占宽极大且多数行与当前路径一致（=纯噪声）；
+            // 只在不一致时展开——而那正是恢复对话框会要求选择目标的场景。
+            render: (row) =>
+              row.pathMatchesActive ? (
+                <span className="text-muted-foreground">与当前一致</span>
+              ) : (
+                <span className="flex flex-col gap-0.5 font-mono text-xs">
+                  <span>{row.openclawPath}</span>
+                  <span className="text-muted-foreground">{row.envPath}</span>
+                </span>
+              )
+          },
           {
             key: "actions",
             header: "操作",
+            wrap: "nowrap",
             render: (row) => (
               <Button
                 variant="outline"

@@ -173,14 +173,17 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
       <DataTable
         rows={presets}
         rowKey={(row) => row.id}
+        // 5 列都是短字段，无需默认的 40rem（会让窄屏白白横滚）
+        minWidthClass="min-w-[19rem] sm:min-w-[28rem]"
         columns={[
           { key: "id", header: "ID", render: (row) => row.id },
           { key: "name", header: "名称", render: (row) => row.name },
-          { key: "source", header: "来源", render: (row) => row.source },
-          { key: "models", header: "模型数", render: (row) => String(row.modelCount) },
+          { key: "source", header: "来源", wrap: "nowrap", className: "hidden sm:table-cell", render: (row) => row.source },
+          { key: "models", header: "模型数", wrap: "nowrap", render: (row) => String(row.modelCount) },
           {
             key: "export",
             header: "导出",
+            wrap: "nowrap",
             render: (row) =>
               row.source === "custom" ? (
                 <Button
