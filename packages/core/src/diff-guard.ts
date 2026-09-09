@@ -32,6 +32,17 @@ function isAllowedPath(path: Path): boolean {
     return true;
   }
 
+  // 跨机同步 §6.3 的刻意放宽：仅 plugins.entries.<id>.enabled 一个键位；
+  // 「仅 false→true、仅显式列出的 pluginId」的收窄在 config-sync 的 applySyncPayload 里
+  if (
+    path[0] === "plugins" &&
+    path[1] === "entries" &&
+    path.length === 4 &&
+    path[3] === "enabled"
+  ) {
+    return true;
+  }
+
   return false;
 }
 

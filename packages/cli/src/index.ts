@@ -10,6 +10,7 @@ import { registerPresetCommands } from "./commands/presets";
 import { registerProviderCommands } from "./commands/providers";
 import { registerServeCommand } from "./commands/serve";
 import { registerStatusCommands } from "./commands/status";
+import { registerSyncCommands } from "./commands/sync";
 import { registerTokenCommands } from "./commands/token";
 
 const program = new Command();
@@ -30,5 +31,6 @@ registerPresetCommands(program, context);
 registerServeCommand(program, context);
 registerLifecycleCommands(program, context);
 registerTokenCommands(program, context);
+registerSyncCommands(program, context);
 
 program.parse();

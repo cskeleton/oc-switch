@@ -110,4 +110,24 @@ describe("assertAllowedSemanticChange", () => {
 
     expect(() => assertAllowedSemanticChange(before, after)).not.toThrow();
   });
+
+  test("allows plugins.entries.<id>.enabled flips（跨机同步 §6.3 白名单项）", () => {
+    const before = cloneSample();
+    const after = cloneSample();
+    before.plugins = { entries: { "my-plugin": { enabled: false } } };
+    after.plugins = { entries: { "my-plugin": { enabled: true } } };
+
+    expect(() => assertAllowedSemanticChange(before, after)).not.toThrow();
+  });
+
+  test("blocks other plugins.entries fields", () => {
+    const before = cloneSample();
+    const after = cloneSample();
+    before.plugins = { entries: { "my-plugin": { enabled: false, pinned: "1.0.0" } } };
+    after.plugins = { entries: { "my-plugin": { enabled: true, pinned: "2.0.0" } } };
+
+    expect(() => assertAllowedSemanticChange(before, after)).toThrow(
+      "Diff guard blocked change to plugins.entries.my-plugin.pinned"
+    );
+  });
 });

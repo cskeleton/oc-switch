@@ -10,6 +10,8 @@ export * from "./env-manager";
 export * from "./operations";
 export * from "./config-health";
 export * from "./config-status";
+export * from "./config-sync";
+export * from "./diff-guard";
 export * from "./transaction-writer";
 export * from "./paths";
 export * from "./path-discovery";

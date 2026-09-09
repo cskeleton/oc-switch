@@ -50,7 +50,7 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 - **来源**：Provider 可来自 OpenClaw **插件 manifest** 的 `modelCatalog`（bundled 或 npm global），**从不写入** `models.providers`。`packages/core/src/plugin-catalog.ts` 的 `discoverPluginCatalog()` 经 `openclaw plugins list --json` + 读 `<rootDir>/openclaw.plugin.json` 得到只读目录；任何失败（CLI 缺失/8s 超时/JSON 或 manifest 解析失败）**降级为空结果 + diagnostics，绝不抛错**，行为回落到 config-only。
 - **DTO**：`ProviderSummary.source: "config" | "plugin"`（必填）。插件条目的 `disabled = !plugin.enabled`，语义是 OpenClaw 的 `plugins.entries.<id>.enabled=false`，**与 oc-switch 的可逆关闭（`provider-states.json`）无关**，UI/CLI 不得混用同一文案。
 - **冲突规则**：providerId 与 `models.providers` 同名（大小写折叠）时 **config 优先**，插件条目不列出，且该 provider 的**模型级**校验/编排只看本地目录。这是 v1 简化——OpenClaw 实际是并集，取舍与误差见 spec §3/§7。
-- **可写范围**：只有「单模型启停 / 设主模型 / 设 API Key」。`enableModel` / `setPrimaryModel` 用 `hasKnownModel`（本地目录 ∪ **启用中**插件 catalog）校验；插件 `enabled=false` 的 ref 拒绝并在报错中指向 `plugins.entries.<pluginId>.enabled=false`。编辑连接信息、增删改模型、`disableProvider`/`restoreDisabledProvider`、`removeProvider`/`deleteProvider` 对插件 provider 一律**显式拒绝**（不得静默 no-op）。v1 不写 `plugins.entries`，`diff-guard` 白名单不变。
+- **可写范围**：只有「单模型启停 / 设主模型 / 设 API Key」。`enableModel` / `setPrimaryModel` 用 `hasKnownModel`（本地目录 ∪ **启用中**插件 catalog）校验；插件 `enabled=false` 的 ref 拒绝并在报错中指向 `plugins.entries.<pluginId>.enabled=false`。编辑连接信息、增删改模型、`disableProvider`/`restoreDisabledProvider`、`removeProvider`/`deleteProvider` 对插件 provider 一律**显式拒绝**（不得静默 no-op）。v1 不写 `plugins.entries`；唯一例外是 `sync push --enable-plugins`（spec §6.3 的刻意收窄：仅 `plugins.entries.<id>.enabled` 一个键位、仅 false→true、仅显式列出的 pluginId，收窄逻辑在 `config-sync.ts` 的 `applySyncPayload`，diff-guard 白名单相应只加该一条）。
 - **API Key**：只写 `.env` 托管块中 manifest `setup.providers[].envVars` 声明的变量（`providerAuthChoices` 不含变量名）。`apiKeyEnvVars` 把含 `API_KEY` 的变量排到前面并只取首个——否则会把 API Key 写进 `ANTHROPIC_OAUTH_TOKEN` 这类 OAuth 变量。**不写** `models.providers.<id>.apiKey`。
 - **计数语义**：`StatusSummary.providerCount` / `providerModelCount` 保持 config-only；`effectiveModelCount` 必须计入启用中插件 provider 并与 `ConfigStatusReport.modelPolicy.effectiveCatalogCount` **相等**（server 测试锁定该不变量）。
 - **测试隔离（必读）**：server 的 `createApp` 与 CLI 默认使用真实 `discoverPluginCatalog`。测试若不隔离会 shell-out 到开发机真实 `openclaw`，provider/model 列表随本机装了哪些插件漂移（且每次调用最多 8s）。server/acceptance 经 `AppOptions.pluginCatalogProvider` 注入；CLI 测试在 `runCli` 里 PATH 前置一个假 `openclaw` 脚本输出确定性 `plugins list --json`。
@@ -98,6 +98,10 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 
 - `GET /api/config-status` 返回 `ConfigStatusReport` v1；`issues[]` 为去重行动列表（key：`source:kind:subject`）
 - 插件 Provider 的 policy ref 不再误报 `unknownProviderRefs`；`effectiveCatalogCount` 计入启用中插件的有效模型（v1 仍看不到运行时 shard 里的 live 模型，相关 ref 会被判为 model drift）
+
+### 跨机同步
+
+- `sync push <host>` / `sync diff <host>`（dry-run）：经 SSH 调对端隐藏 plumbing `sync-agent read-config|check|write|env-upsert`（stdout 纯 JSON 协议），把 `models.providers` / `agents.defaults.models` / `agents.defaults.modelPolicy.allow` / `agents.defaults.model` 四个子树**整体覆盖**到对端（单向 push，不 merge）；写入仍走 core 唯一事务（自动备份 + diff-guard），`--enable-plugins` 可显式开启已安装但 `enabled=false` 的插件（仅 false→true），`--fill-keys` 交互逐项补对端缺失 env 变量（值不回显）；非 TTY 无 `--yes` fail closed；报告只含变量名/ref，绝不出现密钥值。详见 `docs/superpowers/specs/2026-09-09-oc-switch-config-sync-design.md`
 
 ### 路径与环境
 
@@ -168,6 +172,7 @@ bun run packages/cli/src/index.ts     # 直接调用 CLI
 | Model Metadata Core-ID Matching | `docs/superpowers/specs/2026-09-02-oc-switch-model-metadata-core-id-matching-design.md` |
 | Model Metadata Batch Sync | `docs/superpowers/specs/2026-09-05-oc-switch-model-metadata-batch-sync-design.md` |
 | Plugin Provider | `docs/superpowers/specs/2026-09-07-oc-switch-plugin-provider-design.md` |
+| Config Sync（跨机同步） | `docs/superpowers/specs/2026-09-09-oc-switch-config-sync-design.md` |
 
 ## Learned User Preferences
 
