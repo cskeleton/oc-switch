@@ -11,6 +11,10 @@ import { Label } from "./ui/label";
 interface CustomProviderDialogProps {
   open: boolean;
   client: ApiClient;
+  /** 打开时预填的 Provider ID（spec §8.1：Provider 缺失的补全路径） */
+  initialProviderId?: string | undefined;
+  /** 打开时预填的模型行（首行优先回填，其余行留空） */
+  initialModels?: CustomProviderModelInput[] | undefined;
   onCancel: () => void;
   onSaved: (result: { providerId: string; envWrite?: EnvWriteVerification | undefined; gatewayEnvSync?: GatewayEnvSyncResult }) => void;
 }
@@ -122,7 +126,7 @@ function mergeDiscoveredModelsIntoRows(rows: ModelRow[], selected: RemoteModelIn
 }
 
 /** 手工添加自定义 Provider 的模态表单 */
-export function CustomProviderDialog({ open, client, onCancel, onSaved }: CustomProviderDialogProps) {
+export function CustomProviderDialog({ open, client, initialProviderId, initialModels, onCancel, onSaved }: CustomProviderDialogProps) {
   const [displayName, setDisplayName] = useState("");
   const [providerId, setProviderId] = useState("");
   const [providerIdTouched, setProviderIdTouched] = useState(false);
@@ -150,6 +154,34 @@ export function CustomProviderDialog({ open, client, onCancel, onSaved }: Custom
   useEffect(() => {
     if (!apiKeyEnvTouched) setApiKeyEnv(envNameFromProviderId(providerId));
   }, [providerId, apiKeyEnvTouched]);
+
+  // 打开时预填（spec §8.1 Provider 缺失的补全路径）：providerId 锁定为用户已知值，
+  // 模型行优先回填到空行；只在 open 上升沿应用一次，避免覆盖用户后续编辑
+  useEffect(() => {
+    if (!open) return;
+    if (initialProviderId !== undefined && initialProviderId !== "") {
+      setProviderIdTouched(true);
+      setProviderId(initialProviderId);
+    }
+    if (initialModels && initialModels.length > 0) {
+      setModelRows((rows) => {
+        const nextRows = rows.map((row) => ({ ...row }));
+        const emptyIndices: number[] = [];
+        for (let i = 0; i < nextRows.length; i += 1) {
+          if (isRowEmpty(nextRows[i]!)) emptyIndices.push(i);
+        }
+        for (const model of initialModels) {
+          const nextRow: ModelRow = { id: model.id, name: model.name ?? "", alias: model.alias ?? "" };
+          const targetIndex = emptyIndices.shift();
+          if (targetIndex !== undefined) nextRows[targetIndex] = nextRow;
+          else nextRows.push(nextRow);
+        }
+        return nextRows;
+      });
+    }
+    // 预填只在打开时应用一次；open 变化触发（initialModels 引用不进依赖，防止重复注入）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   function resetForm() {
     setDisplayName("");

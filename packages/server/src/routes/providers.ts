@@ -16,6 +16,7 @@ import {
   loadPreset,
   mergeProviderCaseDuplicates,
   migrateProviderSecretRefs,
+  normalizeModelRefForStorage,
   normalizeProviderId,
   planProviderModelMetadataSync,
   previewEnvUpdates,
@@ -174,6 +175,14 @@ async function handleProviderDiscover(c: Context, runtime: AppRuntime) {
 }
 
 export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
+  // 目录写入后的缓存失效（与 routes/models.ts 同款）：改变 `models.providers` 的
+  // 写端点（preset/custom 添加、编辑、删除、批量增删模型、参数回填、大小写合并、
+  // SecretRef 迁移）成功后须失效 30s TTL 的运行时 snapshot + 插件 catalog 缓存，
+  // 否则 inventory 会按「旧目录证据」把新条目误判为不可用（Task 8 迁移后
+  // Models/Providers 页完全由 inventory 驱动）。
+  // 仅写 provider-states.json 的 disable/restore 不需要（buildCurrentInventory
+  // 每次都重读该文件）。失效只在事务成功后调用，失败路径不触碰缓存。
+
   app.get("/api/providers/secret-ref-migrations", (c) => {
     try {
       return c.json(inspectSecretRefMigrations(runtime));
@@ -210,6 +219,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
           return migrateProviderSecretRefs(config, providerIds).config;
         }
       });
+      runtime.invalidateCatalogCaches();
       return c.json({
         ok: true,
         migratedProviderIds: providerIds,
@@ -278,6 +288,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
           return addProviderFromPreset(config, preset, enabledModels).config;
         }
       });
+      runtime.invalidateCatalogCaches();
       return c.json({
         ok: true,
         backupId: result.backupDir.split("/").pop(),
@@ -352,6 +363,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
           return addCustomProvider(config, input).config;
         }
       });
+      runtime.invalidateCatalogCaches();
       return c.json({
         ok: true,
         backupId: result.backupDir.split("/").pop(),
@@ -427,6 +439,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
           }
         }
       });
+      runtime.invalidateCatalogCaches();
       return c.json({ ok: true, warnings, backupId: result.backupDir.split("/").pop() });
     } catch (error) {
       return jsonError(c, error);
@@ -553,6 +566,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
           return editProvider(config, providerId, changes).config;
         }
       });
+      runtime.invalidateCatalogCaches();
       return c.json({
         ok: true,
         backupId: result.backupDir.split("/").pop(),
@@ -590,6 +604,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
           removeDisabledProviderState(runtime.currentPaths().stateDir, providerId);
         }
       });
+      runtime.invalidateCatalogCaches();
       return c.json({ ok: true, backupId: result.backupDir.split("/").pop() });
     } catch (error) {
       return jsonError(c, error);
@@ -633,6 +648,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
           return batch.config;
         }
       });
+      runtime.invalidateCatalogCaches();
       return c.json({
         ok: true,
         addedModelIds,
@@ -650,17 +666,26 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       const providerId = c.req.param("id");
       const body = await c.req.json() as Record<string, unknown>;
       const input = requireBatchRemoveProviderModelsInput(body);
+      const paths = runtime.currentPaths();
       let removedModelIds: string[] = [];
       const result = await writeOpenClawTransaction({
-        ...runtime.currentPaths(),
+        ...paths,
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `batch-remove models for provider ${providerId}`,
         mutate(config) {
+          const inventory = runtime.buildCurrentInventory({ refresh: true, config, paths });
           const batch = batchRemoveProviderModels(config, providerId, input);
+          // 仅校验本次确实会删除的模型，不能因未选中的 unknown 行锁死整份目录。
+          for (const modelId of batch.removedModelIds) {
+            const ref = normalizeModelRefForStorage(`${providerId}/${modelId}`);
+            const entry = inventory.models.find(model => normalizeModelRefForStorage(model.ref) === ref);
+            if (!entry || entry.availability === "unknown") throw new Error("Runtime model availability is unknown; refresh before cleaning its catalog entry.");
+          }
           removedModelIds = batch.removedModelIds;
           return batch.config;
         }
       });
+      runtime.invalidateCatalogCaches();
       return c.json({
         ok: true,
         removedModelIds,
@@ -700,6 +725,8 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
           }
         });
         backupId = result.backupDir.split("/").pop();
+        // 参数回填改写 models.providers 的模型目录字段，同样失效缓存
+        runtime.invalidateCatalogCaches();
       } else {
         recordModelMetadataSyncQueue(paths.stateDir, plan);
       }

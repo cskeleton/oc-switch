@@ -6,10 +6,10 @@ import {
   batchRemoveProviderModels,
   createConfigAdapter,
   disableProvider,
-  discoverPluginCatalog,
   discoverProviderModels,
   editProvider,
   mergeProviderCaseDuplicates,
+  normalizeModelRefForStorage,
   normalizeProviderId,
   loadPreset,
   isProviderDisabled,
@@ -69,7 +69,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
   providers.command("list").action(() => {
     const paths = context.activePaths();
     const rows = createConfigAdapter(context.readConfig(), {
-      pluginProviders: discoverPluginCatalog().providers
+      pluginProviders: context.pluginCatalog(paths).providers
     }).listProviders();
     for (const row of rows) {
       const status = row.source === "plugin"
@@ -487,17 +487,24 @@ export function registerProviderCommands(program: Command, context: CommandConte
         throw new Error("require one of --ids or --keep-enabled-only");
       }
 
+      const paths = context.activePaths();
       let removedModelIds: string[] = [];
       const input = hasKeepEnabledOnly
         ? ({ keepEnabledOnly: true as const })
         : ({ modelIds: context.parseModelIds(options.ids!) });
 
       await writeOpenClawTransaction({
-        ...context.activePaths(),
+        ...paths,
         runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `batch-remove models for provider ${providerId}`,
         mutate(config) {
+          const inventory = context.buildInventory({ refresh: true, config, paths });
           const batch = batchRemoveProviderModels(config, providerId, input);
+          for (const modelId of batch.removedModelIds) {
+            const ref = normalizeModelRefForStorage(`${providerId}/${modelId}`);
+            const entry = inventory.models.find(model => normalizeModelRefForStorage(model.ref) === ref);
+            if (!entry || entry.availability === "unknown") throw new Error("Runtime model availability is unknown; refresh before cleaning its catalog entry.");
+          }
           removedModelIds = batch.removedModelIds;
           return batch.config;
         }

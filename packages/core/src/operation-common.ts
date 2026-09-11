@@ -1,5 +1,5 @@
 import { normalizeProviderId, parseModelRef } from "./model-ref";
-import { filterPluginProvidersConflictWithConfig, type PluginProvider } from "./plugin-catalog";
+import type { PluginProvider } from "./plugin-catalog";
 import type { OpenClawConfig } from "./types";
 
 export interface OperationResult {
@@ -31,12 +31,17 @@ export function matchingAllowlistRefs(config: OpenClawConfig, ref: string): stri
   const providerIds = Object.keys(config.models?.providers ?? {}).filter(
     (id) => normalizeProviderId(id) === normalizeProviderId(providerId)
   );
-  if (providerIds.length !== 1) return Object.prototype.hasOwnProperty.call(allowlist, ref) ? [ref] : [];
-  const resolvedProviderId = providerIds[0]!;
+  if (providerIds.length > 1) return Object.prototype.hasOwnProperty.call(allowlist, ref) ? [ref] : [];
+  const resolvedProviderId = providerIds[0] ?? providerId;
 
   return Object.keys(allowlist).filter((candidate) => {
-    const parsed = parseModelRef(candidate);
-    return normalizeProviderId(parsed.providerId) === normalizeProviderId(resolvedProviderId) && parsed.modelId === modelId;
+    try {
+      const parsed = parseModelRef(candidate);
+      return normalizeProviderId(parsed.providerId) === normalizeProviderId(resolvedProviderId) && parsed.modelId === modelId;
+    } catch {
+      // 无关的非法 metadata key 原样保留，不阻止处理合法 ref。
+      return false;
+    }
   });
 }
 
@@ -51,9 +56,7 @@ export function hasProviderModel(config: OpenClawConfig, ref: string): boolean {
  * 目录存在性校验：本地 models.providers ∪ 启用中的插件 provider catalog。
  *
  * - 插件 provider disabled 时其模型不可用于 enable/use（与 OpenClaw 发现层语义一致）。
- * - providerId 与 models.providers 同名时由 config 接管，插件条目不参与校验，
- *   与 listProviders / config-status 的冲突规则保持一致（OpenClaw 实际是并集，
- *   v1 的取舍见 spec §3/§7）。
+ * - 同名 Provider 的模型成员取并集；旧列表的 config 遮蔽规则不用于写入校验。
  */
 export function hasKnownModel(
   config: OpenClawConfig,
@@ -62,7 +65,7 @@ export function hasKnownModel(
 ): boolean {
   if (hasProviderModel(config, ref)) return true;
   const { providerId, modelId } = parseModelRef(ref);
-  return filterPluginProvidersConflictWithConfig(config, pluginProviders).some(
+  return pluginProviders.some(
     (plugin) =>
       plugin.enabled &&
       normalizeProviderId(plugin.providerId) === normalizeProviderId(providerId) &&

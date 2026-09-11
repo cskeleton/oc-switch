@@ -472,3 +472,96 @@ describe("ConfigAdapter 插件 provider 合并", () => {
     expect(withPlugin.effectiveModelCount).toBe(withoutPlugin.effectiveModelCount + 1);
   });
 });
+
+/**
+ * 兼容层形状回归（runtime spec §14 / Task 9 Step 4）：
+ * `GET /api/models` 的旧 consumers（Web 编辑对话框、E2E、Dashboard 计数）依赖
+ * ModelSummary 的精确字段集合。2026-09-09 的统一 inventory（buildModelInventory）
+ * 上线后，本层仍是这些 consumers 的数据源；任何字段增删/改名都会静默破坏旧
+ * 消费方，故用 toEqual 锁死完整形状（含「selectionSource 缺省时键不存在」）。
+ */
+describe("ConfigAdapter 兼容层形状回归（/api/models 旧 consumers）", () => {
+  test("ModelSummary 完整形状锁死：字段集合、缺省键省略、alias/isPrimary/enabled 语义", () => {
+    const config: OpenClawConfig = {
+      models: {
+        providers: {
+          cpa: { models: [{ id: "m1" }, { id: "plain" }] }
+        }
+      },
+      agents: {
+        defaults: {
+          model: "cpa/m1",
+          models: { "cpa/m1": { alias: "first" } },
+          modelPolicy: { allow: ["cpa/m1"] }
+        }
+      }
+    };
+    const adapter = createConfigAdapter(config);
+    const models = adapter.listModels();
+
+    // policy-exact 命中 + primary + alias：全字段形状（无目录参数字段时不出现键）
+    expect(models.find((model) => model.ref === "cpa/m1")).toEqual({
+      ref: "cpa/m1",
+      providerId: "cpa",
+      modelId: "m1",
+      name: undefined,
+      alias: "first",
+      enabled: true,
+      selectionSource: "policy-exact",
+      isPrimary: true
+    });
+    // 未被 policy 覆盖的目录模型：enabled=false 且 selectionSource 键必须不存在
+    const plain = models.find((model) => model.ref === "cpa/plain") as unknown as Record<string, unknown>;
+    expect(plain).toEqual({
+      ref: "cpa/plain",
+      providerId: "cpa",
+      modelId: "plain",
+      name: undefined,
+      alias: undefined,
+      enabled: false,
+      isPrimary: false
+    });
+    expect("selectionSource" in plain).toBe(false);
+  });
+
+  test("ProviderSummary 完整形状锁死：source 恒为字符串、disabled/count 语义不变", () => {
+    const adapter = createConfigAdapter(sample);
+    const providers = adapter.listProviders();
+    expect(providers.map((provider) => provider.id)).toEqual(["nvidia", "DeepSeek", "minimax-portal"]);
+    // 完整字段集合（toEqual 锁死；旧 consumers 的表格列依赖这些键）
+    expect(providers[0]).toEqual({
+      id: "nvidia",
+      api: "openai-completions",
+      baseUrl: "https://integrate.api.nvidia.com/v1",
+      modelCount: 2,
+      enabledModelCount: 2,
+      containsPrimary: false,
+      disabled: false,
+      source: "config"
+    });
+    // StatusSummary 兼容形状（Dashboard 计数消费）
+    expect(adapter.getStatus()).toEqual({
+      primaryModel: "minimax-portal/MiniMax-M3",
+      providerCount: 3,
+      providerModelCount: 4,
+      allowlistModelCount: 4,
+      modelPolicyMode: "legacy",
+      effectiveModelCount: 4
+    });
+  });
+
+  test("config 同名遮蔽语义保持（兼容层 v1 简化）：同名插件 provider 不重复列出", () => {
+    // 兼容层的既定行为（spec 2026-09-07 §3）：config 优先遮蔽同名插件条目。
+    // 注意：这是兼容层的简化，统一 inventory（buildModelInventory）已改为并集——
+    // 本测试只锁定旧 consumers 看到的形状，不作为新代码的语义依据。
+    const config = structuredClone(sample);
+    const adapter = createConfigAdapter(config, {
+      pluginProviders: [pluginProvider({ providerId: "nvidia", models: [{ id: "plugin-only-model" }] })]
+    });
+    const nvidiaProviders = adapter.listProviders().filter((provider) => provider.id === "nvidia");
+    expect(nvidiaProviders).toHaveLength(1);
+    expect(nvidiaProviders[0]).toMatchObject({ source: "config", modelCount: 2 });
+    // 插件同名 provider 的模型不进 listModels（config 接管成员资格）
+    expect(adapter.listModels().find((model) => model.ref === "nvidia/plugin-only-model")).toBeUndefined();
+  });
+});

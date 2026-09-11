@@ -1,5 +1,14 @@
 import type { ApiType, CustomProviderInput, ProviderModelInput } from "@oc-switch/core";
 
+/** 只接受 JSON 对象；解析错误可能携带原始请求文本，不能直接回显。 */
+export async function requireJsonObject(request: { json(): Promise<unknown> }): Promise<Record<string, unknown>> {
+  let value: unknown;
+  try { value = await request.json(); }
+  catch { throw new Error("Request body must be valid JSON"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Request body must be an object");
+  return value as Record<string, unknown>;
+}
+
 /** 校验请求体中的非空字符串字段 */
 export function requireString(value: unknown, name: string): string {
   if (typeof value !== "string" || value.length === 0) {
@@ -353,4 +362,40 @@ export function requireModelMetadataQueueResolveInput(
     throw new Error(`items.${index}.action must be "accept" or "dismiss"`);
   });
   return { items };
+}
+
+/** DELETE /api/model-policy/exact-ref 请求体：非空字符串 ref + 可选 removeMetadata */
+export function requireRemovePolicyExactRefInput(body: Record<string, unknown>): {
+  ref: string;
+  removeMetadata?: boolean;
+} {
+  const removeMetadata =
+    body.removeMetadata === undefined
+      ? undefined
+      : requireBoolean(body.removeMetadata, "removeMetadata");
+  return {
+    ref: requireString(body.ref, "ref"),
+    ...(removeMetadata === undefined ? {} : { removeMetadata })
+  };
+}
+
+/** POST /api/models/materialize 请求体：ref + input（ProviderModelInput 字段 + enabled） */
+export function requireMaterializeModelInput(body: Record<string, unknown>): {
+  ref: string;
+  input: import("@oc-switch/core").ProviderModelInput & { enabled: boolean };
+} {
+  if (!body.input || typeof body.input !== "object" || Array.isArray(body.input)) throw new Error("input must be an object");
+  const input = requireProviderModelInput(body.input);
+  input.enabled = requireBoolean((body.input as Record<string, unknown>).enabled, "input.enabled");
+  return { ref: requireString(body.ref, "ref"), input };
+}
+
+/** PATCH /api/plugins/:pluginId/state 请求体：布尔 enabled + 必须 confirm:true */
+export function requirePluginStateInput(body: Record<string, unknown>): { enabled: boolean } {
+  const enabled = requireBoolean(body.enabled, "enabled");
+  const confirm = requireBoolean(body.confirm, "confirm");
+  if (confirm !== true) {
+    throw new Error("confirm must be true to change plugin state");
+  }
+  return { enabled };
 }

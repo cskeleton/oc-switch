@@ -1,13 +1,16 @@
 import { Hono } from "hono";
+import { jsonError } from "./errors";
 import { createAppRuntime, type AppOptions } from "./context";
 import { registerBackupRoutes } from "./routes/backups";
 import { registerEnvRoutes } from "./routes/env";
 import { registerGatewayRoutes } from "./routes/gateway";
 import { registerHealthRoutes } from "./routes/health";
 import { registerModelMetadataRoutes } from "./routes/model-metadata";
+import { registerModelInventoryRoutes } from "./routes/model-inventory";
 import { registerModelRoutes } from "./routes/models";
 import { registerPresetRoutes } from "./routes/presets";
 import { registerProviderRoutes } from "./routes/providers";
+import { registerPluginRoutes } from "./routes/plugins";
 import { registerSettingsRoutes } from "./routes/settings";
 
 export type { AppOptions } from "./context";
@@ -17,6 +20,7 @@ export function createApp(options: AppOptions) {
   const runtime = createAppRuntime(options);
 
   const app = new Hono();
+  app.onError((error, c) => jsonError(c, error));
 
   // 允许 WebGUI 跨端口访问 REST API
   app.use("/api/*", async (c, next) => {
@@ -41,6 +45,8 @@ export function createApp(options: AppOptions) {
   registerProviderRoutes(app, runtime);
   registerModelRoutes(app, runtime);
   registerModelMetadataRoutes(app, runtime);
+  registerModelInventoryRoutes(app, runtime);
+  registerPluginRoutes(app, runtime);
   registerPresetRoutes(app, runtime);
   registerBackupRoutes(app, runtime);
   registerSettingsRoutes(app, runtime);

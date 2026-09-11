@@ -262,9 +262,9 @@ export function App() {
       case "dashboard":
         return <Dashboard client={client} />;
       case "providers":
-        return <ProvidersView client={client} onRefresh={refresh} />;
+        return <ProvidersView client={client} onRefresh={refresh} onOpenSettings={() => setRoute("settings")} onOpenModels={() => setRoute("models")} />;
       case "models":
-        return <ModelsView client={client} />;
+        return <ModelsView client={client} onOpenProviders={() => setRoute("providers")} />;
       case "presets":
         return <PresetsView client={client} onRefresh={refresh} />;
       case "backups":

@@ -10,6 +10,10 @@ import { prepareGatewayEnvTarget, expectedGatewayEnvPath } from "../../core/test
 import { createCommandContext, repoRoot } from "../src/command-context";
 import { registerGatewayCommands } from "../src/commands/gateway";
 
+// 新增的 inventory / reconcile / plugin 命令每次 runCli 都要 spawn bun 子进程 + 8s 级探测，
+// 偶发超过 bun:test 默认 5s 超时；放宽到 30s（只调时长，不放宽断言）
+Bun.env.BUN_TEST_TIMEOUT = "30000";
+
 const tempDirs: string[] = [];
 
 afterEach(() => {
@@ -24,7 +28,10 @@ function prepareOpenClawStub(pluginsListJson: string): string {
   const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-openclaw-stub-"));
   tempDirs.push(dir);
   const script = join(dir, "openclaw");
-  writeFileSync(script, `#!/bin/sh\ncat <<'OCJSON'\n${pluginsListJson}\nOCJSON\n`);
+  const pluginsPath = join(dir, "plugins.json");
+  writeFileSync(pluginsPath, pluginsListJson);
+  const quote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
+  writeFileSync(script, `#!/bin/sh\nexport OC_SWITCH_TEST_PLUGINS_PATH=${quote(pluginsPath)}\nexec ${quote(process.execPath)} ${quote(join(import.meta.dir, "fixtures/openclaw-stub.ts"))} "$@"\n`);
   chmodSync(script, 0o755);
   return dir;
 }
@@ -34,6 +41,11 @@ async function runCli(
   env: Record<string, string>,
   options: { skipGatewayFixture?: boolean; pluginsListJson?: string } = {}
 ) {
+  if (!env.HOME) {
+    const home = mkdtempSync(join(tmpdir(), "oc-switch-cli-home-"));
+    tempDirs.push(home);
+    env = { ...env, HOME: home };
+  }
   if (env.HOME && process.platform === "darwin" && !options.skipGatewayFixture) {
     const baseDir = env.OPENCLAW_CONFIG_PATH
       ? join(env.OPENCLAW_CONFIG_PATH, "..")
@@ -57,7 +69,7 @@ async function runCli(
   const stubDir = prepareOpenClawStub(options.pluginsListJson ?? '{"plugins":[]}');
   const proc = Bun.spawn(["bun", "run", "packages/cli/src/index.ts", ...args], {
     cwd: join(import.meta.dir, "../../.."),
-    env: { ...process.env, ...env, PATH: `${stubDir}:${process.env.PATH ?? ""}` },
+    env: { ...process.env, OPENCLAW_CONFIG_PATH: undefined, OPENCLAW_STATE_DIR: undefined, OC_SWITCH_MOCK_RUNTIME_MODELS: undefined, ...env, PATH: `${stubDir}:${process.env.PATH ?? ""}` },
     stdout: "pipe",
     stderr: "pipe"
   });
@@ -1430,5 +1442,506 @@ describe("cli 插件 provider", () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("nvidia");
     expect(result.stdout).not.toContain("plugin");
+  });
+});
+
+describe("cli 运行时模型管理（inventory / reconcile / plugin）", () => {
+  /**
+   * 组装 OC_SWITCH_MOCK_RUNTIME_MODELS fixture 文件：键（version/status/list/listAll）
+   * 直接对应四个探测命令，值是假 openclaw 会打印的原始 stdout（版本串 / models JSON），
+   * production parser 照常解析，不喂业务 DTO。
+   * 值为 undefined 的命令不出现在 fixture 中，按「命令缺失」应答（status null、非超时）。
+   */
+  function writeRuntimeMockFile(
+    dir: string,
+    commands: {
+      version?: string | undefined;
+      status?: unknown;
+      list?: unknown;
+      listAll?: unknown;
+    } = {}
+  ): string {
+    const mockPath = join(dir, "mock-runtime-models.json");
+    const fixture: Record<string, { status: number; stdout: string }> = {};
+    if (commands.version !== undefined) fixture.version = { status: 0, stdout: commands.version };
+    if (commands.status !== undefined) fixture.status = { status: 0, stdout: JSON.stringify(commands.status) };
+    if (commands.list !== undefined) fixture.list = { status: 0, stdout: JSON.stringify(commands.list) };
+    if (commands.listAll !== undefined) fixture.listAll = { status: 0, stdout: JSON.stringify(commands.listAll) };
+    writeFileSync(mockPath, JSON.stringify(fixture));
+    return mockPath;
+  }
+
+  /** restricted policy + 悬空 exact ref fixture（spec §13.4 acceptance 场景 1/3 的 CLI 版） */
+  function writePolicyFixture(): { dir: string; configPath: string } {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-runtime-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "openclaw.json");
+    const config = structuredClone(sample) as OpenClawConfig;
+    config.agents!.defaults!.modelPolicy = {
+      allow: [
+        "nvidia/*",
+        "minimax-portal/MiniMax-M3",
+        "DeepSeek/deepseek-chat",
+        "ghost-provider/policy-only-model"
+      ]
+    };
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    return { dir, configPath };
+  }
+
+  /** 完整探测的 runtime fixture：ghost ref available=false（provider 拒绝）+ nvidia 运行时新模型 */
+  function completeRuntimeCommands(): { status: unknown; list: unknown; listAll: unknown } {
+    return {
+      status: {
+        agentDir: "/home/.openclaw",
+        defaultModel: "minimax-portal/MiniMax-M3",
+        fallbacks: [],
+        allowed: [
+          "minimax-portal/MiniMax-M3",
+          "DeepSeek/deepseek-chat",
+          "ghost-provider/policy-only-model"
+        ]
+      },
+      list: { models: [
+        { key: "minimax-portal/MiniMax-M3", available: true, tags: [] },
+        { key: "DeepSeek/deepseek-chat", available: true, tags: [] },
+        { key: "ghost-provider/policy-only-model", available: false, tags: [] }
+      ] },
+      listAll: { models: [
+        { key: "minimax-portal/MiniMax-M3", available: true, tags: [] },
+        { key: "DeepSeek/deepseek-chat", available: true, tags: [] },
+        { key: "ghost-provider/policy-only-model", available: false, tags: [] },
+        { key: "nvidia/vendor/runtime-extra", available: true, tags: [] }
+      ] }
+    };
+  }
+
+  /** xiaomi 插件 fixture：一个插件贡献两个 Provider + speech/contract 非模型能力（spec §9.1） */
+  function prepareXiaomiPluginFixture(): string {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-xiaomi-"));
+    tempDirs.push(dir);
+    const rootDir = join(dir, "xiaomi");
+    mkdirSync(rootDir, { recursive: true });
+    writeFileSync(join(rootDir, "openclaw.plugin.json"), JSON.stringify({
+      modelCatalog: {
+        providers: {
+          xiaomi: { baseUrl: "https://xiaomi.example/v1", api: "openai-completions", models: [{ id: "mi-1" }, { id: "mi-2" }] },
+          "xiaomi-token-plan": { baseUrl: "https://xiaomi.example/plan/v1", api: "openai-completions", models: [{ id: "tp-1" }, { id: "tp-2" }] }
+        }
+      },
+      contracts: { acp: {} }
+    }));
+    return JSON.stringify({
+      plugins: [{
+        id: "xiaomi",
+        rootDir,
+        origin: "npm-global",
+        enabled: true,
+        providerIds: ["xiaomi", "xiaomi-token-plan"],
+        speechProviderIds: ["xiaomi-tts"]
+      }]
+    });
+  }
+
+  /** xiaomi 场景 config：主模型/fallback 均在 other Provider，policy 命中两个 xiaomi Provider */
+  function writeXiaomiConfig(options: { withEntries?: boolean } = {}): { dir: string; configPath: string } {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-xiaomi-config-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "openclaw.json");
+    const config: OpenClawConfig = {
+      ...(options.withEntries
+        ? { plugins: { entries: { xiaomi: { enabled: true, pinned: "1.2.0", config: { region: "cn" } } } } }
+        : {}),
+      models: { providers: { other: { models: [{ id: "primary-model" }] } } },
+      agents: {
+        defaults: {
+          model: "other/primary-model",
+          models: { "other/primary-model": { alias: "primary" } },
+          modelPolicy: { allow: ["other/primary-model", "xiaomi/mi-1", "xiaomi-token-plan/*"] }
+        }
+      }
+    };
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    return { dir, configPath };
+  }
+
+  describe("models inventory / unavailable", () => {
+    test("表格输出包含 ref、policy、availability、reason、sources，--json 与 Core inventory 一致", async () => {
+      const { dir, configPath } = writePolicyFixture();
+      const env = {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, completeRuntimeCommands())
+      };
+
+      const table = await runCli(["models", "inventory"], env);
+      expect(table.code).toBe(0);
+      // 表格列：ref / policy / availability / reason / sources
+      expect(table.stdout).toContain("ref");
+      expect(table.stdout).toContain("policy");
+      expect(table.stdout).toContain("availability");
+      expect(table.stdout).toContain("reason");
+      expect(table.stdout).toContain("sources");
+      // 无配置的 exact ref：runtime 明确不可用，但不能推断为 Provider 拒绝
+      expect(table.stdout).toContain("ghost-provider/policy-only-model");
+      expect(table.stdout).toContain("unavailable");
+      expect(table.stdout).not.toContain("provider-rejected");
+      expect(table.stdout).toContain("policy-exact");
+      // 运行时新模型行：available + 可补全
+      expect(table.stdout).toContain("nvidia/vendor/runtime-extra");
+      // 密钥纪律：不出现 SecretRef 的 env id
+      expect(table.stdout).not.toContain("NVIDIA_API_KEY");
+      expect(table.stdout).not.toContain("sk-");
+
+      // --json 与 Core ModelInventory 形状一致（同字段名/值）
+      const jsonResult = await runCli(["models", "inventory", "--json"], env);
+      expect(jsonResult.code).toBe(0);
+      const inventory = JSON.parse(jsonResult.stdout) as {
+        models: Array<Record<string, unknown>>;
+        summary: Record<string, number>;
+      };
+      const ghost = inventory.models.find((m) => m.ref === "ghost-provider/policy-only-model");
+      expect(ghost).toMatchObject({
+        ref: "ghost-provider/policy-only-model",
+        providerId: "ghost-provider",
+        catalogSources: ["openclaw-runtime"],
+        referenceSources: ["policy-exact"],
+        policyAllowed: true,
+        selectionSource: "policy-exact",
+        availability: "unavailable",
+        availabilityReasons: [],
+        pluginIds: []
+      });
+      expect(inventory.summary.unavailableCount).toBeGreaterThanOrEqual(1);
+      // JSON 无密钥
+      expect(jsonResult.stdout).not.toContain("NVIDIA_API_KEY");
+      expect(jsonResult.stdout).not.toContain("sk-");
+    });
+
+    test("models unavailable 只列 unavailable/unknown，unknown 明确标注且无「建议删除」", async () => {
+      const { dir, configPath } = writePolicyFixture();
+      // 混合态 fixture：status+list 成功（ghost available=false → unavailable），list-all 缺失
+      // （探测不完整）→ 不在 list 里的 config 模型（nvidia）为 unknown
+      const commands = completeRuntimeCommands();
+      const env = {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, {
+          status: commands.status,
+          list: commands.list
+        })
+      };
+
+      const table = await runCli(["models", "unavailable"], env);
+      expect(table.code).toBe(0);
+      // 目录不完整时，available=false 的 ghost 也必须保持 unknown。
+      expect(table.stdout).toContain("ghost-provider/policy-only-model");
+      expect(table.stdout).toMatch(/ghost-provider\/policy-only-model\t[^\t]+\tunknown/);
+      // unknown：探测不完整的 config 模型明确标注 unknown
+      expect(table.stdout).toContain("unknown");
+      expect(table.stdout).toMatch(/nvidia\/deepseek-ai\/deepseek-v4-flash\t[^\t]+\tunknown/);
+      // 只列 unavailable/unknown：available 的 minimax 与 list-all-only 模型不得出现
+      expect(table.stdout).not.toContain("minimax-portal/MiniMax-M3");
+      expect(table.stdout).not.toContain("nvidia/vendor/runtime-extra");
+      // unknown 行禁止删除建议（spec §11.2）
+      expect(table.stdout).not.toContain("建议删除");
+
+      const jsonResult = await runCli(["models", "unavailable", "--json"], env);
+      expect(jsonResult.code).toBe(0);
+      const rows = JSON.parse(jsonResult.stdout) as Array<{ availability: string }>;
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.every((row) => row.availability === "unavailable" || row.availability === "unknown")).toBe(true);
+    });
+
+    test("探测诊断降级输出：diagnostics 行展示且退出码 0", async () => {
+      const { dir, configPath } = writePolicyFixture();
+      const mockPath = join(dir, "mock-runtime-models.json");
+      // 只保留 version 成功：status/list/listAll 全部「命令缺失」
+      writeFileSync(mockPath, JSON.stringify({ version: { status: 0, stdout: "2026.9.3\n" } }));
+
+      const result = await runCli(["models", "inventory"], {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: mockPath
+      });
+      expect(result.code).toBe(0);
+      // 部分探测失败不影响主流程，诊断展示命令名
+      expect(result.stdout).toContain("openclaw models status --json");
+    });
+  });
+
+  describe("model remove-policy-ref", () => {
+    test("非 TTY 无 --yes fail closed；带 --yes 删除 exact ref 且保留 metadata；--remove-metadata 连带清理", async () => {
+      const { dir, configPath } = writePolicyFixture();
+
+      const blocked = await runCli(["model", "remove-policy-ref", "ghost-provider/policy-only-model"], {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, completeRuntimeCommands())
+      });
+      expect(blocked.code).not.toBe(0);
+      expect(blocked.stderr).toContain("--yes");
+      // fail closed：配置不变
+      const before = JSON.parse(readFileSync(configPath, "utf8"));
+      expect(before.agents.defaults.modelPolicy.allow).toContain("ghost-provider/policy-only-model");
+
+      const kept = await runCli(["model", "remove-policy-ref", "ghost-provider/policy-only-model", "--yes"], {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, completeRuntimeCommands())
+      });
+      expect(kept.code).toBe(0);
+      const after = JSON.parse(readFileSync(configPath, "utf8"));
+      expect(after.agents.defaults.modelPolicy.allow).not.toContain("ghost-provider/policy-only-model");
+      expect(after.agents.defaults.modelPolicy.allow).toContain("nvidia/*");
+
+      // --remove-metadata：再次构造 fixture 验证 legacy metadata 同步删除
+      // （无 runtime mock：remove-policy-ref 的失败路径不需要运行时证据，少一次探测等待）
+      const again = writePolicyFixture();
+      const config = structuredClone(sample) as OpenClawConfig;
+      config.agents!.defaults!.models!["ghost-provider/policy-only-model"] = { alias: "ghost" };
+      config.agents!.defaults!.modelPolicy = { allow: ["ghost-provider/policy-only-model", "other/model"] };
+      writeFileSync(again.configPath, `${JSON.stringify(config, null, 2)}\n`);
+      const removed = await runCli([
+        "model", "remove-policy-ref", "ghost-provider/policy-only-model", "--yes", "--remove-metadata"
+      ], {
+        OPENCLAW_CONFIG_PATH: again.configPath,
+        HOME: again.dir
+      });
+      expect(removed.code).toBe(0);
+      const finalConfig = JSON.parse(readFileSync(again.configPath, "utf8"));
+      expect(finalConfig.agents.defaults.modelPolicy.allow).toEqual(["other/model"]);
+      expect(finalConfig.agents.defaults.models["ghost-provider/policy-only-model"]).toBeUndefined();
+    });
+
+    test("primary / fallback 引用与 wildcard 输入 fail closed，配置不变", async () => {
+      const { dir, configPath } = writePolicyFixture();
+      const config = structuredClone(sample) as OpenClawConfig;
+      config.agents!.defaults!.modelPolicy = { allow: ["minimax-portal/MiniMax-M3", "other/model"] };
+      writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+      const before = readFileSync(configPath, "utf8");
+
+      // primary 引用：fail closed
+      const primary = await runCli(["model", "remove-policy-ref", "minimax-portal/MiniMax-M3", "--yes"], {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir
+      });
+      expect(primary.code).not.toBe(0);
+      expect(primary.stderr).toContain("primary");
+      expect(readFileSync(configPath, "utf8")).toBe(before);
+
+      // fallback 引用：fail closed
+      const fallbackConfig = structuredClone(sample) as OpenClawConfig;
+      fallbackConfig.agents!.defaults!.model = {
+        primary: "other/model",
+        fallbacks: ["minimax-portal/MiniMax-M3"]
+      };
+      fallbackConfig.agents!.defaults!.modelPolicy = { allow: ["minimax-portal/MiniMax-M3", "other/model"] };
+      writeFileSync(configPath, `${JSON.stringify(fallbackConfig, null, 2)}\n`);
+      const fallbackBefore = readFileSync(configPath, "utf8");
+      const fallback = await runCli(["model", "remove-policy-ref", "minimax-portal/MiniMax-M3", "--yes"], {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir
+      });
+      expect(fallback.code).not.toBe(0);
+      expect(fallback.stderr).toContain("fallback");
+      expect(readFileSync(configPath, "utf8")).toBe(fallbackBefore);
+
+      // wildcard 输入：拒绝（wildcard 本期只读）
+      const wildcard = await runCli(["model", "remove-policy-ref", "nvidia/*", "--yes"], {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir
+      });
+      expect(wildcard.code).not.toBe(0);
+      expect(readFileSync(configPath, "utf8")).toBe(fallbackBefore);
+
+      // 最后一条 exact 删除会变 [] unrestricted：fail closed
+      const lastConfig = structuredClone(sample) as OpenClawConfig;
+      lastConfig.agents!.defaults!.modelPolicy = { allow: ["other/model"] };
+      writeFileSync(configPath, `${JSON.stringify(lastConfig, null, 2)}\n`);
+      const lastBefore = readFileSync(configPath, "utf8");
+      const last = await runCli(["model", "remove-policy-ref", "other/model", "--yes"], {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir
+      });
+      expect(last.code).not.toBe(0);
+      expect(last.stderr).toMatch(/unrestricted/);
+      expect(readFileSync(configPath, "utf8")).toBe(lastBefore);
+
+      // policy 中不存在的 ref：非零退出
+      const unknown = await runCli(["model", "remove-policy-ref", "ghost/nothing", "--yes"], {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir
+      });
+      expect(unknown.code).not.toBe(0);
+      expect(readFileSync(configPath, "utf8")).toBe(lastBefore);
+    });
+  });
+
+  describe("model reconcile", () => {
+    test("runtime available 且 Provider 存在：预览 + --yes 写入；--json 不含密钥", async () => {
+      const { dir, configPath } = writePolicyFixture();
+      const env = {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, completeRuntimeCommands())
+      };
+
+      // 非 TTY 无 --yes：仅预览，不写盘
+      const preview = await runCli(["model", "reconcile", "nvidia/vendor/runtime-extra"], env);
+      expect(preview.code).toBe(0);
+      expect(preview.stdout).toContain("nvidia/vendor/runtime-extra");
+      expect(preview.stdout).toContain("materialize");
+      const before = readFileSync(configPath, "utf8");
+      expect(readFileSync(configPath, "utf8")).toBe(before);
+
+      const applied = await runCli(["model", "reconcile", "nvidia/vendor/runtime-extra", "--yes"], env);
+      expect(applied.code).toBe(0);
+      const config = JSON.parse(readFileSync(configPath, "utf8"));
+      const ids = config.models.providers.nvidia.models.map((m: { id: string }) => m.id);
+      expect(ids).toContain("vendor/runtime-extra");
+      // 运行时事实（tags/catalogSources/availability）不写入 openclaw.json
+      expect(readFileSync(configPath, "utf8")).not.toContain("catalogSources");
+      // 输出无密钥
+      expect(applied.stdout + applied.stderr).not.toContain("sk-");
+      expect(applied.stdout + applied.stderr).not.toContain("NVIDIA_API_KEY");
+
+      // --json 模式：输出 inventory entry / 处理结果，无密钥
+      const jsonRun = await runCli(["model", "reconcile", "nvidia/z-ai/glm5.1", "--json"], env);
+      expect(jsonRun.code).toBe(0);
+      expect(JSON.parse(jsonRun.stdout)).toMatchObject({ ref: "nvidia/z-ai/glm5.1" });
+      expect(jsonRun.stdout).not.toContain("sk-");
+      expect(jsonRun.stdout).not.toContain("NVIDIA_API_KEY");
+    });
+
+    test("Provider 缺配置：打印下一步所需字段并非零退出，不自动创建", async () => {
+      const { dir, configPath } = writePolicyFixture();
+      const commands = completeRuntimeCommands();
+      // ghost-provider 不在 models.providers：即使运行时报告 available 也只能提示补 Provider
+      (commands.listAll as { models: Array<{ key: string; available: boolean; tags: string[] }> }).models.push({
+        key: "ghost-provider/policy-only-model",
+        available: true,
+        tags: []
+      });
+      const env = {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, commands)
+      };
+
+      const result = await runCli(["model", "reconcile", "ghost-provider/policy-only-model", "--yes"], env);
+      expect(result.code).not.toBe(0);
+      // 下一步所需字段：providerId + baseUrl / API / credentials 方向提示
+      expect(result.stderr + result.stdout).toContain("ghost-provider");
+      expect(result.stderr + result.stdout).toContain("baseUrl");
+      expect(result.stderr + result.stdout).toContain("provider add-custom");
+      // 不自动创建 Provider
+      const config = JSON.parse(readFileSync(configPath, "utf8"));
+      expect(config.models.providers["ghost-provider"]).toBeUndefined();
+    });
+  });
+
+  describe("plugin enable / disable", () => {
+    test("停用 xiaomi 插件：提示两个 Provider 与 speech/contract 影响；policy 原样保留；非 TTY 需 --yes", async () => {
+      const { dir, configPath } = writeXiaomiConfig();
+      const before = readFileSync(configPath, "utf8");
+      const pluginsListJson = prepareXiaomiPluginFixture();
+      const env = {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, {
+          status: { allowed: ["other/primary-model", "xiaomi/mi-1"] },
+          list: { models: [{ key: "other/primary-model", available: true, tags: [] }] },
+          listAll: { models: [
+            { key: "other/primary-model", available: true, tags: [] },
+            { key: "xiaomi/mi-1", available: true, tags: [] },
+            { key: "xiaomi-token-plan/tp-1", available: true, tags: [] }
+          ] }
+        })
+      };
+
+      // 非 TTY 无 --yes：fail closed，不写盘
+      const blocked = await runCli(["plugin", "disable", "xiaomi"], env, { pluginsListJson });
+      expect(blocked.code).not.toBe(0);
+      expect(blocked.stderr).toContain("--yes");
+      expect(readFileSync(configPath, "utf8")).toBe(before);
+
+      const disabled = await runCli(["plugin", "disable", "xiaomi", "--yes"], env, { pluginsListJson });
+      expect(disabled.code).toBe(0);
+      // 影响面提示：两个 Provider（一个插件组，不能拆成两个开关）
+      expect(disabled.stdout).toContain("xiaomi-token-plan");
+      // 非模型能力影响：speech + contracts
+      expect(disabled.stdout).toContain("speech");
+      // policy 原样保留（插件启停绝不联动删 policy）
+      const config = JSON.parse(readFileSync(configPath, "utf8"));
+      expect(config.plugins.entries.xiaomi.enabled).toBe(false);
+      expect(config.agents.defaults.modelPolicy.allow).toEqual(["other/primary-model", "xiaomi/mi-1", "xiaomi-token-plan/*"]);
+
+      // 重新启用：恢复可用性，policy 仍原样
+      const enabled = await runCli(["plugin", "enable", "xiaomi", "--yes"], env, { pluginsListJson });
+      expect(enabled.code).toBe(0);
+      const after = JSON.parse(readFileSync(configPath, "utf8"));
+      expect(after.plugins.entries.xiaomi.enabled).toBe(true);
+      expect(after.agents.defaults.modelPolicy.allow).toEqual(["other/primary-model", "xiaomi/mi-1", "xiaomi-token-plan/*"]);
+    });
+
+    test("primary / fallback 命中插件 Provider 时阻断停用，配置不变", async () => {
+      const pluginsListJson = prepareXiaomiPluginFixture();
+
+      // primary 命中 xiaomi Provider：阻止停用
+      const primaryHit = writeXiaomiConfig();
+      const primaryConfig: OpenClawConfig = JSON.parse(readFileSync(primaryHit.configPath, "utf8"));
+      primaryConfig.agents!.defaults!.model = "xiaomi/mi-1";
+      writeFileSync(primaryHit.configPath, `${JSON.stringify(primaryConfig, null, 2)}\n`);
+      const primaryBefore = readFileSync(primaryHit.configPath, "utf8");
+      const primary = await runCli(["plugin", "disable", "xiaomi", "--yes"], {
+        OPENCLAW_CONFIG_PATH: primaryHit.configPath,
+        HOME: primaryHit.dir
+      }, { pluginsListJson });
+      expect(primary.code).not.toBe(0);
+      expect(primary.stderr).toContain("primary");
+      expect(readFileSync(primaryHit.configPath, "utf8")).toBe(primaryBefore);
+
+      // fallback 命中 xiaomi-token-plan Provider：阻止停用
+      const fallbackHit = writeXiaomiConfig();
+      const fallbackConfig: OpenClawConfig = JSON.parse(readFileSync(fallbackHit.configPath, "utf8"));
+      fallbackConfig.agents!.defaults!.model = { primary: "other/primary-model", fallbacks: ["xiaomi-token-plan/tp-1"] };
+      writeFileSync(fallbackHit.configPath, `${JSON.stringify(fallbackConfig, null, 2)}\n`);
+      const fallbackBefore = readFileSync(fallbackHit.configPath, "utf8");
+      const fallback = await runCli(["plugin", "disable", "xiaomi", "--yes"], {
+        OPENCLAW_CONFIG_PATH: fallbackHit.configPath,
+        HOME: fallbackHit.dir
+      }, { pluginsListJson });
+      expect(fallback.code).not.toBe(0);
+      expect(fallback.stderr).toContain("fallback");
+      expect(readFileSync(fallbackHit.configPath, "utf8")).toBe(fallbackBefore);
+    });
+
+    test("未知 pluginId：清晰报错并非零退出，不写盘（Task 4 review 边界）", async () => {
+      const { dir, configPath } = writeXiaomiConfig();
+      const before = readFileSync(configPath, "utf8");
+      const result = await runCli(["plugin", "disable", "not-installed"], {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir
+      }, { pluginsListJson: prepareXiaomiPluginFixture() });
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain("not-installed");
+      expect(readFileSync(configPath, "utf8")).toBe(before);
+    });
+
+    test("已有 entry 时只改 enabled 一个键，其他键逐字保留", async () => {
+      const { dir, configPath } = writeXiaomiConfig({ withEntries: true });
+      const result = await runCli(["plugin", "disable", "xiaomi", "--yes"], {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir
+      }, { pluginsListJson: prepareXiaomiPluginFixture() });
+      expect(result.code).toBe(0);
+      const config = JSON.parse(readFileSync(configPath, "utf8"));
+      expect(config.plugins.entries.xiaomi).toEqual({
+        enabled: false,
+        pinned: "1.2.0",
+        config: { region: "cn" }
+      });
+    });
   });
 });

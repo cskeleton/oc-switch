@@ -39,6 +39,9 @@ export interface TransactionInput {
   /** delete/rename 时从 gateway service env 删除的旧 Key */
   envRemovedKeys?: string[];
   manifestUpdates?: ManifestUpdate[];
+  /** 默认执行兼容性归一；精确协调/插件启停设 false，只保存请求的变更，不改写无关配置。 */
+  normalizeConfig?: boolean;
+  /** 纯配置 mutation；预检期间外部文件变化时会用新配置再执行一次，不得自行持久化副作用。 */
   mutate(config: OpenClawConfig): OpenClawConfig;
   /** openclaw.json 写入成功后、写锁释放前的钩子，失败时事务回滚 */
   afterWrite?: () => void;
@@ -133,31 +136,40 @@ function runGatewayEnvSyncIfNeeded(input: {
 export async function writeOpenClawTransaction(input: TransactionInput): Promise<TransactionResult> {
   return withFileLock(join(input.stateDir, "write.lock"), async () => {
     const discover = resolveDiscoveryProvider(input.runtimeDiscoveryProvider);
-    const beforeRaw = readFileSync(input.openclawPath, "utf8");
-    const beforeConfig = JSON5.parse(beforeRaw) as OpenClawConfig;
-    const beforeHash = sha256(beforeRaw);
-    const beforeEnv = existsSync(input.envPath) ? readFileSync(input.envPath, "utf8") : "";
-
-    const mutatedConfig = input.mutate(structuredClone(beforeConfig));
-    const afterConfig = normalizeConfigForStorage(mutatedConfig).config;
-    assertAllowedSemanticChange(beforeConfig, afterConfig);
-    const afterRaw = `${JSON.stringify(afterConfig, null, 2)}\n`;
-    const hasEnvUpdates = Boolean(input.envUpdates && Object.keys(input.envUpdates).length);
-    const afterEnv = hasEnvUpdates
-      ? applyEnvUpdates({
-          content: beforeEnv,
-          providerRefs: listProviderEnvRefs(afterConfig),
-          manifest: readManifest(input.stateDir),
-          updates: input.envUpdates!,
-          ...(input.envUpdateOptions ? { options: input.envUpdateOptions } : {})
-        }).content
-      : beforeEnv;
-
-    const association = tryResolveAutomaticTarget({
-      openclawPath: input.openclawPath,
-      envPath: input.envPath,
-      discover
-    });
+    const readEnv = () => existsSync(input.envPath) ? readFileSync(input.envPath, "utf8") : "";
+    const prepareWrite = () => {
+      const beforeRaw = readFileSync(input.openclawPath, "utf8");
+      const beforeConfig = JSON5.parse(beforeRaw) as OpenClawConfig;
+      const beforeHash = sha256(beforeRaw);
+      const beforeEnv = readEnv();
+      const mutatedConfig = input.mutate(structuredClone(beforeConfig));
+      const afterConfig = input.normalizeConfig === false ? mutatedConfig : normalizeConfigForStorage(mutatedConfig).config;
+      assertAllowedSemanticChange(beforeConfig, afterConfig);
+      const afterRaw = `${JSON.stringify(afterConfig, null, 2)}\n`;
+      const hasEnvUpdates = Boolean(input.envUpdates && Object.keys(input.envUpdates).length);
+      const afterEnv = hasEnvUpdates
+        ? applyEnvUpdates({
+            content: beforeEnv,
+            providerRefs: listProviderEnvRefs(afterConfig),
+            manifest: readManifest(input.stateDir),
+            updates: input.envUpdates!,
+            ...(input.envUpdateOptions ? { options: input.envUpdateOptions } : {})
+          }).content
+        : beforeEnv;
+      const association = tryResolveAutomaticTarget({
+        openclawPath: input.openclawPath,
+        envPath: input.envPath,
+        discover
+      });
+      return { beforeRaw, beforeEnv, beforeHash, afterRaw, afterEnv, hasEnvUpdates, association };
+    };
+    let prepared = prepareWrite();
+    const changedDuringPreflight = () => readFileSync(input.openclawPath, "utf8") !== prepared.beforeRaw || readEnv() !== prepared.beforeEnv;
+    // 写锁仅覆盖 oc-switch；OpenClaw 或用户编辑器仍可能在运行时探测期间修改文件。
+    // 重新读取并重做全部业务预检一次；持续变化则明确拒绝，不覆盖外部新状态。
+    if (changedDuringPreflight()) prepared = prepareWrite();
+    if (changedDuringPreflight()) throw new Error("OpenClaw config or env changed during preflight; retry after external edits finish");
+    const { beforeHash, afterRaw, afterEnv, hasEnvUpdates, association } = prepared;
     const backupDir = createBackup({
       stateDir: input.stateDir,
       openclawPath: input.openclawPath,

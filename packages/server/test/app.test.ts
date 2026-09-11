@@ -6,7 +6,7 @@ import sample from "../../core/test/fixtures/openclaw.sample.json";
 import modelsDevApiFixture from "../../core/test/fixtures/model-metadata/api.json";
 import modelsDevModelsFixture from "../../core/test/fixtures/model-metadata/models.json";
 import { createApp } from "../src/app";
-import type { PluginCatalogProvider } from "../src/context";
+import { emptyRuntimeSnapshot, type PluginCatalogProvider, type RuntimeModelCatalogProvider } from "../src/context";
 import type {
   FetchImpl,
   OcSwitchPaths,
@@ -26,6 +26,7 @@ import {
 import { prepareGatewayEnvTarget, expectedGatewayEnvPath } from "../../core/test/gateway-sync-fixture";
 
 const tempDirs: string[] = [];
+const originalHome = process.env.HOME;
 const TOKEN = "test-secret";
 const fixtureBuiltinDir = join(import.meta.dir, "../../core/test/fixtures/presets/builtin");
 
@@ -68,7 +69,7 @@ function workspace(): Workspace {
  * 默认注入空插件目录：否则测试会 shell-out 到本机真实 `openclaw plugins list`，
  * 让 provider/model 列表随开发机装了哪些插件而漂移（且每次调用最多 8s）。
  */
-const emptyPluginCatalog: PluginCatalogProvider = () => ({ providers: [], diagnostics: [] });
+const emptyPluginCatalog: PluginCatalogProvider = () => ({ providers: [], plugins: [], diagnostics: [] });
 
 function createTestApp(
   ws: Workspace,
@@ -77,17 +78,33 @@ function createTestApp(
     runtimeDiscoveryProvider?: RuntimeDiscoveryProvider;
     gatewayRouteOptions?: import("../src/routes/gateway").GatewayRouteOptions;
     pluginCatalogProvider?: PluginCatalogProvider;
+    runtimeModelCatalogProvider?: RuntimeModelCatalogProvider;
   }
 ) {
+  let latestPlugins: import("@oc-switch/core").PluginCatalogResult = { providers: [], plugins: [], diagnostics: [] };
+  const pluginCatalogProvider: PluginCatalogProvider = (paths) => {
+    latestPlugins = (extra?.pluginCatalogProvider ?? emptyPluginCatalog)(paths);
+    return latestPlugins;
+  };
+  // 默认模型事实来自临时配置与上次注入的插件目录，不调用真实 openclaw。
+  const runtimeModelCatalogProvider: RuntimeModelCatalogProvider = () => {
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    const entries = Object.entries(config.models?.providers ?? {}).flatMap(([providerId, provider]) =>
+      (provider.models ?? []).map(model => ({ ref: `${providerId}/${model.id}`, available: true, tags: [] })));
+    for (const plugin of latestPlugins.providers) {
+      if (plugin.enabled) entries.push(...plugin.models.map(model => ({ ref: `${plugin.providerId}/${model.id}`, available: true, tags: [] })));
+    }
+    return { ...emptyRuntimeSnapshot(), openClawVersion: "2026.9.3", configuredModels: entries, allModels: entries,
+      completeness: { status: true, configuredList: true, allList: true } };
+  };
   return createApp({
     token: TOKEN,
     paths: ws.paths,
     presetDirs: ws.presetDirs,
-    pluginCatalogProvider: extra?.pluginCatalogProvider ?? emptyPluginCatalog,
+    pluginCatalogProvider,
+    runtimeModelCatalogProvider: extra?.runtimeModelCatalogProvider ?? runtimeModelCatalogProvider,
     ...(fetchImpl ? { fetchImpl } : {}),
-    ...(extra?.runtimeDiscoveryProvider
-      ? { runtimeDiscoveryProvider: extra.runtimeDiscoveryProvider }
-      : {}),
+    runtimeDiscoveryProvider: extra?.runtimeDiscoveryProvider ?? gatewayRuntimeDiscovery(ws, expectedGatewayEnvPath(ws.dir)),
     ...(extra?.gatewayRouteOptions ? { gatewayRouteOptions: extra.gatewayRouteOptions } : {})
   });
 }
@@ -148,6 +165,8 @@ function customProviderBody() {
 }
 
 afterEach(() => {
+  if (originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = originalHome;
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -3068,6 +3087,7 @@ describe("server 插件 provider 接入", () => {
         apiKeyEnvVars: ["OPENCODE_API_KEY"],
         ...overrides
       }],
+      plugins: [],
       diagnostics: []
     });
   }
@@ -3217,12 +3237,618 @@ describe("server 插件 provider 接入", () => {
     const app = createTestApp(ws, undefined, {
       pluginCatalogProvider: () => {
         calls += 1;
-        return pluginCatalog()();
+        return pluginCatalog()(ws.paths);
       }
     });
     await jsonRequest(app, "/api/providers");
     await jsonRequest(app, "/api/models");
     await jsonRequest(app, "/api/providers");
     expect(calls).toBe(1);
+  });
+});
+
+describe("server 统一模型 inventory API", () => {
+  type InventoryModel = {
+    ref: string;
+    catalogSources: string[];
+    referenceSources: string[];
+    policyAllowed: boolean;
+    selectionSource?: string;
+    availability: string;
+    availabilityReasons: string[];
+    pluginIds: string[];
+    capabilities: Record<string, boolean>;
+  };
+
+  /** fixture：restricted policy + 插件 provider + 运行时目录（policy-only unavailable 与 runtime 模型） */
+  function inventoryWorkspace() {
+    const ws = workspace();
+    const config = structuredClone(sample) as OpenClawConfig;
+    config.agents!.defaults!.modelPolicy = {
+      allow: [
+        "nvidia/*",
+        "minimax-portal/MiniMax-M3",
+        "DeepSeek/deepseek-chat",
+        "ghost-provider/policy-only-model"
+      ]
+    };
+    // 双形态主模型 + 回退链：验证 fallback 引用来源与保护性阻断（不许改写 fallbacks）
+    config.agents!.defaults!.model = {
+      primary: "minimax-portal/MiniMax-M3",
+      fallbacks: ["nvidia/z-ai/glm5.1"]
+    };
+    writeFileSync(ws.paths.openclawPath, `${JSON.stringify(config, null, 2)}\n`);
+    return ws;
+  }
+
+  const inventoryPluginCatalog: PluginCatalogProvider = () => ({
+    providers: [{
+      pluginId: "model-plugin",
+      providerId: "plugin-provider",
+      origin: "npm-global",
+      enabled: true,
+      baseUrl: "https://plugin.example/v1",
+      api: "openai-completions",
+      models: [{ id: "plugin-model" }],
+      apiKeyEnvVars: ["PLUGIN_PROVIDER_API_KEY"]
+    }],
+    plugins: [{
+      id: "model-plugin",
+      name: "Model Plugin",
+      origin: "npm-global",
+      enabled: true,
+      providerIds: ["plugin-provider"],
+      nonModelCapabilities: ["tools"]
+    }],
+    diagnostics: []
+  });
+
+  function inventoryRuntimeProvider(): RuntimeModelCatalogProvider {
+    return () => ({
+      openClawVersion: "2026.4.0",
+      agentDir: "/home/.openclaw",
+      defaultModel: "minimax-portal/MiniMax-M3",
+      fallbackRefs: ["nvidia/z-ai/glm5.1"],
+      allowedRefs: [
+        "nvidia/deepseek-ai/deepseek-v4-flash",
+        "nvidia/z-ai/glm5.1",
+        "minimax-portal/MiniMax-M3",
+        "DeepSeek/deepseek-chat",
+        "ghost-provider/policy-only-model"
+      ],
+      configuredModels: [
+        { ref: "minimax-portal/MiniMax-M3", available: true, tags: [] },
+        { ref: "nvidia/z-ai/glm5.1", available: true, tags: [] },
+        { ref: "DeepSeek/deepseek-chat", available: true, tags: [] },
+        { ref: "ghost-provider/policy-only-model", available: false, tags: [] }
+      ],
+      allModels: [
+        { ref: "nvidia/deepseek-ai/deepseek-v4-flash", available: true, tags: [] },
+        { ref: "nvidia/vendor/runtime-extra", available: true, tags: [] },
+        { ref: "plugin-provider/plugin-model", available: true, tags: [] }
+      ],
+      completeness: { status: true, configuredList: true, allList: true },
+      diagnostics: [],
+      capturedAt: "2026-09-09T00:00:00.000Z"
+    });
+  }
+
+  test("GET /api/model-inventory 返回精确 DTO 且不泄漏密钥", async () => {
+    const ws = inventoryWorkspace();
+    const app = createTestApp(ws, undefined, {
+      pluginCatalogProvider: inventoryPluginCatalog,
+      runtimeModelCatalogProvider: inventoryRuntimeProvider()
+    });
+    const { response, json } = await jsonRequest(app, "/api/model-inventory");
+
+    expect(response.status).toBe(200);
+    const models = json.models as InventoryModel[];
+
+    // config + runtime 来源模型：主模型（primary 引用 + policy-exact；fixture 同时有 legacy metadata）
+    const primary = models.find((m) => m.ref === "minimax-portal/MiniMax-M3");
+    expect(primary).toMatchObject({
+      catalogSources: ["config", "openclaw-runtime"],
+      referenceSources: ["primary", "legacy-metadata", "policy-exact"],
+      policyAllowed: true,
+      selectionSource: "policy-exact",
+      availability: "available",
+      pluginIds: [],
+      capabilities: {
+        canTogglePolicy: false,
+        canSetPrimary: false,
+        canEditCatalogEntry: true,
+        canMaterializeConfigModel: false,
+        canRemovePolicyExactRef: false
+      }
+    });
+
+    // fallback 模型：运行时 status 的 fallback 引用 + legacy metadata + policy 通配
+    const fallback = models.find((m) => m.ref === "nvidia/z-ai/glm5.1");
+    expect(fallback).toMatchObject({
+      catalogSources: ["config", "openclaw-runtime"],
+      referenceSources: ["fallback", "legacy-metadata", "policy-wildcard"],
+      policyAllowed: true,
+      selectionSource: "policy-wildcard",
+      availability: "available"
+    });
+
+    // policy-only unavailable：Provider 不在 config，运行时条目明确 available=false，但没有可归因的拒绝原因
+    const policyOnly = models.find((m) => m.ref === "ghost-provider/policy-only-model");
+    expect(policyOnly).toMatchObject({
+      catalogSources: ["openclaw-runtime"],
+      referenceSources: ["policy-exact"],
+      policyAllowed: true,
+      selectionSource: "policy-exact",
+      availability: "unavailable",
+      availabilityReasons: []
+    });
+
+    // 运行时 only 模型：仅 openclaw-runtime 目录来源 + policy 通配覆盖（nvidia/*）
+    const runtimeOnly = models.find((m) => m.ref === "nvidia/vendor/runtime-extra");
+    expect(runtimeOnly).toMatchObject({
+      catalogSources: ["openclaw-runtime"],
+      referenceSources: ["policy-wildcard"],
+      policyAllowed: true,
+      selectionSource: "policy-wildcard",
+      availability: "available",
+      capabilities: {
+        canMaterializeConfigModel: true,
+        canSetPrimary: true,
+        canTogglePolicy: false,
+        canEditCatalogEntry: false
+      }
+    });
+
+    // 插件 manifest 模型
+    const pluginModel = models.find((m) => m.ref === "plugin-provider/plugin-model");
+    expect(pluginModel).toMatchObject({
+      catalogSources: ["plugin-manifest", "openclaw-runtime"],
+      pluginIds: ["model-plugin"],
+      policyAllowed: false,
+      availability: "available"
+    });
+
+    // policyRules 投影
+    const rules = json.policyRules as Array<{ value: string; kind: string; removable: boolean }>;
+    expect(rules.map((rule) => rule.value)).toContain("ghost-provider/policy-only-model");
+    expect(rules.find((rule) => rule.value === "ghost-provider/policy-only-model")?.kind).toBe("exact");
+
+    // providers 行含插件来源与来源标注
+    const providers = json.providers as Array<{ providerId: string; sources: string[]; pluginIds: string[] }>;
+    expect(providers.find((p) => p.providerId === "plugin-provider")?.pluginIds).toEqual(["model-plugin"]);
+    expect(providers.find((p) => p.providerId === "plugin-provider")?.sources).toEqual(["plugin-manifest", "openclaw-runtime"]);
+
+    // plugins descriptor 透传
+    expect((json.plugins as Array<{ id: string; providerIds: string[] }>).map((p) => p.id))
+      .toEqual(["model-plugin"]);
+
+    // summary 计数
+    expect(json.summary).toMatchObject({
+      modelCount: models.length,
+      policyAllowedCount: models.filter((m) => m.policyAllowed).length,
+      availableCount: models.filter((m) => m.availability === "available").length,
+      unavailableCount: models.filter((m) => m.availability === "unavailable").length,
+      unknownCount: models.filter((m) => m.availability === "unknown").length
+    });
+
+    // 密钥纪律：fixture 的 SecretRef env id（NVIDIA_API_KEY）不出现在 JSON 中
+    expect(JSON.stringify(json)).not.toContain("NVIDIA_API_KEY");
+    expect(JSON.stringify(json)).not.toContain("sk-");
+  });
+
+  test("GET /api/model-inventory 缓存 runtime snapshot，30s 内不重复探测", async () => {
+    const ws = inventoryWorkspace();
+    let calls = 0;
+    const app = createTestApp(ws, undefined, {
+      pluginCatalogProvider: inventoryPluginCatalog,
+      runtimeModelCatalogProvider: () => {
+        calls += 1;
+        return inventoryRuntimeProvider()(ws.paths);
+      }
+    });
+    await jsonRequest(app, "/api/model-inventory");
+    await jsonRequest(app, "/api/model-inventory");
+    expect(calls).toBe(1);
+  });
+
+  test("POST /api/model-inventory/refresh 强制刷新并返回完整 inventory", async () => {
+    const ws = inventoryWorkspace();
+    let calls = 0;
+    let pluginCalls = 0;
+    const app = createTestApp(ws, undefined, {
+      pluginCatalogProvider: () => {
+        pluginCalls += 1;
+        return inventoryPluginCatalog(ws.paths);
+      },
+      runtimeModelCatalogProvider: () => {
+        calls += 1;
+        return inventoryRuntimeProvider()(ws.paths);
+      }
+    });
+    // 先建立缓存
+    await jsonRequest(app, "/api/model-inventory");
+    expect(calls).toBe(1);
+    expect(pluginCalls).toBe(1);
+
+    const { response, json } = await jsonRequest(app, "/api/model-inventory/refresh", { method: "POST" });
+    expect(response.status).toBe(200);
+    expect(calls).toBe(2);
+    expect(pluginCalls).toBe(2);
+    // 返回的是完整 inventory，而不是只 {ok:true}
+    expect(Array.isArray(json.models)).toBe(true);
+    expect(json.summary).toBeTruthy();
+    const models = json.models as InventoryModel[];
+    expect(models.some((m) => m.ref === "plugin-provider/plugin-model")).toBe(true);
+  });
+
+  test("runtime provider 抛错时 GET /api/model-inventory 降级为 incomplete 而非 500", async () => {
+    const ws = inventoryWorkspace();
+    const app = createTestApp(ws, undefined, {
+      pluginCatalogProvider: inventoryPluginCatalog,
+      runtimeModelCatalogProvider: () => {
+        throw new Error("openclaw probe exploded");
+      }
+    });
+    const { response, json } = await jsonRequest(app, "/api/model-inventory");
+
+    expect(response.status).toBe(200);
+    const diagnostics = json.diagnostics as Array<{ message: string }>;
+    expect(diagnostics.length).toBeGreaterThan(0);
+    expect(JSON.stringify(diagnostics)).not.toContain("openclaw probe exploded");
+    expect(diagnostics[0]?.message).toBe("runtime model catalog provider failed");
+    // 探测不完整：模型行 availability 全部 unknown，绝无误判 unavailable
+    const models = json.models as InventoryModel[];
+    for (const model of models) {
+      expect(model.availability).toBe("unknown");
+      expect(model.availabilityReasons).toEqual(["probe-failed"]);
+    }
+    expect(json.summary).toMatchObject({ unavailableCount: 0 });
+  });
+
+  test("目录写入端点（模型增删 / Provider 添加）成功后失效 runtime snapshot 缓存", async () => {
+    const ws = inventoryWorkspace();
+    let probeCalls = 0;
+    const countingRuntimeProvider: RuntimeModelCatalogProvider = () => {
+      probeCalls += 1;
+      return inventoryRuntimeProvider()(ws.paths);
+    };
+    const app = createTestApp(ws, undefined, {
+      pluginCatalogProvider: inventoryPluginCatalog,
+      runtimeModelCatalogProvider: countingRuntimeProvider
+    });
+
+    // 建立缓存：首次 inventory 读取触发一次探测
+    await jsonRequest(app, "/api/model-inventory");
+    expect(probeCalls).toBe(1);
+    // 30s TTL 内重复读取不重复探测
+    await jsonRequest(app, "/api/model-inventory");
+    expect(probeCalls).toBe(1);
+
+    // POST /api/models（模型目录写入）：成功后必须失效缓存 → 下次读取重新探测
+    const added = await jsonRequest(app, "/api/models", {
+      method: "POST",
+      body: JSON.stringify({
+        providerId: "nvidia",
+        model: { id: "catalog-write-model", enabled: false }
+      })
+    });
+    expect(added.response.status).toBe(200);
+    await jsonRequest(app, "/api/model-inventory");
+    expect(probeCalls).toBe(2);
+
+    // POST /api/providers/custom（Provider 目录写入）：同样失效缓存
+    const providerAdded = await jsonRequest(app, "/api/providers/custom", {
+      method: "POST",
+      body: JSON.stringify({ ...customProviderBody(), apiKey: "sk-test-catalog-invalidation" })
+    });
+    expect(providerAdded.response.status).toBe(200);
+    await jsonRequest(app, "/api/model-inventory");
+    expect(probeCalls).toBe(3);
+
+    // 对照：只读端点不失效缓存（探测计数不增）
+    await jsonRequest(app, "/api/providers");
+    await jsonRequest(app, "/api/model-inventory");
+    expect(probeCalls).toBe(3);
+  });
+});
+
+describe("server 模型协调写 endpoints", () => {
+  /** 与 inventory describe 共用的 fixture 形态（restricted policy + 双形态主模型 + fallback） */
+  function reconcileWorkspace() {
+    const ws = workspace();
+    const config = structuredClone(sample) as OpenClawConfig;
+    config.agents!.defaults!.modelPolicy = {
+      allow: [
+        "nvidia/*",
+        "minimax-portal/MiniMax-M3",
+        "DeepSeek/deepseek-chat",
+        "ghost-provider/policy-only-model"
+      ]
+    };
+    config.agents!.defaults!.model = {
+      primary: "minimax-portal/MiniMax-M3",
+      fallbacks: ["nvidia/z-ai/glm5.1"]
+    };
+    writeFileSync(ws.paths.openclawPath, `${JSON.stringify(config, null, 2)}\n`);
+    return ws;
+  }
+
+  function reconcileRuntimeProvider(): RuntimeModelCatalogProvider {
+    return () => ({
+      defaultModel: "minimax-portal/MiniMax-M3",
+      fallbackRefs: ["nvidia/z-ai/glm5.1"],
+      allowedRefs: ["minimax-portal/MiniMax-M3"],
+      configuredModels: [
+        { ref: "minimax-portal/MiniMax-M3", available: true, tags: [] },
+        { ref: "nvidia/vendor/runtime-extra", available: true, tags: [] }
+      ],
+      allModels: [
+        { ref: "nvidia/vendor/runtime-extra", available: true, tags: [] }
+      ],
+      completeness: { status: true, configuredList: true, allList: true },
+      diagnostics: [],
+      capturedAt: "2026-09-09T00:00:00.000Z"
+    });
+  }
+
+  test("DELETE /api/model-policy/exact-ref 删除引用并默认保留 metadata", async () => {
+    const ws = reconcileWorkspace();
+    const app = createTestApp(ws, undefined, {
+      runtimeModelCatalogProvider: reconcileRuntimeProvider()
+    });
+    const before = readFileSync(ws.paths.openclawPath, "utf8");
+
+    const { response, json } = await jsonRequest(app, "/api/model-policy/exact-ref", {
+      method: "DELETE",
+      body: JSON.stringify({ ref: "ghost-provider/policy-only-model" })
+    });
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.backupId).toBeTruthy();
+    expect(existsSync(join(ws.paths.stateDir, "backups", String(json.backupId)))).toBe(true);
+    // warnings 数组存在且为空（无 legacy metadata 需要提示；有 metadata 的删除在下一个用例）
+    const warnings = json.warnings as string[];
+    expect(Array.isArray(warnings)).toBe(true);
+
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    expect(config.agents!.defaults!.modelPolicy!.allow).not.toContain("ghost-provider/policy-only-model");
+    // 默认保留 metadata：无 metadata 的 exact ref 删除后其余 metadata 原样保留（未受牵连）
+    expect(config.agents!.defaults!.models!["nvidia/deepseek-ai/deepseek-v4-flash"]).toEqual({
+      alias: "nv-ds-flash",
+      agentRuntime: { id: "codex" }
+    });
+    // 刷新后的 inventory 数据（policyRules 不再含该 exact ref）
+    const refreshed = json.inventory as { policyRules: Array<{ value: string }> };
+    expect(refreshed.policyRules.map((rule) => rule.value)).not.toContain("ghost-provider/policy-only-model");
+    expect(before).toBeTruthy();
+  });
+
+  test("DELETE /api/model-policy/exact-ref removeMetadata 同步清理 legacy metadata", async () => {
+    const ws = reconcileWorkspace();
+    const app = createTestApp(ws, undefined, {
+      runtimeModelCatalogProvider: reconcileRuntimeProvider()
+    });
+
+    const { response, json } = await jsonRequest(app, "/api/model-policy/exact-ref", {
+      method: "DELETE",
+      body: JSON.stringify({ ref: "DeepSeek/deepseek-chat", removeMetadata: true })
+    });
+
+    expect(response.status).toBe(200);
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    expect(config.agents!.defaults!.modelPolicy!.allow).not.toContain("DeepSeek/deepseek-chat");
+    expect(config.agents!.defaults!.models!["DeepSeek/deepseek-chat"]).toBeUndefined();
+    expect(json.backupId).toBeTruthy();
+  });
+
+  test("DELETE /api/model-policy/exact-ref wildcard / primary / fallback / 不存在 ref 均 400 且不写盘", async () => {
+    const ws = reconcileWorkspace();
+    const app = createTestApp(ws, undefined, {
+      runtimeModelCatalogProvider: reconcileRuntimeProvider()
+    });
+    const before = readFileSync(ws.paths.openclawPath, "utf8");
+
+    for (const ref of ["nvidia/*", "minimax-portal/MiniMax-M3", "nvidia/z-ai/glm5.1", "unknown/ref"]) {
+      const { response, json } = await jsonRequest(app, "/api/model-policy/exact-ref", {
+        method: "DELETE",
+        body: JSON.stringify({ ref })
+      });
+      expect(response.status).toBe(400);
+      expect(String(json.error)).toBeTruthy();
+      expect(json.ok).not.toBe(true);
+    }
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+    const { json: backupsJson } = await jsonRequest(app, "/api/backups");
+    expect((backupsJson.backups as unknown[]).length).toBe(0);
+  });
+
+  test("POST /api/models/materialize 把运行时模型补入已有 config Provider", async () => {
+    const ws = reconcileWorkspace();
+    const app = createTestApp(ws, undefined, {
+      runtimeModelCatalogProvider: reconcileRuntimeProvider()
+    });
+
+    const { response, json } = await jsonRequest(app, "/api/models/materialize", {
+      method: "POST",
+      body: JSON.stringify({
+        ref: "nvidia/vendor/runtime-extra",
+        input: { id: "vendor/runtime-extra", name: "Runtime Extra", enabled: true, contextWindow: 96000 }
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.backupId).toBeTruthy();
+    expect(json.ref).toBe("nvidia/vendor/runtime-extra");
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    const added = config.models!.providers!.nvidia!.models!.find((model) => model.id === "vendor/runtime-extra");
+    expect(added).toMatchObject({ name: "Runtime Extra", contextWindow: 96000 });
+    // 写入端点重探测：返回 runtimeConfirmed
+    expect(json.runtimeConfirmed).toBe(true);
+    // 确认探测后 catalog 含新模型（重探测的 allModels 复用注入 provider 的输出）
+    expect(json.inventory).toBeTruthy();
+  });
+
+  test("POST /api/models/materialize 拒绝未知 Provider 与不可用/已在目录的模型（400，不写盘）", async () => {
+    const ws = reconcileWorkspace();
+    const app = createTestApp(ws, undefined, {
+      runtimeModelCatalogProvider: reconcileRuntimeProvider()
+    });
+    const before = readFileSync(ws.paths.openclawPath, "utf8");
+
+    const noProvider = await jsonRequest(app, "/api/models/materialize", {
+      method: "POST",
+      body: JSON.stringify({ ref: "ghost-provider/policy-only-model", input: { id: "policy-only-model", enabled: true } })
+    });
+    expect(noProvider.response.status).toBe(400);
+    expect(String(noProvider.json.error)).toContain("provider");
+
+    const wrongInput = await jsonRequest(app, "/api/models/materialize", {
+      method: "POST",
+      body: JSON.stringify({ ref: "nvidia/vendor/runtime-extra", input: { id: "different-model", enabled: true } })
+    });
+    expect(wrongInput.response.status).toBe(400);
+
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+  });
+
+  test("PATCH /api/plugins/:pluginId/state 启停需 confirm 且返回影响面与备份", async () => {
+    const ws = reconcileWorkspace();
+    const pluginCatalog: PluginCatalogProvider = () => ({
+      providers: [{
+        pluginId: "model-plugin",
+        providerId: "plugin-provider",
+        origin: "npm-global",
+        enabled: true,
+        models: [{ id: "plugin-model" }],
+        apiKeyEnvVars: ["PLUGIN_PROVIDER_API_KEY"]
+      }],
+      plugins: [{
+        id: "model-plugin",
+        origin: "npm-global",
+        enabled: true,
+        providerIds: ["plugin-provider"],
+        nonModelCapabilities: ["tools"]
+      }],
+      diagnostics: []
+    });
+    const app = createTestApp(ws, undefined, { pluginCatalogProvider: pluginCatalog });
+
+    // 缺 confirm → 400 且不写盘
+    const before = readFileSync(ws.paths.openclawPath, "utf8");
+    const unconfirmed = await jsonRequest(app, "/api/plugins/model-plugin/state", {
+      method: "PATCH",
+      body: JSON.stringify({ enabled: false })
+    });
+    expect(unconfirmed.response.status).toBe(400);
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+
+    const { response, json } = await jsonRequest(app, "/api/plugins/model-plugin/state", {
+      method: "PATCH",
+      body: JSON.stringify({ enabled: false, confirm: true })
+    });
+
+    expect(response.status).toBe(200);
+    expect(json).toMatchObject({
+      ok: true,
+      pluginId: "model-plugin",
+      enabled: false,
+      affectedProviderIds: ["plugin-provider"],
+      runtimeConfirmed: false
+    });
+    expect(json.backupId).toBeTruthy();
+    // 非模型能力 warning（插件同时贡献 tools）
+    const warnings = json.warnings as string[];
+    expect(JSON.stringify(warnings)).toContain("tools");
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    expect((config.plugins as { entries: Record<string, { enabled: boolean }> }).entries["model-plugin"]).toEqual({ enabled: false });
+    expect(existsSync(join(ws.paths.stateDir, "backups", String(json.backupId)))).toBe(true);
+  });
+
+  test("PATCH /api/plugins/:pluginId/state 未知 pluginId → 404 且配置未被触碰", async () => {
+    const ws = reconcileWorkspace();
+    const pluginCatalog: PluginCatalogProvider = () => ({
+      providers: [],
+      plugins: [{
+        id: "model-plugin",
+        origin: "npm-global",
+        enabled: true,
+        providerIds: ["plugin-provider"],
+        nonModelCapabilities: []
+      }],
+      diagnostics: []
+    });
+    const app = createTestApp(ws, undefined, { pluginCatalogProvider: pluginCatalog });
+    const before = readFileSync(ws.paths.openclawPath, "utf8");
+
+    const { response, json } = await jsonRequest(app, "/api/plugins/ghost-plugin/state", {
+      method: "PATCH",
+      body: JSON.stringify({ enabled: false, confirm: true })
+    });
+
+    expect(response.status).toBe(404);
+    expect(json.ok).not.toBe(true);
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+    const { json: backupsJson } = await jsonRequest(app, "/api/backups");
+    expect((backupsJson.backups as unknown[]).length).toBe(0);
+  });
+
+  test("PATCH /api/plugins/:pluginId/state primary/fallback 命中贡献 Provider 时 400 且不写盘", async () => {
+    const ws = reconcileWorkspace();
+    // 插件贡献 nvidia（primary 的 fallback 命中该 Provider）
+    const pluginCatalog: PluginCatalogProvider = () => ({
+      providers: [],
+      plugins: [{
+        id: "nvidia-plugin",
+        origin: "npm-global",
+        enabled: true,
+        providerIds: ["nvidia"],
+        nonModelCapabilities: []
+      }],
+      diagnostics: []
+    });
+    const app = createTestApp(ws, undefined, { pluginCatalogProvider: pluginCatalog });
+    const before = readFileSync(ws.paths.openclawPath, "utf8");
+
+    const { response, json } = await jsonRequest(app, "/api/plugins/nvidia-plugin/state", {
+      method: "PATCH",
+      body: JSON.stringify({ enabled: false, confirm: true })
+    });
+
+    expect(response.status).toBe(400);
+    expect(String(json.error)).toContain("fallback");
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+    const { json: backupsJson } = await jsonRequest(app, "/api/backups");
+    expect((backupsJson.backups as unknown[]).length).toBe(0);
+  });
+
+  test("写成功但确认探测不完整时返回 ok:true + runtimeConfirmed:false", async () => {
+    const ws = reconcileWorkspace();
+    let probeCount = 0;
+    // 第一次探测（inventory/materialize 前置读取）完整；写入后的确认探测降级为抛错
+    const provider: RuntimeModelCatalogProvider = () => {
+      probeCount += 1;
+      if (probeCount > 1) throw new Error("post-write probe failed");
+      return reconcileRuntimeProvider()(ws.paths);
+    };
+    const app = createTestApp(ws, undefined, { runtimeModelCatalogProvider: provider });
+
+    const { response, json } = await jsonRequest(app, "/api/models/materialize", {
+      method: "POST",
+      body: JSON.stringify({
+        ref: "nvidia/vendor/runtime-extra",
+        input: { id: "vendor/runtime-extra", enabled: false }
+      })
+    });
+
+    expect(response.status).toBe(200);
+    // 写入已完成：不得伪装整体失败
+    expect(json.ok).toBe(true);
+    expect(json.backupId).toBeTruthy();
+    expect(json.runtimeConfirmed).toBe(false);
+    expect(Array.isArray(json.diagnostics)).toBe(true);
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    expect(config.models!.providers!.nvidia!.models!.some((model) => model.id === "vendor/runtime-extra")).toBe(true);
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createApiClient } from "./api";
+import type { ModelInventory } from "./api";
 
 describe("createApiClient", () => {
   test("sends bearer token and parses JSON", async () => {
@@ -364,5 +365,281 @@ describe("插件 provider 字段透传", () => {
 
     const { providers } = await client.getProviders();
     expect(providers.map((provider) => provider.source)).toEqual(["config", "plugin"]);
+  });
+});
+
+/** 最小但字段齐全的 ModelInventory fixture（与 core DTO 同名同值） */
+function inventoryFixture(): ModelInventory {
+  return {
+    providers: [{
+      providerId: "cpa",
+      sources: ["config", "plugin-manifest"],
+      pluginIds: ["cpa-plugin"],
+      pluginEnabled: true,
+      disabled: false,
+      availability: "available",
+      availabilityReasons: [],
+      modelCount: 1,
+      policyAllowedModelCount: 1,
+      availableModelCount: 1,
+      unavailableModelCount: 0,
+      capabilities: {
+        canEditConnection: true,
+        canManageModels: true,
+        canDisableProvider: true,
+        canSetApiKey: true
+      }
+    }],
+    models: [{
+      ref: "cpa/m2",
+      providerId: "cpa",
+      modelId: "m2",
+      catalogSources: ["config"],
+      referenceSources: ["policy-exact"],
+      policyMode: "restricted",
+      selectionSource: "policy-exact",
+      policyAllowed: true,
+      availability: "available",
+      availabilityReasons: [],
+      pluginIds: [],
+      capabilities: {
+        canTogglePolicy: true,
+        canSetPrimary: true,
+        canEditCatalogEntry: true,
+        canMaterializeConfigModel: false,
+        canRemovePolicyExactRef: true
+      }
+    }],
+    plugins: [{
+      id: "cpa-plugin",
+      origin: "npm-global",
+      enabled: true,
+      providerIds: ["cpa"],
+      nonModelCapabilities: []
+    }],
+    policyRules: [{
+      value: "cpa/m2",
+      kind: "exact",
+      matchedModelCount: 1,
+      unavailableModelCount: 0,
+      removable: true
+    }],
+    diagnostics: [],
+    summary: {
+      modelCount: 1,
+      policyAllowedCount: 1,
+      availableCount: 1,
+      unavailableCount: 0,
+      unknownCount: 0
+    }
+  };
+}
+
+describe("runtime model inventory API client", () => {
+  test("getModelInventory GET /api/model-inventory 并携带 Bearer", async () => {
+    const calls: Request[] = [];
+    const client = createApiClient({
+      baseUrl: "http://localhost:7420",
+      token: "inventory-token",
+      fetchImpl: async (input, init) => {
+        calls.push(new Request(input, init));
+        return new Response(JSON.stringify(inventoryFixture()), {
+          headers: { "content-type": "application/json" }
+        });
+      }
+    });
+
+    const inventory = await client.getModelInventory();
+
+    expect(calls[0]?.url).toBe("http://localhost:7420/api/model-inventory");
+    expect(calls[0]?.method).toBe("GET");
+    expect(calls[0]?.headers.get("Authorization")).toBe("Bearer inventory-token");
+    // 响应整体是 inventory 本体（无包裹层），字段原样透传
+    expect(inventory.summary.modelCount).toBe(1);
+    expect(inventory.models[0]?.ref).toBe("cpa/m2");
+    expect(inventory.models[0]?.capabilities.canTogglePolicy).toBe(true);
+    expect(inventory.policyRules[0]?.kind).toBe("exact");
+    expect(inventory.plugins[0]?.providerIds).toEqual(["cpa"]);
+  });
+
+  test("refreshModelInventory POST /api/model-inventory/refresh", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const client = createApiClient({
+      baseUrl: "http://localhost:7420",
+      token: "token",
+      fetchImpl: async (url, init = {}) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify(inventoryFixture()), { status: 200 });
+      }
+    });
+
+    const inventory = await client.refreshModelInventory();
+
+    expect(calls[0]?.url).toBe("http://localhost:7420/api/model-inventory/refresh");
+    expect(calls[0]?.init.method).toBe("POST");
+    expect(inventory.summary.policyAllowedCount).toBe(1);
+  });
+
+  test("removeModelPolicyExactRef DELETE /api/model-policy/exact-ref 携带 JSON body 与 Bearer", async () => {
+    const calls: Request[] = [];
+    const client = createApiClient({
+      baseUrl: "http://localhost:7420",
+      token: "policy-token",
+      fetchImpl: async (input, init) => {
+        calls.push(new Request(input, init));
+        return new Response(JSON.stringify({
+          ok: true,
+          ref: "cpa/m2",
+          backupId: "2026-09-09T00-00-00",
+          warnings: []
+        }), { status: 200 });
+      }
+    });
+
+    const result = await client.removeModelPolicyExactRef("cpa/m2", true);
+
+    expect(calls[0]?.url).toBe("http://localhost:7420/api/model-policy/exact-ref");
+    expect(calls[0]?.method).toBe("DELETE");
+    // 写方法与读方法共用 request helper，同样携带 Bearer
+    expect(calls[0]?.headers.get("Authorization")).toBe("Bearer policy-token");
+    expect(JSON.parse(await calls[0]!.clone().text())).toEqual({ ref: "cpa/m2", removeMetadata: true });
+    expect(result.ok).toBe(true);
+    expect(result.backupId).toBe("2026-09-09T00-00-00");
+  });
+
+  test("materializeRuntimeModel POST /api/models/materialize 携带 ref 与 input", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const client = createApiClient({
+      baseUrl: "http://localhost:7420",
+      token: "token",
+      fetchImpl: async (url, init = {}) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({
+          ok: true,
+          ref: "cpa/m3",
+          backupId: "2026-09-09T00-00-01",
+          warnings: []
+        }), { status: 200 });
+      }
+    });
+
+    const result = await client.materializeRuntimeModel("cpa/m3", { id: "m3", enabled: true });
+
+    expect(calls[0]?.url).toBe("http://localhost:7420/api/models/materialize");
+    expect(calls[0]?.init.method).toBe("POST");
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({
+      ref: "cpa/m3",
+      input: { id: "m3", enabled: true }
+    });
+    expect(result.ok).toBe(true);
+    expect(result.backupId).toBe("2026-09-09T00-00-01");
+  });
+
+  test("setPluginState PATCH /api/plugins/:pluginId/state 携带 confirm", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const client = createApiClient({
+      baseUrl: "http://localhost:7420",
+      token: "token",
+      fetchImpl: async (url, init = {}) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({
+          ok: true,
+          pluginId: "xiaomi-miot",
+          enabled: false,
+          backupId: "2026-09-09T00-00-02",
+          affectedProviderIds: ["xiaomi-speech", "xiaomi-contract"],
+          warnings: [],
+          runtimeConfirmed: true
+        }), { status: 200 });
+      }
+    });
+
+    const result = await client.setPluginState("xiaomi-miot", false);
+
+    expect(calls[0]?.url).toBe("http://localhost:7420/api/plugins/xiaomi-miot/state");
+    expect(calls[0]?.init.method).toBe("PATCH");
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({ enabled: false, confirm: true });
+    expect(result.pluginId).toBe("xiaomi-miot");
+    expect(result.affectedProviderIds).toEqual(["xiaomi-speech", "xiaomi-contract"]);
+    expect(result.runtimeConfirmed).toBe(true);
+  });
+
+  test("插件 ID 作为单个 URL path segment 编码，不把 manifest 内容当作路径", async () => {
+    let calledUrl = "";
+    const client = createApiClient({
+      baseUrl: "http://fixture.invalid", token: "fixture-token",
+      fetchImpl: async input => {
+        calledUrl = String(input);
+        return new Response(JSON.stringify({ ok: true, runtimeConfirmed: false }), { status: 200 });
+      }
+    });
+    await client.setPluginState("scope/plugin ?#", false);
+    expect(calledUrl).toBe("http://fixture.invalid/api/plugins/scope%2Fplugin%20%3F%23/state");
+  });
+
+  test("runtimeConfirmed:false 不是 HTTP 失败：200 + ok:true 正常返回", async () => {
+    const client = createApiClient({
+      baseUrl: "http://localhost:7420",
+      token: "token",
+      fetchImpl: async () => new Response(JSON.stringify({
+        ok: true,
+        pluginId: "xiaomi-miot",
+        enabled: false,
+        backupId: "backup-id",
+        affectedProviderIds: ["xiaomi-speech"],
+        warnings: ["plugin runtime probe incomplete"],
+        runtimeConfirmed: false,
+        diagnostics: [{ command: "list", code: "timeout", message: "openclaw models list timed out after 8000ms" }]
+      }), { status: 200 })
+    });
+
+    // 写入已成功：client 不得把确认失败当成请求失败抛错
+    const result = await client.setPluginState("xiaomi-miot", false);
+    expect(result.ok).toBe(true);
+    expect(result.runtimeConfirmed).toBe(false);
+    expect(result.diagnostics?.[0]?.code).toBe("timeout");
+  });
+
+  test("getModelInventory 与 refreshModelInventory 的非 2xx 响应透传 error", async () => {
+    // 按调用次序返回不同 error，逐个读方法验证 error propagation
+    const errors = [
+      "openclaw.json not readable: permission denied",
+      "runtime model catalog probe failed: openclaw CLI missing"
+    ];
+    let call = 0;
+    const client = createApiClient({
+      baseUrl: "http://localhost:7420",
+      token: "token",
+      fetchImpl: async (url, init = {}) => {
+        const error = errors[call++] ?? errors[0];
+        return new Response(JSON.stringify({ error }), { status: 500 });
+      }
+    });
+
+    await expect(client.getModelInventory()).rejects.toThrow(errors[0]);
+    await expect(client.refreshModelInventory()).rejects.toThrow(errors[1]);
+  });
+
+  test("非 2xx 响应透传 error 信息", async () => {
+    // 按调用次序返回不同 error，逐个方法验证 error propagation
+    const errors = [
+      "Model cpa/missing not found in current inventory; nothing to materialize.",
+      "Ref cpa/protected is the current primary model; replace it first.",
+      "Plugin ghost-plugin is not installed or does not contribute any model provider; oc-switch only manages installed model plugins."
+    ];
+    let call = 0;
+    const client = createApiClient({
+      baseUrl: "http://localhost:7420",
+      token: "token",
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ error: errors[call++] }), { status: call === 2 ? 400 : 404 })
+    });
+
+    await expect(client.materializeRuntimeModel("cpa/missing", { id: "missing", enabled: true }))
+      .rejects.toThrow(errors[0]);
+    await expect(client.removeModelPolicyExactRef("cpa/protected", false))
+      .rejects.toThrow(errors[1]);
+    await expect(client.setPluginState("ghost-plugin", true))
+      .rejects.toThrow(errors[2]);
   });
 });

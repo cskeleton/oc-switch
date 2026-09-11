@@ -120,6 +120,66 @@ describe("assertAllowedSemanticChange", () => {
     expect(() => assertAllowedSemanticChange(before, after)).not.toThrow();
   });
 
+  describe("plugins.entries.<id>.enabled 四种转换（Task 4 插件启停）", () => {
+    test("absence→false 允许（停用 enabledByDefault 插件时创建最小 entry）", () => {
+      const before = cloneSample();
+      const after = cloneSample();
+      before.plugins = { entries: {} };
+      after.plugins = { entries: { xiaomi: { enabled: false } } };
+
+      expect(() => assertAllowedSemanticChange(before, after)).not.toThrow();
+    });
+
+    test("absence→true 允许（启用时创建最小 entry）", () => {
+      const before = cloneSample();
+      const after = cloneSample();
+      before.plugins = { entries: {} };
+      after.plugins = { entries: { xiaomi: { enabled: true } } };
+
+      expect(() => assertAllowedSemanticChange(before, after)).not.toThrow();
+    });
+
+    test("false→true 允许", () => {
+      const before = cloneSample();
+      const after = cloneSample();
+      before.plugins = { entries: { xiaomi: { enabled: false } } };
+      after.plugins = { entries: { xiaomi: { enabled: true } } };
+
+      expect(() => assertAllowedSemanticChange(before, after)).not.toThrow();
+    });
+
+    test("true→false 允许", () => {
+      const before = cloneSample();
+      const after = cloneSample();
+      before.plugins = { entries: { xiaomi: { enabled: true } } };
+      after.plugins = { entries: { xiaomi: { enabled: false } } };
+
+      expect(() => assertAllowedSemanticChange(before, after)).not.toThrow();
+    });
+
+    test("同事务修改 plugins.entries.<id>.config 时阻断", () => {
+      const before = cloneSample();
+      const after = cloneSample();
+      before.plugins = { entries: { xiaomi: { enabled: true, config: { region: "cn" } } } };
+      after.plugins = { entries: { xiaomi: { enabled: false, config: { region: "global" } } } };
+
+      expect(() => assertAllowedSemanticChange(before, after)).toThrow(
+        "Diff guard blocked change to plugins.entries.xiaomi.config"
+      );
+    });
+
+    test("同事务新增非 enabled 键（config）时阻断（enabled 不变）", () => {
+      const before = cloneSample();
+      const after = cloneSample();
+      before.plugins = { entries: { xiaomi: { enabled: true } } };
+      after.plugins = { entries: { xiaomi: { enabled: true, config: { region: "cn" } } } };
+
+      expect(() => assertAllowedSemanticChange(before, after)).toThrow(
+        "Diff guard blocked change to plugins.entries.xiaomi.config"
+      );
+    });
+  });
+
   test("blocks other plugins.entries fields", () => {
     const before = cloneSample();
     const after = cloneSample();

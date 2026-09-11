@@ -60,6 +60,14 @@ export interface OpenClawConfig {
     providers?: Record<string, OpenClawProvider>;
     [key: string]: unknown;
   };
+  /**
+   * OpenClaw 插件配置（只读透传，oc-switch 唯一可写键位是
+   * `entries.<id>.enabled`，见 spec §9.2；其余键原样保留）。
+   */
+  plugins?: {
+    entries?: Record<string, OpenClawPluginEntry>;
+    [key: string]: unknown;
+  };
   agents?: {
     defaults?: {
       model?: OpenClawPrimaryModel;
@@ -73,6 +81,12 @@ export interface OpenClawConfig {
     };
     [key: string]: unknown;
   };
+  [key: string]: unknown;
+}
+
+/** 单个插件的 openclaw.json entry：未知键原样保留（pinned/config 等），oc-switch 只写 enabled */
+export interface OpenClawPluginEntry {
+  enabled?: boolean;
   [key: string]: unknown;
 }
 

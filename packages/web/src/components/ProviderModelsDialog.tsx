@@ -1,6 +1,6 @@
 import { Edit3, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import type { ApiClient, ModelSummary, ProviderModelInput, ProviderSummary } from "../api";
+import type { ApiClient, ModelInventoryEntry, ModelSummary, ProviderModelInput, ProviderSummary } from "../api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DataTable } from "./DataTable";
 import { ModelDialog } from "./ModelDialog";
@@ -15,6 +15,7 @@ interface ProviderModelsDialogProps {
   provider: ProviderSummary | null;
   providers: ProviderSummary[];
   client: ApiClient;
+  inventoryModels?: ModelInventoryEntry[];
   onCancel: () => void;
   onChanged: () => void;
 }
@@ -27,7 +28,7 @@ export function sortLocalModels(a: ModelSummary, b: ModelSummary): number {
 }
 
 /** Provider 专属模型管理弹窗 */
-export function ProviderModelsDialog({ open, provider, providers, client, onCancel, onChanged }: ProviderModelsDialogProps) {
+export function ProviderModelsDialog({ open, provider, providers, client, inventoryModels = [], onCancel, onChanged }: ProviderModelsDialogProps) {
   const toast = useToast();
   const [models, setModels] = useState<ModelSummary[]>([]);
   const [creating, setCreating] = useState(false);
@@ -65,9 +66,19 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
   }, [open, provider?.id]);
 
   const scopedModels = useMemo(
-    () => models.filter((entry) => entry.providerId === provider?.id).slice().sort(sortLocalModels),
+    () => models.filter((entry) => entry.providerId.toLowerCase() === provider?.id.toLowerCase()).slice().sort(sortLocalModels),
     [models, provider?.id]
   );
+  const inventoryByModelId = useMemo(() => new Map(inventoryModels
+    .filter(entry => entry.providerId.toLowerCase() === provider?.id.toLowerCase())
+    .map(entry => [entry.modelId, entry])), [inventoryModels, provider?.id]);
+
+  // 兼容弹窗也必须遵守新 inventory 的只读能力，不能绕回旧列表清理 unknown 行。
+  function isReadOnly(row: ModelSummary): boolean {
+    return inventoryByModelId.get(row.modelId)?.capabilities.canEditCatalogEntry === false;
+  }
+  const hasReadOnlyModels = scopedModels.some(isReadOnly);
+  const hasReadOnlySelection = scopedModels.some(row => selectedModelIds.has(row.modelId) && isReadOnly(row));
 
   function toggleSelect(modelId: string, isPrimary: boolean) {
     if (isPrimary) return;
@@ -120,6 +131,11 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
 
   async function runBatchRemove(body: { modelIds: string[] } | { keepEnabledOnly: true }) {
     if (!provider || batchBusy) return;
+    const targets = "modelIds" in body ? scopedModels.filter(row => body.modelIds.includes(row.modelId)) : scopedModels;
+    if (targets.some(isReadOnly)) {
+      setError("包含未知或只读模型，请刷新，或显式选择其它可操作模型。");
+      return;
+    }
     setBatchBusy(true);
     setError(null);
     try {
@@ -141,6 +157,7 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
 
   async function runSyncMetadata() {
     if (!provider || batchBusy) return;
+    if (selectedModelIds.size > 0 ? hasReadOnlySelection : hasReadOnlyModels) return;
     setBatchBusy(true);
     try {
       // 有勾选同步勾选，无勾选同步该 provider 全部本地模型
@@ -184,7 +201,7 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
                   variant="destructive"
                   size="sm"
                   aria-label="删除所选模型"
-                  disabled={isPlugin || selectedCount === 0 || batchBusy}
+                  disabled={isPlugin || selectedCount === 0 || batchBusy || hasReadOnlySelection}
                   title={isPlugin ? "插件 Provider 的模型目录只读" : "关闭状态下仍可批量清理目录（不可新增/启用）"}
                   onClick={() => setConfirmBatchDelete(true)}
                 >
@@ -195,7 +212,7 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
                   variant="outline"
                   size="sm"
                   aria-label="同步所选模型参数"
-                  disabled={isPlugin || batchBusy}
+                  disabled={isPlugin || batchBusy || (selectedCount > 0 ? hasReadOnlySelection : hasReadOnlyModels)}
                   title={
                     isPlugin
                       ? "插件 Provider 的模型参数由插件 manifest 提供，无法回填"
@@ -209,8 +226,8 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
                   variant="outline"
                   size="sm"
                   aria-label="只保留已启用模型"
-                  disabled={isPlugin || batchBusy || scopedModels.length === 0}
-                  title={isPlugin ? "插件 Provider 的模型目录只读" : "关闭状态下仍可清理未启用模型，便于目录降到上限以内"}
+                  disabled={isPlugin || batchBusy || scopedModels.length === 0 || hasReadOnlyModels}
+                  title={isPlugin ? "插件 Provider 的模型目录只读" : hasReadOnlyModels ? "存在未知或只读模型，请显式选择其它可操作模型" : "关闭状态下仍可清理未启用模型，便于目录降到上限以内"}
                   onClick={() => setConfirmKeepEnabledOnly(true)}
                 >
                   只保留已启用
@@ -251,7 +268,7 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
                         type="checkbox"
                         aria-label={`选择本地模型 ${row.modelId}`}
                         checked={selectedModelIds.has(row.modelId)}
-                        disabled={isPlugin || row.isPrimary || batchBusy}
+                        disabled={isPlugin || row.isPrimary || batchBusy || isReadOnly(row)}
                         title={
                           isPlugin
                             ? "插件 Provider 的模型目录只读"
@@ -269,6 +286,7 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
                     header: "状态",
                     wrap: "nowrap",
                     render: (row) => {
+                      if (inventoryByModelId.get(row.modelId)?.availability === "unknown") return <Pill variant="warning">无法确认</Pill>;
                       if (row.isPrimary) return <Pill variant="brand">主模型</Pill>;
                       return row.enabled
                         ? <Pill variant="success">已启用</Pill>
@@ -280,7 +298,7 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
                     header: "操作",
                     wrap: "nowrap",
                     render: (row) => (
-                      isPlugin ? (
+                      isPlugin || isReadOnly(row) ? (
                         <span className="text-xs text-muted-foreground">只读</span>
                       ) : (
                       <div className="flex flex-wrap gap-1.5">
@@ -343,7 +361,7 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
         title="删除所选模型"
         message={`确认从目录删除已选的 ${selectedCount} 个模型？已启用项会同步移出 allowlist。此操作将创建备份。`}
         danger
-        confirmDisabled={batchBusy || selectedCount === 0}
+        confirmDisabled={batchBusy || selectedCount === 0 || hasReadOnlySelection}
         onCancel={() => setConfirmBatchDelete(false)}
         onConfirm={() => void runBatchRemove({ modelIds: Array.from(selectedModelIds) })}
       />
@@ -353,7 +371,7 @@ export function ProviderModelsDialog({ open, provider, providers, client, onCanc
         title="只保留已启用"
         message="将从目录移除未启用的模型。主模型始终保留。不会删除 Provider，也不会修改 API Key。若主模型已不在目录，操作将失败并提示先修复配置。"
         danger
-        confirmDisabled={batchBusy}
+        confirmDisabled={batchBusy || hasReadOnlyModels}
         onCancel={() => setConfirmKeepEnabledOnly(false)}
         onConfirm={() => void runBatchRemove({ keepEnabledOnly: true })}
       />

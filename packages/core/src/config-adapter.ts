@@ -11,6 +11,20 @@ export interface ConfigAdapterOptions {
   pluginProviders?: PluginProvider[];
 }
 
+/**
+ * 兼容层（2026-09-09 运行时模型协调 spec §14）：本 adapter 聚合 config +
+ * 插件 manifest 的旧形状，供既有 `GET /api/models`、`GET /api/providers` 与
+ * Dashboard 计数消费。
+ *
+ * ⚠️ 新代码不得依赖本层的简化语义：
+ * - 与 `models.providers` 同名的插件 provider 被 config 优先遮蔽（spec §7.3 的
+ *   v1 简化），而运行时实际是并集；
+ * - 本层没有 OpenClaw 运行时目录（runtime-only 模型、policy-only 悬空引用、
+ *   三态可用性）的事实，`enabled` 只反映 policy 选择，不代表模型可调用。
+ *
+ * 运行时可用性 / 统一来源判定一律走 `buildModelInventory`
+ * （`packages/core/src/model-inventory.ts`，即 `GET /api/model-inventory`）。
+ */
 export function createConfigAdapter(config: OpenClawConfig, options: ConfigAdapterOptions = {}) {
   const providers = config.models?.providers ?? {};
   const allowlist = config.agents?.defaults?.models ?? {};

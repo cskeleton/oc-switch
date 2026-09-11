@@ -522,17 +522,19 @@ describe("插件 provider 的模型编排", () => {
     expect(other).toEqual(before);
   });
 
-  test("providerId 与 models.providers 同名时插件模型不参与目录校验（config 接管）", () => {
+  test("providerId 与 models.providers 同名时模型目录取并集，停用插件不贡献成员", () => {
     const config = cloneSample();
     config.models!.providers!.opencode = { api: "openai-completions", models: [{ id: "local-only" }] };
     // 本地目录条目照常放行
     expect(enableModel(structuredClone(config), "opencode/local-only", undefined, [pluginProvider()])
       .config.agents?.defaults?.models?.["opencode/local-only"]).toBeDefined();
-    // 仅存在于插件 manifest 的模型被拒绝（与 listProviders / config-status 冲突规则一致）
-    expect(() => enableModel(config, "opencode/big-pickle", undefined, [pluginProvider()]))
-      .toThrow(/not defined in provider models/);
-    expect(() => setPrimaryModel(config, "opencode/big-pickle", [pluginProvider()]))
-      .toThrow(/not defined in provider models/);
+    // 兼容列表仍可按 config 遮蔽，但写入必须接受启用中的插件模型成员。
+    expect(enableModel(structuredClone(config), "opencode/big-pickle", undefined, [pluginProvider()])
+      .config.agents?.defaults?.models?.["opencode/big-pickle"]).toBeDefined();
+    expect(setPrimaryModel(structuredClone(config), "opencode/big-pickle", [pluginProvider()])
+      .config.agents?.defaults?.model).toBe("opencode/big-pickle");
+    expect(() => enableModel(config, "opencode/big-pickle", undefined, [pluginProvider({ enabled: false })]))
+      .toThrow(/plugins\.entries\.opencode\.enabled=false/);
   });
 
   test("restricted policy 下 enableModel 同步插件 exact ref", () => {

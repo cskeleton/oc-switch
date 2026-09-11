@@ -217,6 +217,109 @@ describe("apiKeyEnvVars 排序", () => {
   });
 });
 
+describe("discoverPluginCatalog.plugins descriptor", () => {
+  // 真实形状 fixture：一个 xiaomi 插件贡献两个 Provider，且声明 speech 与其他契约能力
+  const xiaomiPluginsListJson = JSON.stringify({
+    plugins: [
+      {
+        id: "xiaomi",
+        name: "@openclaw/xiaomi-provider",
+        rootDir: "/plugins/xiaomi",
+        origin: "npm-global",
+        enabled: false,
+        status: "disabled",
+        providerIds: ["xiaomi", "xiaomi-token-plan"],
+        speechProviderIds: ["xiaomi"],
+        channelIds: ["telegram"],
+        toolCount: 0
+      }
+    ]
+  });
+  const xiaomiManifest = JSON.stringify({
+    contracts: { acp: { version: "1.0" } },
+    modelCatalog: {
+      providers: {
+        xiaomi: { models: [{ id: "mi-m1" }, { id: "mi-m2" }] },
+        "xiaomi-token-plan": { models: [{ id: "tp-1" }, { id: "tp-2" }] }
+      }
+    }
+  });
+
+  function xiaomiDeps(): PluginCatalogDependencies {
+    return {
+      runCommand: () => ({ status: 0, stdout: xiaomiPluginsListJson, timedOut: false }),
+      readTextFile: (path) => {
+        if (path === "/plugins/xiaomi/openclaw.plugin.json") return xiaomiManifest;
+        throw new Error(`ENOENT ${path}`);
+      }
+    };
+  }
+
+  test("一个插件 descriptor 对应两个 Provider，不拆成两个插件", () => {
+    const result = discoverPluginCatalog(xiaomiDeps());
+    expect(result.providers.map((provider) => provider.providerId)).toEqual(["xiaomi", "xiaomi-token-plan"]);
+    expect(result.providers.every((provider) => provider.pluginId === "xiaomi")).toBe(true);
+  });
+
+  test("descriptor 保留脱敏字段：id/name/origin/enabled/providerIds", () => {
+    const result = discoverPluginCatalog(xiaomiDeps());
+    expect(result.plugins).toEqual([
+      {
+        id: "xiaomi",
+        name: "@openclaw/xiaomi-provider",
+        origin: "npm-global",
+        enabled: false,
+        providerIds: ["xiaomi", "xiaomi-token-plan"],
+        nonModelCapabilities: ["channels", "speech", "other-contracts"]
+      }
+    ]);
+  });
+
+  test("manifest 不可读时 descriptor 仍从 plugins list 产出（providers 跳过）", () => {
+    const result = discoverPluginCatalog({
+      runCommand: () => ({ status: 0, stdout: xiaomiPluginsListJson, timedOut: false }),
+      readTextFile: () => {
+        throw new Error("ENOENT");
+      }
+    });
+    expect(result.providers).toEqual([]);
+    expect(result.plugins.map((plugin) => plugin.id)).toEqual(["xiaomi"]);
+    expect(result.diagnostics).toEqual(["plugin xiaomi: manifest not readable; skipped"]);
+  });
+
+  test("非模型插件（providerIds 为空）不出现在 descriptor 列表", () => {
+    const result = discoverPluginCatalog({
+      runCommand: () => ({
+        status: 0,
+        stdout: JSON.stringify({
+          plugins: [
+            { id: "some-hook", rootDir: "/p/hook", origin: "bundled", enabled: true, providerIds: [], toolIds: ["t1"] }
+          ]
+        }),
+        timedOut: false
+      }),
+      readTextFile: () => {
+        throw new Error("ENOENT");
+      }
+    });
+    expect(result.plugins).toEqual([]);
+  });
+
+  test("未知 capability 字段（不认识的键）被忽略，不产生 other-contracts", () => {
+    const result = discoverPluginCatalog({
+      runCommand: () => ({
+        status: 0,
+        stdout: JSON.stringify({
+          plugins: [{ id: "opencode", rootDir: "/p/oc", origin: "bundled", enabled: true, providerIds: ["opencode"] }]
+        }),
+        timedOut: false
+      }),
+      readTextFile: () => JSON.stringify({ modelCatalog: { providers: { opencode: { models: [{ id: "m" }] } } } })
+    });
+    expect(result.plugins[0]?.nonModelCapabilities).toEqual([]);
+  });
+});
+
 describe("filterPluginProvidersConflictWithConfig", () => {
   test("config 的 models.providers 优先，大小写折叠判定冲突", () => {
     const config = {

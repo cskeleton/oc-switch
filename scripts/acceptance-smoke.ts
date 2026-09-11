@@ -3,11 +3,14 @@
  * Phase 5.3 验收烟雾测试
  * 使用临时 fixture 目录，不修改用户真实 OpenClaw 配置。
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { listBackups } from "../packages/core/src/backup-manager";
 import { parseLaunchAgentGatewayMetadata } from "../packages/core/src/gateway-launchd-metadata";
+import { discoverPluginCatalog } from "../packages/core/src/plugin-catalog";
+import { discoverRuntimeModelCatalog } from "../packages/core/src/runtime-model-catalog";
 import { discoverLinuxOpenClawRuntime } from "../packages/core/src/path-discovery-linux";
 import { discoverMacOSOpenClawRuntime } from "../packages/core/src/path-discovery-macos";
 import { validateRuntimePathSelection } from "../packages/core/src/paths";
@@ -21,9 +24,10 @@ import { upsertDisabledProviderState } from "../packages/core/src/provider-state
 import type { OpenClawConfig } from "../packages/core/src/types";
 import modelPolicyAcceptance from "../packages/core/test/fixtures/model-policy-acceptance.json";
 import sample from "../packages/core/test/fixtures/openclaw.sample.json";
-import { createApp } from "../packages/server/src/app";
-import type { PluginCatalogProvider } from "../packages/server/src/context";
+import { createApp as createServerApp } from "../packages/server/src/app";
+import type { AppOptions, PluginCatalogProvider, RuntimeModelCatalogProvider } from "../packages/server/src/context";
 import type { PluginProvider } from "../packages/core/src/plugin-catalog";
+import type { ModelInventory } from "../packages/core/src/model-inventory";
 
 const repoRoot = join(import.meta.dir, "..");
 const CLI_ENTRY = join(repoRoot, "packages/cli/src/index.ts");
@@ -31,11 +35,133 @@ const fixtureBuiltinDir = join(repoRoot, "packages/core/test/fixtures/presets/bu
 const TOKEN = "acceptance-smoke-token";
 const SERVER_PORT = 17_421;
 
+/** 旧场景也必须显式提供运行时事实，不能在新增写入预检后意外探测开发机。 */
+function fixtureRuntimeCommands(config: OpenClawConfig, plugins: PluginProvider[] = []) {
+  const models = [
+    ...Object.entries(config.models?.providers ?? {}).flatMap(([providerId, provider]) =>
+      (provider.models ?? []).map(model => ({ key: `${providerId}/${model.id}`, available: true }))),
+    ...plugins.flatMap(provider => provider.models.map(model => ({ key: `${provider.providerId}/${model.id}`, available: provider.enabled })))
+  ];
+  const result = (value: unknown) => ({ status: 0, timedOut: false, stdout: JSON.stringify(value) });
+  return {
+    version: { status: 0, timedOut: false, stdout: "OpenClaw acceptance fixture" },
+    status: result({ allowed: Object.keys(config.agents?.defaults?.models ?? {}) }),
+    list: result({ models }), listAll: result({ models })
+  };
+}
+
+function createApp(options: AppOptions) {
+  return createServerApp({
+    ...options,
+    pluginCatalogProvider: options.pluginCatalogProvider ?? emptyPluginCatalog,
+    runtimeDiscoveryProvider: options.runtimeDiscoveryProvider ?? (() => discoveryResult([])),
+    runtimeModelCatalogProvider: options.runtimeModelCatalogProvider ?? ((paths) => {
+      const config = JSON.parse(readFileSync(paths.openclawPath, "utf8")) as OpenClawConfig;
+      const commands = fixtureRuntimeCommands(config, options.pluginCatalogProvider?.(paths).providers);
+      return discoverRuntimeModelCatalog({ runCommand: (_command, args) => {
+        const key = args[0] === "--version" ? "version" : args[1] === "status" ? "status" : args.includes("--all") ? "listAll" : "list";
+        return commands[key];
+      } });
+    })
+  });
+}
+
+/**
+ * 假 OpenClaw 需要回放的运行时目录 fixtures（runtime spec §13.4）：
+ * 五个必含场景的数据全部集中在这里，fake 脚本与断言共用同一份事实源。
+ */
+interface RuntimeProbeFixtures {
+  /** `openclaw --version` 的 stdout（纯文本版本串） */
+  version: string;
+  /** `openclaw models status --json` 的 stdout 对象（allowed / fallbacks / defaultModel） */
+  status: Record<string, unknown>;
+  /** `openclaw models list --json` 的 stdout 对象（当前可见目录） */
+  list: Record<string, unknown>;
+  /** `openclaw models list --all --json` 的 stdout 对象（完整目录） */
+  listAll: Record<string, unknown>;
+}
+
+/**
+ * 生成 fake `openclaw` 可执行脚本（PATH 前置注入）。
+ *
+ * - 同一个脚本按 argv 分发 `--version` / `plugins list` / `models status` /
+ *   `models list` / `models list --all` 五类回放；fixture JSON 落在脚本同目录
+ *   的 `fixtures/` 下，每次按临时 config 回放真实状态，不在测试步骤里替它手动同步；
+ * - 失败模式经环境变量 `OC_FAKE_OPENCLAW_MODE` 切换：
+ *   `timeout`（探测命令 sleep 30，触发 oc-switch 8s 超时）、
+ *   `invalid-json`（探测命令打印非 JSON 噪音）、默认正常回放；
+ * - `models status` fixture 里带一个假密钥字段（`authToken`），core 的白名单提取
+ *   必须丢弃它，断言据此验证任何输出都不回显该值。
+ */
+function writeFakeOpenClawScript(
+  dir: string,
+  pluginsListJson: string,
+  fixtures: RuntimeProbeFixtures
+): string {
+  const fixtureDir = join(dir, "fixtures");
+  mkdirSync(fixtureDir, { recursive: true });
+  writeFileSync(join(fixtureDir, "version.txt"), `${fixtures.version}\n`);
+  writeFileSync(join(fixtureDir, "plugins.json"), `${pluginsListJson}\n`);
+  writeFileSync(join(fixtureDir, "status.json"), `${JSON.stringify(fixtures.status)}\n`);
+  writeFileSync(join(fixtureDir, "list.json"), `${JSON.stringify(fixtures.list)}\n`);
+  writeFileSync(join(fixtureDir, "list-all.json"), `${JSON.stringify(fixtures.listAll)}\n`);
+
+  const script = join(dir, "openclaw");
+  writeFileSync(script, `#!/usr/bin/env bun
+// oc-switch acceptance fake openclaw（隔离 fixture，绝不触碰真实 ~/.openclaw）
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+const dir = join(import.meta.dir, "fixtures");
+const args = process.argv.slice(2);
+const mode = process.env.OC_FAKE_OPENCLAW_MODE;
+const read = name => JSON.parse(readFileSync(join(dir, name), "utf8"));
+const emit = value => console.log(JSON.stringify(value));
+if (args[0] !== "plugins" && mode === "timeout") await Bun.sleep(30_000);
+if (args[0] === "--version") {
+  console.log(readFileSync(join(dir, "version.txt"), "utf8").trim());
+  process.exit(0);
+}
+if (args[0] === "models" && mode === "invalid-json") {
+  console.log("<html>gateway crashed</html>");
+  process.exit(0);
+}
+const config = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH, "utf8"));
+const defaults = config.agents?.defaults ?? {};
+const plugins = read("plugins.json");
+for (const plugin of plugins.plugins) plugin.enabled = config.plugins?.entries?.[plugin.id]?.enabled ?? plugin.enabled;
+if (args[0] === "plugins" && args[1] === "list") { emit(plugins); process.exit(0); }
+const identity = ref => { const slash = ref.indexOf("/"); return ref.slice(0, slash).toLowerCase() + ref.slice(slash); };
+const policy = Array.isArray(defaults.modelPolicy?.allow) ? defaults.modelPolicy.allow.filter(ref => typeof ref === "string") : undefined;
+const primary = typeof defaults.model === "string" ? defaults.model : defaults.model?.primary;
+const fallbacks = typeof defaults.model === "object" ? defaults.model?.fallbacks ?? [] : [];
+const refs = new Set([...Object.keys(defaults.models ?? {}), ...(policy ?? []).filter(ref => !ref.endsWith("/*")), ...(primary ? [primary] : []), ...fallbacks].map(identity));
+const disabled = new Set(plugins.plugins.filter(plugin => !plugin.enabled).flatMap(plugin => plugin.providerIds));
+const catalog = read("list-all.json").models.filter(entry => entry.missing !== true);
+if (args[0] === "models" && args[1] === "status") {
+  const payload = read("status.json");
+  payload.allowed = policy === undefined ? Object.keys(defaults.models ?? {}) : policy.length === 0 ? catalog.map(entry => entry.key)
+    : [...policy.filter(ref => !ref.endsWith("/*")), ...catalog.filter(entry => policy.some(ref => ref.endsWith("/*") && identity(entry.key).startsWith(identity(ref).slice(0, -1)))).map(entry => entry.key)];
+  payload.allowed = [...new Set(payload.allowed)];
+  payload.defaultModel = primary;
+  payload.fallbacks = fallbacks;
+  emit(payload);
+} else if (args[0] === "models" && args[1] === "list") {
+  const all = args.includes("--all");
+  const payload = read(all ? "list-all.json" : "list.json");
+  payload.models = payload.models.filter(entry => entry.missing === true ? !all && refs.has(identity(entry.key)) : all || !disabled.has(entry.key.split("/")[0]))
+    .map(entry => { if (!disabled.has(entry.key.split("/")[0])) return entry; const { available, ...rest } = entry; return rest; });
+  emit(payload);
+} else process.exit(1);
+`);
+  chmodSync(script, 0o755);
+  return script;
+}
+
 /**
  * 验收必须与本机安装了哪些 OpenClaw 插件无关：默认注入空插件目录，
  * 需要覆盖插件路径的场景显式注入固定 catalog。
  */
-const emptyPluginCatalog: PluginCatalogProvider = () => ({ providers: [], diagnostics: [] });
+const emptyPluginCatalog: PluginCatalogProvider = () => ({ providers: [], plugins: [], diagnostics: [] });
 
 function acceptancePluginCatalog(overrides: Partial<PluginProvider> = {}): PluginCatalogProvider {
   return () => ({
@@ -50,6 +176,7 @@ function acceptancePluginCatalog(overrides: Partial<PluginProvider> = {}): Plugi
       apiKeyEnvVars: ["OPENCODE_API_KEY"],
       ...overrides
     }],
+    plugins: [],
     diagnostics: []
   });
 }
@@ -68,7 +195,7 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-function assert(condition: boolean, message: string): void {
+function assert(condition: unknown, message: string): asserts condition {
   if (!condition) fail(message);
 }
 
@@ -195,9 +322,21 @@ async function assertModelPolicyAcceptance(rootDir: string, outputs: string[]): 
 
 /** 运行 CLI 子进程并收集 stdout/stderr */
 async function runCli(args: string[], env: Record<string, string>) {
+  if (!env.HOME || env.HOME === process.env.HOME) throw new Error("acceptance CLI requires an isolated HOME");
+  const childEnv: NodeJS.ProcessEnv = { ...process.env, ...env, OPENCLAW_HOME: env.HOME, OPENCLAW_STATE_DIR: join(env.HOME, ".openclaw") };
+  if (!env.PATH) {
+    const fakeDir = join(env.HOME, "default-fake-bin");
+    mkdirSync(fakeDir, { recursive: true });
+    writeFileSync(join(fakeDir, "openclaw"), '#!/bin/sh\n[ "$1 $2" = "plugins list" ] || exit 1\nprintf \'%s\\n\' \'{"plugins":[]}\'\n', { mode: 0o755 });
+    const config = JSON.parse(readFileSync(env.OPENCLAW_CONFIG_PATH!, "utf8")) as OpenClawConfig;
+    const mockPath = join(fakeDir, "runtime.json");
+    writeFileSync(mockPath, JSON.stringify(fixtureRuntimeCommands(config)));
+    childEnv.PATH = `${fakeDir}:${process.env.PATH ?? ""}`;
+    childEnv.OC_SWITCH_MOCK_RUNTIME_MODELS = mockPath;
+  }
   const proc = Bun.spawn(["bun", "run", CLI_ENTRY, ...args], {
     cwd: repoRoot,
-    env: { ...process.env, ...env },
+    env: childEnv,
     stdout: "pipe",
     stderr: "pipe"
   });
@@ -238,8 +377,8 @@ function discoveryResult(groups: RuntimePathCandidateGroup[]): RuntimeDiscoveryR
       openclawPath: group.openclawPath,
       envPath: group.envPath,
       stateDir: group.stateDir,
-      serviceEnvPath: group.serviceEnvPath,
-      serviceManager: group.serviceManager,
+      ...(group.serviceEnvPath ? { serviceEnvPath: group.serviceEnvPath } : {}),
+      ...(group.serviceManager ? { serviceManager: group.serviceManager } : {}),
       evidence: group.evidence,
       ...(group.confidence ? { confidence: group.confidence } : {})
     })),
@@ -353,15 +492,11 @@ async function assertRuntimeDiscoveryAcceptance(outputs: string[]): Promise<void
     outputs.push(JSON.stringify(linuxCustom));
     assert(
       linuxCustom.instances[0]?.serviceEnvPath === customEnvFile,
-      "Linux 自定义 EnvironmentFile 必须使用 unit 实际目标"
+      "Linux 自定义 EnvironmentFile 必须使用 unit 实际目标，而非猜测 canonical gateway.systemd.env"
     );
     assert(
       linuxCustom.instances[0]?.envPath === "/srv/alpha/.env",
       "Linux 自定义 EnvironmentFile 时管理源仍为 state dir .env"
-    );
-    assert(
-      linuxCustom.instances[0]?.serviceEnvPath !== "/srv/alpha/gateway.systemd.env",
-      "不得用 canonical gateway.systemd.env 覆盖自定义 EnvironmentFile"
     );
 
     // --- macOS：当前 /bin/sh + wrapper 布局 ---
@@ -697,6 +832,433 @@ async function assertPluginProviderAcceptance(rootDir: string, outputs: string[]
   );
 }
 
+/**
+ * 运行时模型协调验收（runtime spec §13.4 七步）。
+ *
+ * 全程 mkdtemp 隔离 HOME + PATH 前置 fake `openclaw`：
+ * fake 脚本按 argv 回放 plugins list / models status / models list / models list --all，
+ * 并经 OC_FAKE_OPENCLAW_MODE 切换 timeout / invalid-json 失败模式。
+ * fixture 覆盖五个必含场景：
+ * 1. policy-only unavailable exact（ghost-provider/policy-only-model，运行时 available=false）；
+ * 2. runtime-only available model（nvidia/vendor/runtime-extra，仅 --all 目录可见且 available=true）；
+ * 3. wildcard 展开（nvidia/* 覆盖 nvidia 目录模型 → policy-wildcard 引用来源）；
+ * 4. xiaomi 插件贡献 xiaomi / xiaomi-token-plan 两个 Provider + speech 能力；
+ * 5. 探测失败模式（timeout / invalid JSON → unknown，清理操作禁用）。
+ */
+async function assertRuntimeModelAcceptance(rootDir: string, outputs: string[]): Promise<void> {
+  const scenarioDir = join(rootDir, "runtime-model");
+  const stateDir = join(scenarioDir, ".oc-switch");
+  const openclawPath = join(scenarioDir, "openclaw.json");
+  const envPath = join(scenarioDir, ".env");
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(envPath, "");
+
+  /** 运行时探测 fixture：状态 JSON 内嵌假密钥（authToken），core 白名单提取必须丢弃 */
+  const runtimeFixtures: RuntimeProbeFixtures = {
+    version: "2026.9.3",
+    status: {
+      agentDir: scenarioDir,
+      defaultModel: "minimax-portal/MiniMax-M3",
+      fallbacks: ["nvidia/z-ai/glm5.1"],
+      allowed: [
+        "minimax-portal/MiniMax-M3",
+        "nvidia/z-ai/glm5.1",
+        "DeepSeek/deepseek-chat",
+        "ghost-provider/policy-only-model",
+        "xiaomi/mi-1"
+      ],
+      // 假密钥：绝不允许出现在任何 oc-switch 输出 / 备份里
+      authToken: FIXTURE_SECRET
+    },
+    list: {
+      models: [
+        { key: "minimax-portal/MiniMax-M3", available: true, tags: [] },
+        { key: "nvidia/z-ai/glm5.1", available: true, tags: [] },
+        { key: "DeepSeek/deepseek-chat", available: true, tags: [] },
+        { key: "ghost-provider/policy-only-model", available: false, missing: true, tags: ["missing"] },
+        { key: "xiaomi/mi-1", available: true, tags: [] },
+        { key: "xiaomi-token-plan/tp-1", available: true, tags: [] }
+      ]
+    },
+    listAll: {
+      models: [
+        { key: "nvidia/deepseek-ai/deepseek-v4-flash", available: true, tags: [] },
+        { key: "nvidia/z-ai/glm5.1", available: true, tags: [] },
+        { key: "minimax-portal/MiniMax-M3", available: true, tags: [] },
+        { key: "DeepSeek/deepseek-chat", available: true, tags: [] },
+        { key: "xiaomi/mi-1", available: true, tags: [] },
+        { key: "xiaomi/mi-2", available: true, tags: [] },
+        { key: "xiaomi-token-plan/tp-1", available: true, tags: [] },
+        { key: "xiaomi-token-plan/tp-2", available: true, tags: [] },
+        // runtime-only available：仅完整目录可见（wildcard nvidia/* 覆盖）
+        { key: "nvidia/vendor/runtime-extra", available: true, tags: [] }
+      ]
+    }
+  };
+
+  /** fake `openclaw plugins list` JSON：xiaomi 插件贡献两个 Provider + speech 能力 */
+  const pluginsListJson = JSON.stringify({
+    plugins: [{
+      id: "xiaomi",
+      name: "Xiaomi Provider",
+      rootDir: join(scenarioDir, "fake-plugin-root"),
+      origin: "npm-global",
+      enabled: true,
+      providerIds: ["xiaomi", "xiaomi-token-plan"],
+      speechProviderIds: ["xiaomi-tts"]
+    }]
+  });
+
+  /** 受 restricted policy 管理的 fixture config（wildcard 展开 + policy-only 悬空 exact） */
+  function writeRuntimeConfig(): void {
+    const config = JSON.parse(JSON.stringify(sample)) as OpenClawConfig;
+    config.agents!.defaults!.modelPolicy = {
+      allow: [
+        "nvidia/*",
+        "minimax-portal/MiniMax-M3",
+        "DeepSeek/deepseek-chat",
+        "ghost-provider/policy-only-model",
+        "xiaomi/mi-1",
+        "xiaomi-token-plan/*"
+      ]
+    };
+    writeFileSync(openclawPath, `${JSON.stringify(config, null, 2)}\n`);
+  }
+
+  // xiaomi 插件的假 manifest（plugin-catalog 读取 rootDir/openclaw.plugin.json）
+  const pluginRoot = join(scenarioDir, "fake-plugin-root");
+  mkdirSync(pluginRoot, { recursive: true });
+  writeFileSync(join(pluginRoot, "openclaw.plugin.json"), JSON.stringify({
+    modelCatalog: {
+      providers: {
+        xiaomi: { baseUrl: "https://xiaomi.example/v1", api: "openai-completions", models: [{ id: "mi-1" }, { id: "mi-2" }] },
+        "xiaomi-token-plan": { baseUrl: "https://xiaomi.example/plan/v1", api: "openai-completions", models: [{ id: "tp-1" }, { id: "tp-2" }] }
+      }
+    },
+    setup: { providers: [{ id: "xiaomi", envVars: ["XIAOMI_API_KEY"] }, { id: "xiaomi-token-plan", envVars: ["XIAOMI_TOKEN_PLAN_API_KEY"] }] }
+  }));
+
+  const fakeBinDir = join(scenarioDir, "fake-bin");
+  mkdirSync(fakeBinDir, { recursive: true });
+  writeFakeOpenClawScript(fakeBinDir, pluginsListJson, runtimeFixtures);
+
+  const cliEnv = {
+    OPENCLAW_CONFIG_PATH: openclawPath,
+    HOME: scenarioDir,
+    PATH: `${fakeBinDir}:${process.env.PATH ?? ""}`
+  };
+
+  function assertRuntimeOutputNoSecrets(text: string, label: string): void {
+    assertNoSecrets(text, label);
+    if (text.includes(FIXTURE_SECRET)) {
+      fail(`${label} 输出包含 fixture authToken 明文`);
+    }
+  }
+
+  // ---------- Step 1/2：policy-only unavailable exact 必须显示为 policy-only + unavailable ----------
+  writeRuntimeConfig();
+  let result = await runCli(["models", "inventory", "--json"], cliEnv);
+  outputs.push(result.combined);
+  assert(result.code === 0, `models inventory --json 应成功，实际退出码 ${result.code}`);
+  let inventory = JSON.parse(result.stdout) as ModelInventory;
+  assertRuntimeOutputNoSecrets(result.stdout, "CLI inventory JSON");
+
+  const policyOnly = inventory.models.find((m) => m.ref === "ghost-provider/policy-only-model");
+  assert(Boolean(policyOnly), "inventory 必须包含 policy-only exact 条目（不再因缺目录而消失）");
+  assert(
+    policyOnly?.catalogSources.length === 0,
+    "policy-only 缺失占位不得伪装成任何目录来源"
+  );
+  assert(
+    policyOnly?.referenceSources.includes("policy-exact") === true,
+    "policy-only 条目必须有 policy-exact 引用来源"
+  );
+  assert(policyOnly?.policyAllowed === true, "policy-only 条目 policyAllowed 应为 true（策略允许但不可用，两维不合并）");
+  assert(policyOnly?.availability === "unavailable", `policy-only 条目应为 unavailable，实际 ${policyOnly?.availability}`);
+  assert(
+    policyOnly?.availabilityReasons.includes("provider-rejected") || policyOnly?.availabilityReasons.includes("model-not-in-catalog"),
+    "policy-only 条目应携带不可用原因"
+  );
+
+  // runtime-only available：仅 --all 目录可见 + wildcard 覆盖（可 materialize）
+  const runtimeOnly = inventory.models.find((m) => m.ref === "nvidia/vendor/runtime-extra");
+  assert(Boolean(runtimeOnly), "inventory 必须包含 runtime-only 模型（仅运行时目录可见）");
+  assert(
+    runtimeOnly?.catalogSources.includes("openclaw-runtime") && !runtimeOnly?.catalogSources.includes("config"),
+    "runtime-only 模型目录来源应为 openclaw-runtime 而非 config"
+  );
+  assert(runtimeOnly?.availability === "available", "runtime-only 模型应为 available");
+  assert(
+    runtimeOnly?.referenceSources.includes("policy-wildcard") === true,
+    "runtime-only 模型应被 nvidia/* 通配覆盖（wildcard 展开为引用来源）"
+  );
+  assert(
+    runtimeOnly?.capabilities.canMaterializeConfigModel === true,
+    "runtime-only available 且 config Provider 存在时应可补全（canMaterializeConfigModel）"
+  );
+
+  // wildcard 展开：nvidia 目录模型获得 policy-wildcard 引用来源
+  const wildcardCovered = inventory.models.find((m) => m.ref === "nvidia/deepseek-ai/deepseek-v4-flash");
+  assert(
+    wildcardCovered?.referenceSources.includes("policy-wildcard") === true,
+    "nvidia/* 通配必须给 nvidia 目录模型添加 policy-wildcard 引用来源"
+  );
+  // policyRules：wildcard 不是模型行，只作为规则展示
+  const wildcardRule = inventory.policyRules.find((rule) => rule.value === "nvidia/*");
+  assert(wildcardRule?.kind === "wildcard", "policyRules 应含 nvidia/* wildcard 规则");
+  assert(
+    (wildcardRule?.matchedModelCount ?? 0) >= 2,
+    "nvidia/* 规则应命中至少 2 个 nvidia 模型（wildcard 展开计数）"
+  );
+
+  // xiaomi 插件：一个插件 → 两个 Provider + speech 能力
+  assert(
+    inventory.plugins.some(
+      (plugin) => plugin.id === "xiaomi"
+        && plugin.providerIds.includes("xiaomi") && plugin.providerIds.includes("xiaomi-token-plan")
+        && plugin.nonModelCapabilities.includes("speech")
+    ),
+    "插件 descriptor 必须把 xiaomi / xiaomi-token-plan 归属同一插件且含 speech 能力"
+  );
+  for (const providerId of ["xiaomi", "xiaomi-token-plan"]) {
+    const provider = inventory.providers.find((p) => p.providerId === providerId);
+    assert(Boolean(provider), `inventory providers 应含插件 Provider ${providerId}`);
+    assert(
+      provider?.pluginIds.includes("xiaomi") === true,
+      `${providerId} 应归属插件 xiaomi（一个插件多 Provider）`
+    );
+    assert(provider?.pluginEnabled === true, `${providerId} 插件启用状态应为 true`);
+    assert(
+      provider?.sources.includes("plugin-manifest"),
+      `${providerId} 目录来源应含 plugin-manifest`
+    );
+  }
+
+  // Server inventory 与 CLI inventory 对同一 fixture 必须一致（review gate 3）。
+  // createApp 在本进程内运行，环境 PATH/OPENCLAW_CONFIG_PATH 不受子进程 env 影响，
+  // 故依赖注入 fake provider（与 CLI 的 PATH 前置 fake openclaw 回放同一份 fixture），
+  // 保证两边对同一事实源计算（server 侧经真实 discoverPluginCatalog 的解析链路由
+  // 下方 HTTP fixture 走查，不在此重复）。
+  const customDir = join(stateDir, "presets", "custom");
+  mkdirSync(customDir, { recursive: true });
+  const runFakeOpenClaw = (_command: string, args: string[], options: { timeoutMs: number; maxOutputBytes: number }) => {
+    const result = spawnSync(join(fakeBinDir, "openclaw"), args, {
+      env: { ...process.env, ...cliEnv }, encoding: "utf8", timeout: options.timeoutMs, maxBuffer: options.maxOutputBytes
+    });
+    return { status: result.status, stdout: result.stdout ?? "", timedOut: (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT" };
+  };
+  const fakeCatalogProvider: PluginCatalogProvider = () => discoverPluginCatalog({ runCommand: runFakeOpenClaw });
+  const fakeRuntimeProvider: RuntimeModelCatalogProvider = () => discoverRuntimeModelCatalog({ runCommand: runFakeOpenClaw });
+  const app = createApp({
+    token: TOKEN,
+    paths: { openclawPath, envPath, stateDir },
+    presetDirs: { builtinDir: fixtureBuiltinDir, customDir },
+    pluginCatalogProvider: fakeCatalogProvider,
+    runtimeModelCatalogProvider: fakeRuntimeProvider
+  });
+  const headers = { Authorization: `Bearer ${TOKEN}` };
+  const inventoryResponse = await app.request("/api/model-inventory", { headers });
+  assert(inventoryResponse.status === 200, "GET /api/model-inventory 应成功");
+  const serverInventory = await inventoryResponse.json() as ModelInventory;
+  const serverInventoryText = JSON.stringify(serverInventory);
+  outputs.push(serverInventoryText);
+  assertRuntimeOutputNoSecrets(serverInventoryText, "server inventory JSON");
+  const cliRefs = inventory.models.map((model) => model.ref).sort();
+  const serverRefs = serverInventory.models.map((model) => model.ref).sort();
+  assert(
+    JSON.stringify(cliRefs) === JSON.stringify(serverRefs),
+    "Server 与 CLI 对同一 fixture 的 inventory 模型集合必须一致"
+  );
+  assert(serverInventoryText === JSON.stringify(inventory), "Server/CLI 完整 inventory（状态、能力、规则、插件、诊断）必须一致");
+
+  // ---------- Step 3：删除 exact ref 后条目从 allowed 与待处理集合消失 ----------
+  // 非 TTY 无 --yes：fail closed
+  const blocked = await runCli(["model", "remove-policy-ref", "ghost-provider/policy-only-model"], cliEnv);
+  outputs.push(blocked.combined);
+  assert(blocked.code !== 0, "非 TTY 无 --yes 的 remove-policy-ref 必须 fail closed");
+  assert(
+    (JSON.parse(readFileSync(openclawPath, "utf8") as string).agents?.defaults?.modelPolicy?.allow ?? []).includes("ghost-provider/policy-only-model"),
+    "fail closed 拒绝后 policy 不得变化"
+  );
+
+  const beforeConfig = readFileSync(openclawPath, "utf8");
+  const removed = await runCli(["model", "remove-policy-ref", "ghost-provider/policy-only-model", "--yes"], cliEnv);
+  outputs.push(removed.combined);
+  assert(removed.code === 0, `remove-policy-ref --yes 应成功，实际退出码 ${removed.code}：${removed.combined}`);
+  const afterRemoval = JSON.parse(readFileSync(openclawPath, "utf8")) as OpenClawConfig;
+  assert(
+    !(afterRemoval.agents?.defaults?.modelPolicy?.allow ?? []).includes("ghost-provider/policy-only-model"),
+    "删除后 policy.allow 不得再含该 exact ref"
+  );
+  assert(
+    (afterRemoval.agents?.defaults?.modelPolicy?.allow ?? []).includes("nvidia/*"),
+    "删除 exact ref 不得影响 wildcard 规则"
+  );
+  assert(
+    Object.keys(afterRemoval.agents?.defaults?.models ?? {}).length === Object.keys((JSON.parse(beforeConfig) as OpenClawConfig).agents?.defaults?.models ?? {}).length,
+    "默认删除不得触碰 legacy metadata"
+  );
+
+  result = await runCli(["models", "inventory", "--json"], cliEnv);
+  assert(result.code === 0, "删除后 inventory 应可重新探测");
+  inventory = JSON.parse(result.stdout) as typeof inventory;
+  assertRuntimeOutputNoSecrets(result.stdout, "删除后 CLI inventory JSON");
+  assert(
+    !inventory.policyRules.some((rule) => rule.value === "ghost-provider/policy-only-model"),
+    "删除后 policyRules 不得再含该 exact 规则"
+  );
+  assert(!inventory.models.some(m => m.ref === "ghost-provider/policy-only-model"), "删除唯一 exact 引用后，缺失占位必须从 inventory 消失");
+  assert(!fakeRuntimeProvider({ openclawPath, envPath, stateDir }).allowedRefs.includes("ghost-provider/policy-only-model"), "删除后 OpenClaw allowed 同步移除该 exact ref");
+  assert(
+    inventory.models.some((m) => m.ref === "nvidia/deepseek-ai/deepseek-v4-flash"),
+    "删除操作不得影响其余模型"
+  );
+
+  // 写入应产生备份（备份目录存在且内容不含密钥）
+  const backups = listBackups(stateDir);
+  assert(backups.length > 0, "remove-policy-ref 写入后应存在备份包");
+  const latestBackupDir = join(stateDir, "backups", backups[0]!.id);
+  const backupConfig = readFileSync(join(latestBackupDir, "openclaw.json"), "utf8");
+  assertRuntimeOutputNoSecrets(backupConfig, "备份 openclaw.json");
+
+  // ---------- Step 4/5：xiaomi 插件启停，两个 Provider 同步变化且 policy 原样保留 ----------
+  writeRuntimeConfig();
+  const beforePlugin = readFileSync(openclawPath, "utf8");
+  const beforePolicy = (JSON.parse(beforePlugin) as OpenClawConfig).agents?.defaults?.modelPolicy?.allow ?? [];
+
+  const disableResult = await runCli(["plugin", "disable", "xiaomi", "--yes", "--json"], cliEnv);
+  outputs.push(disableResult.combined);
+  assert(disableResult.code === 0, `plugin disable 应成功：${disableResult.combined}`);
+  const disableJson = JSON.parse(disableResult.stdout) as { affectedProviderIds?: string[]; runtimeConfirmed?: boolean };
+  assert(disableJson.runtimeConfirmed === true, "写后重探测必须观察到实际停用，而非仅检查命令成功");
+  assertRuntimeOutputNoSecrets(disableResult.stdout, "plugin disable JSON");
+  assert(
+    (disableJson.affectedProviderIds ?? []).includes("xiaomi") && (disableJson.affectedProviderIds ?? []).includes("xiaomi-token-plan"),
+    "停用影响面必须同时列出两个 Provider（插件级开关）"
+  );
+  const afterDisable = JSON.parse(readFileSync(openclawPath, "utf8")) as {
+    plugins?: { entries?: Record<string, { enabled?: boolean }> };
+    agents?: { defaults?: { modelPolicy?: { allow?: string[] } } };
+  };
+  assert(afterDisable.plugins?.entries?.xiaomi?.enabled === false, "停用后 plugins.entries.xiaomi.enabled 应为 false");
+  assert(
+    JSON.stringify(afterDisable.agents?.defaults?.modelPolicy?.allow ?? []) === JSON.stringify(beforePolicy),
+    "插件停用后 policy 必须逐项原样保留，大小写与重复规则也不得改写"
+  );
+
+  // fake CLI 自行回读 config；不要在写后替它手动改 enabled 或模型目录来制造确认成功。
+  result = await runCli(["models", "inventory", "--json"], cliEnv);
+  assert(result.code === 0, "停用后 inventory 应可探测");
+  inventory = JSON.parse(result.stdout) as typeof inventory;
+  const disabledModel = inventory.models.find((m) => m.ref === "xiaomi/mi-1");
+  assert(
+    disabledModel?.availability === "unavailable" && disabledModel?.availabilityReasons.includes("plugin-disabled"),
+    "插件停用后其模型应为 unavailable/plugin-disabled"
+  );
+  for (const providerId of ["xiaomi", "xiaomi-token-plan"]) {
+    const provider = inventory.providers.find((p) => p.providerId === providerId);
+    assert(provider?.pluginEnabled === false, `停用后 ${providerId} 的 pluginEnabled 应为 false（两 Provider 同步变化）`);
+    assert(
+      provider?.availability === "unavailable",
+      `停用后 ${providerId} 的 Provider 可用性应为 unavailable`
+    );
+  }
+
+  // 重新启用：恢复可用性
+  const enableResult = await runCli(["plugin", "enable", "xiaomi", "--yes", "--json"], cliEnv);
+  outputs.push(enableResult.combined);
+  assert(enableResult.code === 0, `plugin enable 应成功：${enableResult.combined}`);
+  assert(JSON.parse(enableResult.stdout).runtimeConfirmed === true, "写后重探测必须观察到实际启用");
+  const afterEnable = JSON.parse(readFileSync(openclawPath, "utf8")) as {
+    plugins?: { entries?: Record<string, { enabled?: boolean }> };
+    agents?: { defaults?: { modelPolicy?: { allow?: string[] } } };
+  };
+  assert(afterEnable.plugins?.entries?.xiaomi?.enabled === true, "启用后 plugins.entries.xiaomi.enabled 应为 true");
+  assert(
+    JSON.stringify(afterEnable.agents?.defaults?.modelPolicy?.allow ?? []) === JSON.stringify(beforePolicy),
+    "插件启停全程 policy 必须逐项原样保留"
+  );
+
+  // ---------- Step 6：探测超时 → unknown，清理操作禁用 ----------
+  writeRuntimeConfig();
+  const timeoutEnv = { ...cliEnv, OC_FAKE_OPENCLAW_MODE: "timeout" };
+  result = await runCli(["models", "inventory", "--json"], timeoutEnv);
+  outputs.push(result.combined);
+  assert(result.code === 0, `超时模式下 inventory 仍应成功（降级），退出码 ${result.code}`);
+  inventory = JSON.parse(result.stdout) as typeof inventory;
+  assertRuntimeOutputNoSecrets(result.stdout, "超时模式 CLI inventory JSON");
+  const unknownCount = inventory.models.filter((m) => m.availability === "unknown").length;
+  assert(unknownCount > 0, "探测超时时必须有 unknown 模型行");
+  for (const model of inventory.models) {
+    assert(
+      model.availability !== "unavailable",
+      `超时（证据不足）不得误判 unavailable：${model.ref} = ${model.availability}`
+    );
+    if (model.availability === "unknown") {
+      assert(
+        model.capabilities.canRemovePolicyExactRef !== true
+          && model.capabilities.canTogglePolicy !== true
+          && model.capabilities.canSetPrimary !== true,
+        `unknown 模型 ${model.ref} 不得携带任何清理/编排能力`
+      );
+    }
+  }
+  // 超时模式下的删除操作必须被拒绝（unknown 状态不可依据不完整证据清理）
+  const beforeUnknownRemoval = readFileSync(openclawPath, "utf8");
+  const beforeUnknownBackups = listBackups(stateDir).length;
+  const removeOnUnknown = await runCli(["model", "remove-policy-ref", "ghost-provider/policy-only-model", "--yes"], timeoutEnv);
+  outputs.push(removeOnUnknown.combined);
+  assert(removeOnUnknown.code !== 0, "unknown 下显式删除也必须失败，不能仅在 UI 隐藏按钮");
+  assert(readFileSync(openclawPath, "utf8") === beforeUnknownRemoval, "unknown 下拒绝删除必须保持 config 原样");
+  assert(listBackups(stateDir).length === beforeUnknownBackups, "拒绝的删除不得生成备份");
+  assertRuntimeOutputNoSecrets(removeOnUnknown.combined, "超时模式 remove-policy-ref 输出");
+  // 下一失败模式使用同一基线，不替前一步的失败掩盖写入。
+  writeRuntimeConfig();
+
+  // invalid JSON 失败模式：降级为 unknown + 诊断，不崩溃
+  const invalidJsonEnv = { ...cliEnv, OC_FAKE_OPENCLAW_MODE: "invalid-json" };
+  result = await runCli(["models", "inventory", "--json"], invalidJsonEnv);
+  outputs.push(result.combined);
+  assert(result.code === 0, "invalid JSON 模式 inventory 仍应成功（降级不崩溃）");
+  inventory = JSON.parse(result.stdout) as typeof inventory;
+  assertRuntimeOutputNoSecrets(result.stdout, "invalid JSON 模式 CLI inventory JSON");
+  assert(
+    inventory.models.some((m) => m.ref === "ghost-provider/policy-only-model"),
+    `invalid JSON 模式仍应列出条目（config/引用来源不依赖运行时探测），实际 refs：${inventory.models.map((m) => m.ref).join(", ")}`
+  );
+  assert(
+    inventory.models.every((m) => m.availability === "unknown"),
+    "invalid JSON 模式下所有模型行必须降级为 unknown（不得误判 unavailable/available）"
+  );
+  assert(
+    inventory.diagnostics.length > 0,
+    "invalid JSON 模式必须产生探测诊断"
+  );
+  for (const model of inventory.models) {
+    if (model.availability === "unknown") {
+      assert(
+        model.capabilities.canRemovePolicyExactRef !== true
+          && model.capabilities.canTogglePolicy !== true
+          && model.capabilities.canSetPrimary !== true,
+        `unknown 模型 ${model.ref} 不得携带任何清理/编排能力（invalid JSON 模式）`
+      );
+    }
+  }
+
+  // ---------- Step 7：全程输出与备份不含密钥（在每个阶段已断言，这里做汇总复核） ----------
+  const finalBackups = listBackups(stateDir);
+  for (const backup of finalBackups) {
+    const backupDir = join(stateDir, "backups", backup.id);
+    // .env 可能未随备份落盘（无 env 变更的事务也会记录 env 快照；缺失按空处理）
+    const backupEnvPath = join(backupDir, ".env");
+    if (existsSync(backupEnvPath)) {
+      assertRuntimeOutputNoSecrets(readFileSync(backupEnvPath, "utf8"), `备份 ${backup.id} .env`);
+    }
+    const backupMetadata = readFileSync(join(backupDir, "openclaw.json"), "utf8");
+    assertRuntimeOutputNoSecrets(backupMetadata, `备份 ${backup.id} openclaw.json`);
+  }
+}
+
 async function main(): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), "oc-switch-acceptance-"));
   const outputs: string[] = [];
@@ -861,6 +1423,9 @@ async function main(): Promise<void> {
 
     // 插件 provider 合并展示 / 编排放行 / 破坏性写 fail closed（注入固定 catalog）
     await assertPluginProviderAcceptance(dir, outputs);
+
+    // 运行时模型协调（spec §13.4 七步：fake openclaw + 失败模式切换）
+    await assertRuntimeModelAcceptance(dir, outputs);
 
     // 汇总扫描所有输出
     for (const text of outputs) {

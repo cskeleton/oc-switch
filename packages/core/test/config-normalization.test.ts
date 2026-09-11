@@ -3,6 +3,16 @@ import { normalizeConfigForStorage } from "../src/config-normalization";
 import type { OpenClawConfig } from "../src/types";
 
 describe("normalizeConfigForStorage", () => {
+  test("policy wildcard 的大小写与重复规则原样保留，只归一 exact refs", () => {
+    const config: OpenClawConfig = { agents: { defaults: { modelPolicy: {
+      allow: ["NVIDIA/*", "NVIDIA/*", "NVIDIA/Namespace/*", "NVIDIA/Model-X"]
+    } } } };
+    normalizeConfigForStorage(config);
+    expect(config.agents!.defaults!.modelPolicy!.allow).toEqual([
+      "NVIDIA/*", "NVIDIA/*", "NVIDIA/Namespace/*", "nvidia/Model-X"
+    ]);
+  });
+
   test("stores provider keys and all provider ref prefixes in lowercase while preserving model IDs", () => {
     const config: OpenClawConfig = {
       models: {

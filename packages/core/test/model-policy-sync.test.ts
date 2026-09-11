@@ -177,11 +177,11 @@ describe("modelPolicy.allow 双向同步", () => {
     expect(allow).not.toContain("CPA/*");
   });
 
-  test("normalizeConfigForStorage 同步小写化 policy 条目的 Provider 前缀", () => {
+  test("normalizeConfigForStorage 只小写化 exact ref，用户 wildcard 保持原样", () => {
     const config = migratedConfig();
     config.agents!.defaults!.modelPolicy!.allow = ["CPA/m1", "CPA2/*", "other/o1"];
     normalizeConfigForStorage(config);
-    expect(readModelPolicyAllow(config)).toEqual(["cpa/m1", "cpa2/*", "other/o1"]);
+    expect(readModelPolicyAllow(config)).toEqual(["cpa/m1", "CPA2/*", "other/o1"]);
   });
 
   test("未迁移（无 modelPolicy）与显式 [] 放开的配置全程不被触碰", () => {

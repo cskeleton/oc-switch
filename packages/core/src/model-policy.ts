@@ -301,7 +301,7 @@ export function rewritePolicyAllowProviderPrefix(
   return changed;
 }
 
-/** 存储规范化：policy 条目的 Provider 前缀小写化（通配的 `*` 原样保留），去重保序。 */
+/** 存储规范化只处理 exact refs；用户 wildcard 的大小写、顺序及重复条目原样保留。 */
 export function normalizePolicyAllowRefs(config: OpenClawConfig): boolean {
   const raw = readModelPolicyAllowRaw(config);
   if (!raw) return false;
@@ -309,7 +309,7 @@ export function normalizePolicyAllowRefs(config: OpenClawConfig): boolean {
   const seen = new Set<string>();
   const next: unknown[] = [];
   for (const entry of raw) {
-    if (typeof entry !== "string") {
+    if (typeof entry !== "string" || isWildcard(entry)) {
       next.push(entry);
       continue;
     }

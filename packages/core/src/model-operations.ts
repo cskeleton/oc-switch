@@ -15,6 +15,7 @@ import {
 } from "./model-policy";
 import { isPrimaryModelRef, readFallbackModelRefs, readPrimaryModelRef, writePrimaryModelRef } from "./primary-model";
 import type { PluginProvider } from "./plugin-catalog";
+import type { ModelInventoryEntry } from "./model-inventory";
 import { assertProviderModelCapacity } from "./provider-model-limits";
 import type { AllowlistEntry, OpenClawConfig, OpenClawModel, ProviderModelInput } from "./types";
 
@@ -52,8 +53,19 @@ function assertPrimaryRemovalAllowed(
 function assertKnownModel(
   config: OpenClawConfig,
   ref: string,
-  pluginProviders: PluginProvider[]
+  pluginProviders: PluginProvider[],
+  runtimeEntry?: ModelInventoryEntry
 ): void {
+  // 已提供运行时事实时，不得用静态目录绕过 unknown/unavailable；无事实参数的旧调用保持兼容。
+  if (runtimeEntry) {
+    if (normalizeModelRefForStorage(runtimeEntry.ref) !== normalizeModelRefForStorage(ref)) {
+      throw new Error(`Runtime model ${runtimeEntry.ref} does not match requested model ${ref}`);
+    }
+    if (runtimeEntry.availability !== "available") {
+      throw new Error(`Model ${ref} is not confirmed available (${runtimeEntry.availability})`);
+    }
+    return;
+  }
   if (hasKnownModel(config, ref, pluginProviders)) return;
   const { providerId, modelId } = parseModelRef(ref);
   const disabledPlugin = pluginProviders.find(
@@ -73,15 +85,18 @@ function assertKnownModel(
 export function setPrimaryModel(
   config: OpenClawConfig,
   ref: string,
-  pluginProviders: PluginProvider[] = []
+  pluginProviders: PluginProvider[] = [],
+  runtimeEntry?: ModelInventoryEntry
 ): OperationResult {
+  assertKnownModel(config, ref, pluginProviders, runtimeEntry);
   ensureDefaults(config);
-  assertKnownModel(config, ref, pluginProviders);
   writePrimaryModelRef(config, ref);
   return { config, warnings: [] };
 }
 
 export function disableModel(config: OpenClawConfig, ref: string): OperationResult {
+  if (isPrimaryModelRef(config, ref)) throw new Error(`Model ${ref} is the primary model; switch primary before disabling it.`);
+  assertFallbackRemovalAllowed(config, ref);
   assertNoPolicyWildcardForRef(config, ref, "disable");
   assertPolicyExactRefsRemovalAllowed(config, [ref], "disable", ref);
   ensureDefaults(config);
@@ -96,10 +111,11 @@ export function enableModel(
   config: OpenClawConfig,
   ref: string,
   alias?: string,
-  pluginProviders: PluginProvider[] = []
+  pluginProviders: PluginProvider[] = [],
+  runtimeEntry?: ModelInventoryEntry
 ): OperationResult {
+  assertKnownModel(config, ref, pluginProviders, runtimeEntry);
   ensureDefaults(config);
-  assertKnownModel(config, ref, pluginProviders);
   const matchingRefs = matchingAllowlistRefs(config, ref);
   const existingRef = matchingRefs[0];
   const existing = existingRef ? config.agents!.defaults!.models![existingRef] ?? {} : {};

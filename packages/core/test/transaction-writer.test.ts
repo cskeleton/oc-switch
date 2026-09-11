@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sample from "./fixtures/openclaw.sample.json";
 import { writePrimaryModelRef } from "../src/primary-model";
+import { removeModelPolicyExactRef } from "../src/model-reconciliation";
+import { setModelPluginEnabled } from "../src/plugin-state";
 import { writeEnvTransaction, writeOpenClawTransaction } from "../src/transaction-writer";
 import type { RuntimeDiscoveryResult, RuntimePathCandidateGroup } from "../src/runtime-discovery-types";
 import type { OpenClawConfig } from "../src/types";
@@ -65,6 +67,96 @@ afterEach(() => {
 const darwinTest = process.platform === "darwin" ? test : test.skip;
 
 describe("writeOpenClawTransaction", () => {
+  test("最小插件事务不借机归一化无关 Provider、policy 或 metadata", async () => {
+    const ws = makeWorkspace({ prepareGateway: false });
+    const before = JSON.parse(readFileSync(ws.openclawPath, "utf8")) as OpenClawConfig;
+    before.agents!.defaults!.modelPolicy = { allow: ["DeepSeek/deepseek-chat", "NVIDIA/*"] };
+    writeFileSync(ws.openclawPath, JSON.stringify(before));
+    await writeOpenClawTransaction({
+      ...ws, reason: "minimal plugin state", normalizeConfig: false,
+      runtimeDiscoveryProvider: () => discoveryResult([]),
+      mutate: config => setModelPluginEnabled(config, {
+        id: "auxiliary", origin: "bundled", enabled: true, providerIds: ["auxiliary"], nonModelCapabilities: []
+      }, false).config
+    });
+    const after = JSON.parse(readFileSync(ws.openclawPath, "utf8"));
+    expect(after.plugins).toEqual({ entries: { auxiliary: { enabled: false } } });
+    delete after.plugins;
+    expect(after).toEqual(before);
+  });
+
+  test("预检期间文件变更会重新读取并预检，不覆盖外部 config/env 修改", async () => {
+    const ws = makeWorkspace({ prepareGateway: false });
+    let attempts = 0;
+    let writes = 0;
+    const result = await writeOpenClawTransaction({
+      ...ws, reason: "runtime preflight race", runtimeDiscoveryProvider: () => discoveryResult([]),
+      mutate(config) {
+        attempts++;
+        if (attempts === 1) {
+          const external = JSON.parse(readFileSync(ws.openclawPath, "utf8"));
+          external.agents.defaults.models["external/metadata"] = { alias: "keep-external-change" };
+          writeFileSync(ws.openclawPath, JSON.stringify(external));
+          writeFileSync(ws.envPath, "EXTERNAL_SETTING=keep\n");
+        }
+        writePrimaryModelRef(config, "nvidia/deepseek-ai/deepseek-v4-flash");
+        return config;
+      },
+      afterWrite() { writes++; }
+    });
+    expect(attempts).toBe(2);
+    expect(writes).toBe(1);
+    const after = JSON.parse(readFileSync(ws.openclawPath, "utf8"));
+    expect(after.agents.defaults.models["external/metadata"]).toEqual({ alias: "keep-external-change" });
+    expect(after.agents.defaults.model).toBe("nvidia/deepseek-ai/deepseek-v4-flash");
+    expect(readFileSync(ws.envPath, "utf8")).toBe("EXTERNAL_SETTING=keep\n");
+    expect(readFileSync(join(result.backupDir, "openclaw.json"), "utf8")).toContain("keep-external-change");
+  });
+
+  test("重新预检会阻断外部新设为 primary 的待删除 ref", async () => {
+    const ws = makeWorkspace({ prepareGateway: false });
+    const target = "nvidia/z-ai/glm5.1";
+    const seed = JSON.parse(readFileSync(ws.openclawPath, "utf8"));
+    seed.agents.defaults.modelPolicy = { allow: [target, "minimax-portal/MiniMax-M3"] };
+    writeFileSync(ws.openclawPath, JSON.stringify(seed));
+    let attempts = 0;
+    await expect(writeOpenClawTransaction({
+      ...ws, reason: "protected reference race", runtimeDiscoveryProvider: () => discoveryResult([]),
+      mutate(config) {
+        attempts++;
+        if (attempts === 1) {
+          const external = JSON.parse(readFileSync(ws.openclawPath, "utf8"));
+          external.agents.defaults.model = target;
+          writeFileSync(ws.openclawPath, JSON.stringify(external));
+        }
+        return removeModelPolicyExactRef(config, target).config;
+      }
+    })).rejects.toThrow(/primary model/);
+    expect(attempts).toBe(2);
+    const after = JSON.parse(readFileSync(ws.openclawPath, "utf8"));
+    expect(after.agents.defaults.model).toBe(target);
+    expect(after.agents.defaults.modelPolicy.allow).toContain(target);
+    expect(existsSync(join(ws.stateDir, "backups"))).toBe(false);
+  });
+
+  test("文件持续变化时明确失败，不无限重试或覆盖最新修改", async () => {
+    const ws = makeWorkspace({ prepareGateway: false });
+    let attempts = 0;
+    await expect(writeOpenClawTransaction({
+      ...ws, reason: "unstable preflight", runtimeDiscoveryProvider: () => discoveryResult([]),
+      mutate(config) {
+        attempts++;
+        const external = JSON.parse(readFileSync(ws.openclawPath, "utf8"));
+        external.agents.defaults.models["external/metadata"] = { alias: String(attempts) };
+        writeFileSync(ws.openclawPath, JSON.stringify(external));
+        return config;
+      }
+    })).rejects.toThrow(/changed during preflight/);
+    expect(attempts).toBe(2);
+    expect(JSON.parse(readFileSync(ws.openclawPath, "utf8")).agents.defaults.models["external/metadata"].alias).toBe("2");
+    expect(existsSync(join(ws.stateDir, "backups"))).toBe(false);
+  });
+
   test("normalizes legacy Provider IDs and refs before persisting any config write", async () => {
     const ws = makeWorkspace();
 

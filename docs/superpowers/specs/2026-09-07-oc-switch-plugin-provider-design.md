@@ -84,6 +84,14 @@ interface PluginCatalogResult { providers: PluginProvider[]; diagnostics: string
 
 ## 7. 明确不做（v2 候选）
 
+> **2026-09-09 更新**：本节下列条目已由《oc-switch OpenClaw 运行时 Provider / 模型协调管理设计》（`2026-09-09-oc-switch-runtime-model-management-design.md`）接管实现，本 spec 的相应表述由该 spec 取代：
+>
+> - **整 provider 启停（写 `plugins.entries.<id>.enabled`）**：已实现为插件级启停 operation（新 spec §9；CLI `plugin enable/disable`、`PATCH /api/plugins/:pluginId/state`），diff guard 白名单已含 `plugins.entries.<id>.enabled`。
+> - **运行时目录 / 同名 provider 的模型并集**：统一 inventory（新 spec §6/§7）按 config ∪ 插件 manifest ∪ OpenClaw 运行时目录合并模型行；本 spec §3 的「config 优先遮蔽插件成员」简化只保留在兼容层 `createConfigAdapter`（`/api/models` 旧 consumers），新代码不得依赖该简化判断运行时可用性。
+> - **运行时-only 模型的 drift 误报**：统一 inventory 以运行时探测（`openclaw models list --json` / `--all`）给出三态可用性（available/unavailable/unknown），只存在于运行时 shard 的模型不再被误报；`config-status` 的 drift 判定不变（它仍是 config-only 视角）。
+>
+> 未被接管、维持不做的条目：读取 agent SQLite 密钥表、`models.mode: "replace"` 管理、Web 侧 config-status issues 展示组件。
+
 - 整 provider 启停（写 `plugins.entries.<id>.enabled`，需扩 `diff-guard.ts` 白名单）。
 - `models.providers.<同名>` 覆盖/接管成员资格的写入 UI。
 - 读取 agent SQLite 的运行时刷新 catalog（live 模型）；`models.mode: "replace"` 管理。运行时-only 模型（本机 `opencode/mimo-v2.5`）在 v1 会被 `knownProviderUnknownModelRefs` 误报为 drift。

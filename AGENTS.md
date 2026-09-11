@@ -45,11 +45,22 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 - **Provider 模型目录**：`models.providers`；`listModels` 合并两者。
 - **主模型**：`agents.defaults.model`，双形态（见下节）。
 
+### 运行时模型协调（2026-09-09 起）
+
+- **三维状态**：策略允许（`policyAllowed` / `selectionSource`）、插件启停（`pluginEnabled`）与运行可用性（`availability: "available" | "unavailable" | "unknown"`）是**三个独立维度**，绝不合并成一个 boolean；「策略允许」不代表「可调用」。必要探测证据不足（CLI 缺失 / 超时 / 非法 JSON / 目录 snapshot 不完整）时标为 `unknown/probe-failed`，绝不误判 `unavailable`；已取得的明确可用事实可保留。OpenClaw 合法的 `available:null` 仅使该行 unknown，不污染整份目录；unknown 行禁用一切清理/编排 capability。
+- **统一 inventory 读路径**：`packages/core/src/model-inventory.ts` 的 `buildModelInventory` 合并 config ∪ 插件 manifest ∪ OpenClaw 运行时目录（`runtime-model-catalog.ts` 经四条白名单命令 `--version` / `models status --json` / `models list --json` / `models list --all --json` 探测，任一失败逐命令降级 + diagnostics，不抛错）∪ 引用来源（policy exact、legacy metadata、primary/fallback）。Server `GET /api/model-inventory`（30s 缓存 + `POST …/refresh` 强制重探测）与 CLI `models inventory / unavailable` 共用同一计算，acceptance 锁定两端口径一致。wildcard 不是模型行，只作为规则展示（`policyRules`），实际覆盖目录模型时才补 `policy-wildcard` 引用来源。
+- **兼容层边界**：`createConfigAdapter`（`GET /api/models`、`ProviderSummary.source`）保留给旧 consumers；其「config 同名遮蔽插件成员」是 v1 简化，**新代码不得依赖它判断运行时可用性**——一律走 `buildModelInventory`。形状由 `config-adapter.test.ts` 的兼容层回归测试锁死。
+- **运行时写入门禁**：模型启停 / 设主模型 / 编辑删除 / 批量清理 / 引用协调使用事务内 fresh inventory，不能以静态目录绕过 unknown；缓存绑定所选 config/env 路径与文件版本。预检期间外部 config/env 变化时，Core 重新读取并重做 mutation 一次，持续变化则明确拒绝。插件启停与精确协调事务设 `normalizeConfig:false`，不顺带归一无关配置；全局归一也不允许改写或去重 wildcard。
+- **插件级启停**：`packages/core/src/plugin-state.ts` 只写 `plugins.entries.<pluginId>.enabled` 一个键（diff-guard 白名单已含）；主模型 / fallback 命中贡献 Provider 时 fail closed；policy / legacy metadata 原样保留（停用后成为不可用项是预期，重新启用即恢复）。一个插件可贡献多个 Provider（如 xiaomi → xiaomi + xiaomi-token-plan），UI/CLI 只提供插件级开关并完整提示非模型能力（speech/tools/hooks…）影响；写后重探测并确认目标插件的实际 enabled 与请求值一致，`runtimeConfirmed: false` 是警告不是失败。非模型能力从真实 `toolNames` / `hookNames` / `hookCount` / 各类 `*ProviderIds` 等公开字段归类，不只识别旧 `toolIds` 等别名。未知 pluginId 在 server 404 / CLI 非零退出（descriptor 只来自当前发现的插件列表，杜绝凭空注入）。
+- **模型引用协调**：`packages/core/src/model-reconciliation.ts`——`removeModelPolicyExactRef`（默认只删 policy exact、metadata 为独立复选项；删成 `[]` unrestricted 时 fail closed；wildcard 输入拒绝）与 `materializeRuntimeModel`（仅 runtime `available` 且 config Provider 已存在才补入；Provider 缺配置返回结构化「需用户补充字段」，绝不猜 baseUrl/API）。primary/fallback 命中时 fail closed，`force` 不可绕过。
+- **测试隔离（运行时探测，必读）**：server 的 `createApp` 与 CLI 默认真实 shell-out `openclaw`。server 测试经 `AppOptions.runtimeModelCatalogProvider` 注入；CLI 测试经 `OC_SWITCH_MOCK_RUNTIME_MODELS` 环境变量指向 `{ version, status, list, listAll }` fixture 文件；acceptance 在 PATH 前置假 `openclaw` 脚本按 argv 回放，并经 `OC_FAKE_OPENCLAW_MODE=timeout|invalid-json` 切换失败模式。任何测试都不得读开发机真实 `~/.openclaw`。完整浏览器 E2E 默认隔离 API `17420` / Web `15173`，可用 `E2E_API_PORT` / `E2E_WEB_PORT` 覆盖；不能停掉或复用常驻 `7420`。
+- 详见 `docs/superpowers/specs/2026-09-09-oc-switch-runtime-model-management-design.md`（§17 为实现后 Sync Audit）。
+
 ### 插件 Provider（OpenClaw 2026.4+）
 
 - **来源**：Provider 可来自 OpenClaw **插件 manifest** 的 `modelCatalog`（bundled 或 npm global），**从不写入** `models.providers`。`packages/core/src/plugin-catalog.ts` 的 `discoverPluginCatalog()` 经 `openclaw plugins list --json` + 读 `<rootDir>/openclaw.plugin.json` 得到只读目录；任何失败（CLI 缺失/8s 超时/JSON 或 manifest 解析失败）**降级为空结果 + diagnostics，绝不抛错**，行为回落到 config-only。
 - **DTO**：`ProviderSummary.source: "config" | "plugin"`（必填）。插件条目的 `disabled = !plugin.enabled`，语义是 OpenClaw 的 `plugins.entries.<id>.enabled=false`，**与 oc-switch 的可逆关闭（`provider-states.json`）无关**，UI/CLI 不得混用同一文案。
-- **冲突规则**：providerId 与 `models.providers` 同名（大小写折叠）时 **config 优先**，插件条目不列出，且该 provider 的**模型级**校验/编排只看本地目录。这是 v1 简化——OpenClaw 实际是并集，取舍与误差见 spec §3/§7。
+- **冲突规则**：providerId 与 `models.providers` 同名（大小写折叠）时 **config 优先**，插件条目不列出，且该 provider 的**模型级**校验/编排只看本地目录。这是 v1 简化——OpenClaw 实际是并集；统一 inventory（2026-09-09 spec）已按并集合并模型行，此遮蔽语义只保留在兼容层 `createConfigAdapter`。
 - **可写范围**：只有「单模型启停 / 设主模型 / 设 API Key」。`enableModel` / `setPrimaryModel` 用 `hasKnownModel`（本地目录 ∪ **启用中**插件 catalog）校验；插件 `enabled=false` 的 ref 拒绝并在报错中指向 `plugins.entries.<pluginId>.enabled=false`。编辑连接信息、增删改模型、`disableProvider`/`restoreDisabledProvider`、`removeProvider`/`deleteProvider` 对插件 provider 一律**显式拒绝**（不得静默 no-op）。v1 不写 `plugins.entries`；唯一例外是 `sync push --enable-plugins`（spec §6.3 的刻意收窄：仅 `plugins.entries.<id>.enabled` 一个键位、仅 false→true、仅显式列出的 pluginId，收窄逻辑在 `config-sync.ts` 的 `applySyncPayload`，diff-guard 白名单相应只加该一条）。
 - **API Key**：只写 `.env` 托管块中 manifest `setup.providers[].envVars` 声明的变量（`providerAuthChoices` 不含变量名）。`apiKeyEnvVars` 把含 `API_KEY` 的变量排到前面并只取首个——否则会把 API Key 写进 `ANTHROPIC_OAUTH_TOKEN` 这类 OAuth 变量。**不写** `models.providers.<id>.apiKey`。
 - **计数语义**：`StatusSummary.providerCount` / `providerModelCount` 保持 config-only；`effectiveModelCount` 必须计入启用中插件 provider 并与 `ConfigStatusReport.modelPolicy.effectiveCatalogCount` **相等**（server 测试锁定该不变量）。
@@ -93,6 +104,13 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 - 插件 Provider 的模型可启停与设为主模型（CLI `model enable/disable`、`use`；`PATCH /api/models`、`PUT /api/models/primary`；Models 页 Switch/Star），编辑与删除入口隐藏
 - 模型编辑（Web + API）
 - 模型参数批量同步（`provider sync-metadata`、`POST /api/providers/:id/models/sync-metadata`、Providers 页「同步参数」）：从 models.dev 为本地目录条目回填 `name`/`reasoning`/`contextWindow`/`maxTokens`/`input`；确定性 resolver 唯一 high 置信自动回填，其余（非 high、多候选、模糊命中）进确认队列 `~/.oc-switch/model-metadata-sync-queue.json`，Web/CLI/API 三端 accept/dismiss；只填空缺字段，绝不覆盖已有值
+
+### 运行时模型协调（2026-09-09）
+
+- 统一 inventory：`GET /api/model-inventory`（+ `POST …/refresh`）与 CLI `models inventory [--json]` / `models unavailable [--json]`；合并 config / 插件 manifest / OpenClaw 运行时目录三来源 + 引用来源；模型行三维状态（策略 / 插件 / 可用性）与 capability 从事实推导
+- 不可用与待处理：Models 页汇总区段（严重性排序：主模型 > fallback > 悬空精确引用 > 其余 > unknown）；处理向导按行事实分发——补全到已有目录（`POST /api/models/materialize`、CLI `model reconcile <ref> --yes`）、删除 policy 精确引用（`DELETE /api/model-policy/exact-ref`、CLI `model remove-policy-ref`，metadata 独立复选）、Provider 缺配置时打开 Custom Provider 向导预填 providerId/modelId、或保留；primary/fallback fail closed
+- Policy 规则视图（Models 页折叠区段）：exact 可删、wildcard 本期只读（显示命中/不可用计数）、非字符串条目只显示下标不回显值
+- 插件级启停：`PATCH /api/plugins/:pluginId/state`（confirm 必填）与 CLI `plugin enable/disable`；一组一个开关（一个插件多 Provider）、只写 `enabled` 一个键、主模型/fallback 阻断、非模型能力影响完整提示、写后重探测 `runtimeConfirmed` 分离报告
 
 ### 配置健康
 
@@ -172,6 +190,7 @@ bun run packages/cli/src/index.ts     # 直接调用 CLI
 | Model Metadata Core-ID Matching | `docs/superpowers/specs/2026-09-02-oc-switch-model-metadata-core-id-matching-design.md` |
 | Model Metadata Batch Sync | `docs/superpowers/specs/2026-09-05-oc-switch-model-metadata-batch-sync-design.md` |
 | Plugin Provider | `docs/superpowers/specs/2026-09-07-oc-switch-plugin-provider-design.md` |
+| Runtime Model Management | `docs/superpowers/specs/2026-09-09-oc-switch-runtime-model-management-design.md` |
 | Config Sync（跨机同步） | `docs/superpowers/specs/2026-09-09-oc-switch-config-sync-design.md` |
 
 ## Learned User Preferences

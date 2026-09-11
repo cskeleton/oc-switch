@@ -13,13 +13,16 @@ import { requirePathSettingsUpdate } from "../schemas";
 
 export function registerSettingsRoutes(app: Hono, runtime: AppRuntime): void {
   app.get("/api/settings/paths", (c) => {
+    const paths = runtime.currentPaths();
     const runtimeDiscovery = runtime.runtimeDiscoveryProvider();
-    return c.json(resolveOpenClawPathCandidates({
-      stateDir: runtime.currentPaths().stateDir,
+    const candidates = resolveOpenClawPathCandidates({
+      stateDir: paths.stateDir,
       runtimeDiscovery,
-      manualOpenClawPaths: [runtime.currentPaths().openclawPath],
-      manualEnvPaths: [runtime.currentPaths().envPath]
-    }));
+      manualOpenClawPaths: [paths.openclawPath],
+      manualEnvPaths: [paths.envPath]
+    });
+    // 候选发现可参考进程环境，但 active 必须与本服务实际读写路径一致。
+    return c.json({ ...candidates, active: paths });
   });
 
   app.put("/api/settings/paths", async (c) => {

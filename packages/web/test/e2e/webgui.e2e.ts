@@ -1,7 +1,8 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
 const TOKEN = "e2e-test-token";
-const BASE_URL = "http://127.0.0.1:7420";
+/** API 地址：隔离配置注入 E2E_API_BASE_URL（默认主配置的 7420） */
+const BASE_URL = process.env.E2E_API_BASE_URL ?? "http://127.0.0.1:7420";
 const FIXTURE_SECRET = "e2e-fixture-secret-NEVER-LEAK";
 
 type DiscoveryStatus =
@@ -270,12 +271,16 @@ test.describe("WebGUI smoke", () => {
     await expect(page.getByLabel("自动登录")).toHaveAttribute("aria-checked", "false");
   });
 
-  test("providers table visible", async ({ page }) => {
+  test("providers table visible", async ({ page }, testInfo) => {
     await connect(page);
     await page.getByRole("button", { name: "Providers" }).click();
     await expect(page.getByTestId("providers-view")).toBeVisible();
     await expect(page.getByTestId("providers-view").getByText("nvidia", { exact: true })).toBeVisible();
-    await expect(page.getByText("openai-completions").first()).toBeVisible();
+    // API 类型列在窄屏（sm 以下）按设计隐藏（低价值列让位给 ID/操作），
+    // 仅桌面断言其可见
+    if (testInfo.project.name === "desktop") {
+      await expect(page.getByText("openai-completions").first()).toBeVisible();
+    }
   });
 
   test("models page includes slash ref without overflow", async ({ page }) => {
@@ -484,7 +489,9 @@ test.describe("Model metadata suggestions (offline fixtures)", () => {
   test("query → apply → save round-trip; catalog failure still allows manual save", async ({ page }) => {
     await connect(page);
     await page.getByRole("button", { name: "模型" }).click();
-    await page.getByRole("button", { name: "nvidia" }).click();
+    // metadata-e2e Provider：e2e fixture 专供（不被任何 policy wildcard 覆盖——
+    // restricted 模式下 wildcard 覆盖的 Provider 删除模型会 fail closed）
+    await page.locator("nav").getByRole("button", { name: /^metadata-e2e/ }).click();
 
     // 1+2. 打开“添加模型”，输入含斜杠的 raw Model ID
     await page.getByRole("button", { name: "添加模型" }).click();
@@ -522,7 +529,7 @@ test.describe("Model metadata suggestions (offline fixtures)", () => {
     await expect(page.getByRole("dialog")).toHaveCount(0);
 
     // 6. 重新打开编辑，三字段 round-trip 正确
-    await page.getByLabel("编辑模型 nvidia/openai/gpt-5.2").click();
+    await page.getByLabel("编辑模型 metadata-e2e/openai/gpt-5.2").click();
     await expect(page.getByRole("dialog")).toBeVisible();
     await expect(page.getByLabel("原生上下文窗口")).toHaveValue("400000");
     await expect(page.getByLabel("运行上下文预算")).toHaveValue("32768");
@@ -546,10 +553,10 @@ test.describe("Model metadata suggestions (offline fixtures)", () => {
     await page.getByLabel("原生上下文窗口").fill("12345");
     await page.getByRole("button", { name: "保存模型" }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
-    await expect(page.getByLabel("编辑模型 nvidia/manual-model")).toBeVisible();
+    await expect(page.getByLabel("编辑模型 metadata-e2e/manual-model")).toBeVisible();
 
     // 清理：删除测试模型，避免 desktop/mobile 两个 project 复用同一 server 时状态串扰
-    for (const ref of ["nvidia/manual-model", "nvidia/openai/gpt-5.2"]) {
+    for (const ref of ["metadata-e2e/manual-model", "metadata-e2e/openai/gpt-5.2"]) {
       await page.getByLabel(`删除模型 ${ref}`).click();
       await expect(page.getByText(`确认删除 ${ref}？此操作将创建备份。`)).toBeVisible();
       await page.getByRole("button", { name: "确认" }).click();

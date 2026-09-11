@@ -514,6 +514,152 @@ export interface ModelMetadataQueueResolveResponse {
   backupId?: string;
 }
 
+// ---------- 统一模型/Provider inventory DTO（与 packages/core/src/model-inventory.ts 同名同值） ----------
+
+/** 模型目录来源（config / 插件 manifest / OpenClaw 运行时）。 */
+export type ModelCatalogSource = "config" | "plugin-manifest" | "openclaw-runtime";
+
+/** 引用来源（主模型 / fallback / legacy metadata / policy 精确 / policy 通配）。 */
+export type ModelReferenceSource = "primary" | "fallback" | "legacy-metadata" | "policy-exact" | "policy-wildcard";
+
+/** 运行可用性三态（探测证据不足时 unknown，绝不误判 unavailable）。 */
+export type ModelAvailability = "available" | "unavailable" | "unknown";
+
+/** 不可用/未知原因（含探测失败）。 */
+export type ModelAvailabilityReason =
+  | "plugin-disabled"
+  | "provider-not-found"
+  | "model-not-in-catalog"
+  | "missing-auth"
+  | "route-incompatible"
+  | "provider-rejected"
+  | "probe-failed";
+
+/** 模型行能力开关（从事实推导，不由 UI 猜）。 */
+export interface ModelInventoryCapabilities {
+  canTogglePolicy: boolean;
+  canSetPrimary: boolean;
+  canEditCatalogEntry: boolean;
+  canMaterializeConfigModel: boolean;
+  canRemovePolicyExactRef: boolean;
+}
+
+/** 统一模型行。 */
+export interface ModelInventoryEntry {
+  ref: string;
+  providerId: string;
+  modelId: string;
+  catalogSources: ModelCatalogSource[];
+  referenceSources: ModelReferenceSource[];
+  policyMode: ModelPolicyMode;
+  selectionSource?: ModelSelectionSource;
+  policyAllowed: boolean;
+  availability: ModelAvailability;
+  availabilityReasons: ModelAvailabilityReason[];
+  pluginIds: string[];
+  capabilities: ModelInventoryCapabilities;
+}
+
+/** Provider 能力开关（写权限按来源限制）。 */
+export interface ProviderInventoryCapabilities {
+  canEditConnection: boolean;
+  canManageModels: boolean;
+  canDisableProvider: boolean;
+  canSetApiKey: boolean;
+}
+
+/** 统一 Provider 行。 */
+export interface ProviderInventoryEntry {
+  providerId: string;
+  sources: ModelCatalogSource[];
+  pluginIds: string[];
+  /** true | false | null：null 表示非插件或无法确认。 */
+  pluginEnabled: boolean | null;
+  /** oc-switch 可逆关闭状态（provider-states.json），与插件 enabled 无关。 */
+  disabled: boolean;
+  availability: ModelAvailability;
+  availabilityReasons: ModelAvailabilityReason[];
+  modelCount: number;
+  policyAllowedModelCount: number;
+  availableModelCount: number;
+  unavailableModelCount: number;
+  capabilities: ProviderInventoryCapabilities;
+}
+
+/** policy.allow 原始规则投影：wildcard 不是模型行，只作为规则展示。 */
+export interface ModelPolicyRuleEntry {
+  value: string;
+  kind: "exact" | "wildcard" | "invalid";
+  /** 该规则在 allow 数组中的原始下标（invalid 条目只回显 index，不回显值）。 */
+  invalidIndex?: number;
+  matchedModelCount: number;
+  unavailableModelCount: number;
+  removable: boolean;
+}
+
+/** 插件级 descriptor 的非模型能力（用于启停确认框的影响面提示）。 */
+export type ModelPluginNonModelCapability =
+  | "channels"
+  | "tools"
+  | "hooks"
+  | "commands"
+  | "services"
+  | "speech"
+  | "realtime"
+  | "media"
+  | "search"
+  | "other-contracts";
+
+export interface ModelPluginDescriptor {
+  id: string;
+  name?: string;
+  origin: string;
+  enabled: boolean;
+  providerIds: string[];
+  nonModelCapabilities: ModelPluginNonModelCapability[];
+}
+
+/** 运行时目录探测诊断（探测失败不等于写入失败）。 */
+export interface RuntimeModelDiagnostic {
+  command: "version" | "status" | "list" | "list-all";
+  code: "missing" | "timeout" | "non-zero-exit" | "invalid-json" | "invalid-shape";
+  message: string;
+}
+
+/** GET /api/model-inventory 与 POST /api/model-inventory/refresh 的响应（inventory 本体，无包裹层）。 */
+export type ModelInventoryResponse = ModelInventory;
+
+export interface ModelInventory {
+  providers: ProviderInventoryEntry[];
+  models: ModelInventoryEntry[];
+  plugins: ModelPluginDescriptor[];
+  policyRules: ModelPolicyRuleEntry[];
+  diagnostics: RuntimeModelDiagnostic[];
+  summary: {
+    modelCount: number;
+    policyAllowedCount: number;
+    availableCount: number;
+    unavailableCount: number;
+    unknownCount: number;
+  };
+}
+
+/** 写入类端点的统一确认结果：ok:true 表示写入已成功（含备份）。 */
+export interface MutationResult {
+  ok: true;
+  backupId: string;
+  diagnostics?: RuntimeModelDiagnostic[];
+}
+
+/** PATCH /api/plugins/:pluginId/state 的响应：写入成功但运行时确认失败时 runtimeConfirmed=false（非 HTTP 失败）。 */
+export interface PluginStateMutationResult extends MutationResult {
+  pluginId: string;
+  enabled: boolean;
+  affectedProviderIds: string[];
+  warnings: string[];
+  runtimeConfirmed: boolean;
+}
+
 export type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 export interface ApiClientOptions {
@@ -689,6 +835,30 @@ export function createApiClient(options: ApiClientOptions) {
       request<ModelMetadataQueueResolveResponse>("/api/model-metadata/sync-queue/resolve", {
         method: "POST",
         body: JSON.stringify({ items })
+      }),
+    /** GET /api/model-inventory：读取统一模型/Provider inventory（只读，无写盘） */
+    getModelInventory: () => request<ModelInventoryResponse>("/api/model-inventory"),
+    /** POST /api/model-inventory/refresh：强制重探测，返回刷新后的完整 inventory */
+    refreshModelInventory: () => request<ModelInventoryResponse>("/api/model-inventory/refresh", {
+      method: "POST"
+    }),
+    /** DELETE /api/model-policy/exact-ref：移除 policy 精确引用（removeMetadata 决定是否连带 legacy metadata） */
+    removeModelPolicyExactRef: (ref: string, removeMetadata: boolean) =>
+      request<MutationResult>("/api/model-policy/exact-ref", {
+        method: "DELETE",
+        body: JSON.stringify({ ref, removeMetadata })
+      }),
+    /** POST /api/models/materialize：把运行时可用模型补全为 config Provider 目录项 */
+    materializeRuntimeModel: (ref: string, input: ProviderModelInput & { enabled: boolean }) =>
+      request<MutationResult>("/api/models/materialize", {
+        method: "POST",
+        body: JSON.stringify({ ref, input })
+      }),
+    /** PATCH /api/plugins/:pluginId/state：插件级启停（confirm 恒为 true；runtimeConfirmed:false 不是失败） */
+    setPluginState: (pluginId: string, enabled: boolean) =>
+      request<PluginStateMutationResult>(`/api/plugins/${encodeURIComponent(pluginId)}/state`, {
+        method: "PATCH",
+        body: JSON.stringify({ enabled, confirm: true })
       }),
     getBackups: () => request<{ backups: BackupEntry[] }>("/api/backups"),
     restoreBackup: (id: string, target?: "backup" | "current") =>
