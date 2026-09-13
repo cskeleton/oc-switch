@@ -53,6 +53,12 @@ export interface ModelInventoryCapabilities {
 
 /** spec §6.1：统一模型行。 */
 export interface ModelInventoryEntry {
+  /** 默认 Agent 选择器是否列出；不等同于可调用性。 */
+  pickerVisible?: boolean;
+  /** 未选用或主动停用，且没有 primary/fallback 依赖。 */
+  inactive?: boolean;
+  /** 正在选择/保护的引用出现可用性问题，才需要处理。 */
+  needsAttention?: boolean;
   ref: string;
   providerId: string;
   modelId: string;
@@ -81,6 +87,8 @@ export interface ProviderInventoryCapabilities {
 
 /** spec §6.2：统一 Provider 行。 */
 export interface ProviderInventoryEntry {
+  pickerModelCount?: number;
+  needsAttention?: boolean;
   providerId: string;
   sources: ModelCatalogSource[];
   /** 支持一个 Provider 多插件来源及一个插件多 Provider。 */
@@ -143,6 +151,8 @@ export interface BuildModelInventoryInput {
 }
 
 export interface ModelInventory {
+  schemaVersion?: 2;
+  pickerSource?: "gateway" | "inferred";
   providers: ProviderInventoryEntry[];
   models: ModelInventoryEntry[];
   plugins: ModelPluginDescriptor[];
@@ -240,8 +250,9 @@ function makeWorkingModel(providerId: string, modelId: string): WorkingModel {
  */
 export function buildModelInventory(input: BuildModelInventoryInput): ModelInventory {
   const { config, runtime } = input;
+  const configProviderIds = new Set(Object.keys(config.models?.providers ?? {}).map(normalizeProviderId));
   const disabledProviderIds = new Set(
-    [...(input.disabledProviderIds ?? [])].map((providerId) => normalizeProviderId(providerId))
+    [...(input.disabledProviderIds ?? [])].map((providerId) => normalizeProviderId(providerId)).filter(id => configProviderIds.has(id))
   );
   const pluginProviders = input.pluginProviders ?? [];
   const plugins = input.plugins ?? [];
@@ -259,6 +270,11 @@ export function buildModelInventory(input: BuildModelInventoryInput): ModelInven
   const primaryIdentity = primaryRef !== undefined ? refIdentity(primaryRef) : undefined;
   const fallbackIdentities = new Set(fallbackRefs.map((ref) => refIdentity(ref)).filter((id) => id !== undefined));
   const providerDisabled = (providerIdentity: string): boolean => disabledProviderIds.has(providerIdentity);
+  const authoredRefs = new Set([
+    ...Object.keys(config.agents?.defaults?.models ?? {}),
+    ...(readModelPolicyAllowRaw(config) ?? []).filter((ref): ref is string => typeof ref === "string" && !ref.endsWith("/*")),
+    ...(primaryRef ? [primaryRef] : []), ...fallbackRefs
+  ].map(refIdentity));
 
   // ---------- 1. 收集 Provider 与模型行（spec §7.1 候选集合并集） ----------
   const providersByNormal = new Map<string, WorkingProvider>();
@@ -312,6 +328,7 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
     const provider = ensureProvider(providerIdentity, plugin.providerId, "plugin-manifest");
     if (!provider.pluginIds.has(plugin.pluginId)) provider.pluginIds.add(plugin.pluginId);
     for (const model of plugin.models) {
+      if (pluginEnabledById.get(plugin.pluginId) === false && !authoredRefs.has(refIdentity(`${plugin.providerId}/${model.id}`))) continue;
       const working = ensureModel(`${plugin.providerId}/${model.id}`, "plugin-manifest");
       if (working) working.pluginIds.add(plugin.pluginId);
     }
@@ -329,9 +346,18 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
   // 运行时目录模型（configured + all）：ref 进入模型行并集；Provider 行只有在
   // config/插件已声明该 Provider 时才追加 openclaw-runtime 来源——「policy 里出现
   // providerId 不自动认定为可用 Provider，没有目录的归入未解析引用分组」（spec §6.2）
-  for (const entry of [...runtime.configuredModels, ...runtime.allModels]) {
+  const pickerIdentities = new Set((runtime.pickerModels ?? []).map(entry => refIdentity(entry.ref)));
+  const configuredIdentities = new Set(runtime.configuredModels.map(entry => refIdentity(entry.ref)));
+  for (const entry of [...(runtime.pickerModels ?? []), ...runtime.configuredModels, ...runtime.allModels]) {
     const parsed = tryParseRef(entry.ref);
     if (parsed === undefined) continue;
+    const identity = refIdentity(entry.ref);
+    const providerKnown = providersByNormal.get(normalizeProviderId(parsed.providerId));
+    const disabledPluginOnly = providerKnown && !providerKnown.sources.includes("config") && providerKnown.pluginIds.size > 0 && [...providerKnown.pluginIds].every(id => pluginEnabledById.get(id) === false);
+    if (disabledPluginOnly && !authoredRefs.has(identity) && !pickerIdentities.has(identity)) continue;
+    // --all 只补所选或已管理模型的证据，不把世界目录变成用户待办。
+    if (!pickerIdentities.has(identity) && !configuredIdentities.has(identity) && !modelsByIdentity.has(identity!) && !providerKnown?.sources.includes("config") && !authoredRefs.has(identity) && getModelSelectionSource(config, entry.ref) === undefined) continue;
+    if (!pickerIdentities.has(identity) && !configuredIdentities.has(identity) && !modelsByIdentity.has(identity!) && !authoredRefs.has(identity) && entry.available !== true) continue;
     // missing 行只是 OpenClaw 为悬空引用生成的占位，不能作为目录或 wildcard 命中证据。
     const runtimeEvidence = entry.missing !== true;
     const model = ensureModel(entry.ref, runtimeEvidence ? "openclaw-runtime" : undefined)!;
@@ -397,10 +423,11 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
   // ---------- 2. 模型行计算 ----------
   // 运行时证据索引：同一 identity 的 configured / all 条目（all 合并时保留首个 available 证据）
   const runtimeConfiguredByIdentity = new Map<string, RuntimeModelEntry>();
-  for (const entry of runtime.configuredModels) {
+  for (const entry of [...(runtime.pickerModels ?? []), ...runtime.configuredModels]) {
     const identity = refIdentity(entry.ref);
     if (identity === undefined) continue;
     const existing = runtimeConfiguredByIdentity.get(identity);
+    if (existing && pickerIdentities.has(identity)) continue;
     if (existing === undefined || (entry.available === true && entry.missing !== true && !(existing.available === true && existing.missing !== true))) {
       runtimeConfiguredByIdentity.set(identity, entry);
     }
@@ -429,7 +456,7 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
         : referenceSources.includes("policy-wildcard")
           ? "policy-wildcard"
           : policyMode === "legacy" ? getModelSelectionSource(config, ref)
-            : policyMode === "unrestricted" && catalogSources.length > 0 ? "unrestricted" : undefined;
+            : policyMode === "unrestricted" && catalogSources.length > 0 ? "unrestricted" : getModelSelectionSource(config, ref) === "policy-exact" ? "policy-exact" : undefined;
     const policyAllowed = selectionSource !== undefined;
 
     // 可用性证据规则（spec §7.2）：OpenClaw 明确 available 的事实优先
@@ -442,7 +469,8 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
     const runtimeAvailable = runtimeEntry?.available === true && runtimeEntry.missing !== true;
     // 明确不可用事实：标记为 false 或 missing；不凭 boolean 猜测具体拒绝原因。
     const runtimeRejectedEntry = runtimeEntry && (runtimeEntry.available === false || runtimeEntry.missing === true) ? runtimeEntry : undefined;
-    const pluginDisabled = !fromConfig && model.pluginIds.size > 0 && [...model.pluginIds].every((pluginId) => pluginEnabledById.get(pluginId) === false);
+    const ownerPluginIds = model.pluginIds.size ? [...model.pluginIds] : [...(providersByNormal.get(providerIdentity)?.pluginIds ?? [])];
+    const pluginDisabled = !fromConfig && ownerPluginIds.length > 0 && ownerPluginIds.every((pluginId) => pluginEnabledById.get(pluginId) === false);
     const providerMissing = !knownProviderIdentities.has(providerIdentity);
     // 完整探测 = 判定 unavailable 需要的目录证据全部到位（当前列表 + 完整目录 + status）
     const probeComplete = runtime.completeness.configuredList && runtime.completeness.allList && runtime.completeness.status && !(input.pluginDiagnostics?.length);
@@ -486,9 +514,13 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
     // capability 从事实推导（spec §6.1 / §7.3 / §11.2）
     const isExactOnlySelection = referenceSources.includes("policy-exact") && !referenceSources.includes("policy-wildcard");
     const protectedReference = isPrimary || isFallback;
+    const inactive = !protectedReference && (providerDisabled(providerIdentity) || pluginDisabled || !policyAllowed);
+    const pickerVisible = runtime.pickerModels !== undefined ? pickerIdentities.has(identity) :
+      !inactive && (protectedReference || referenceSources.includes("policy-exact") || (policyAllowed && availability === "available"));
+    const needsAttention = !inactive && (policyAllowed || protectedReference) && availability !== "available";
     // 不可用行走「处理」流程（补全/替换/删除引用/保留），不提供普通启停开关（spec §11.2）
     const preservesRestricted = policyAllowRaw.some(entry => typeof entry !== "string" || !exactEntryCovers(entry, ref));
-    const canRemovePolicyExactRef = isExactOnlySelection && !protectedReference && availability !== "unknown" && preservesRestricted && !findPolicyWildcardForRef(config, ref);
+    const canRemovePolicyExactRef = isExactOnlySelection && !protectedReference && preservesRestricted && !findPolicyWildcardForRef(config, ref);
     // primary/fallback 只阻断关闭；为它们补回缺失的允许规则是安全的启用操作。
     const canTogglePolicy = !providerDisabled(providerIdentity) && (!policyAllowed || !protectedReference) && availability === "available" &&
       (policyMode === "legacy" || (policyMode === "restricted" && (!policyAllowed || canRemovePolicyExactRef)));
@@ -504,6 +536,9 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
       availability === "available";
 
     models.push({
+      pickerVisible,
+      inactive,
+      needsAttention,
       ref,
       providerId: model.providerId,
       modelId: model.modelId,
@@ -575,6 +610,8 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
     const unavailableModelCount = providerModels.filter((model) => model.availability === "unavailable").length;
 
     providers.push({
+      pickerModelCount: providerModels.filter(model => model.pickerVisible).length,
+      needsAttention: providerModels.some(model => model.needsAttention),
       providerId: provider.providerId,
       sources: sortUniqueEnum(provider.sources, CATALOG_SOURCE_ORDER),
       pluginIds,
@@ -604,6 +641,8 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
 
   // ---------- 5. summary 与插件回显 ----------
   return {
+    schemaVersion: 2,
+    pickerSource: runtime.pickerSource ?? "inferred",
     providers,
     models,
     plugins: derivePlugins(plugins, pluginProviders),

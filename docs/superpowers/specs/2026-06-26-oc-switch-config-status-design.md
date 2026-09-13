@@ -1,5 +1,7 @@
 # oc-switch Config Status 设计规格
 
+> 2026-09-11 修正：选择器、主动停用、metadata 告警和异步探测行为以 [最新规格](2026-09-11-model-picker-and-disable-design.md) 为准；本文保留历史设计背景。
+
 > 日期：2026-06-26  
 > 状态：待 review  
 > 关联计划：`docs/superpowers/plans/2026-06-26-oc-switch-architecture-optimization-slices-2-6.md`（Slice 6）  

@@ -1,5 +1,7 @@
 # oc-switch 插件 Provider 支持设计（OpenClaw 2026.9.2 兼容）
 
+> 2026-09-11 修正：选择器、主动停用、metadata 告警和异步探测行为以 [最新规格](2026-09-11-model-picker-and-disable-design.md) 为准；本文保留历史设计背景。
+
 日期：2026-09-07（2026-09-08 真机验证后同步修订）
 状态：已实现（v1），已通过 `bun run check` + `bun run acceptance` + 真机只读验证
 

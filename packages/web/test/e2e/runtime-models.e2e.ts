@@ -103,32 +103,44 @@ test.describe("Runtime model inventory（统一 inventory 浏览器实测）", (
     expect(paths.active.openclawPath).toMatch(/[/\\]oc-switch-e2e-[^/\\]+[/\\]openclaw\.json$/);
   });
 
+  test("不再提醒跨页面和刷新有效，恢复提醒不改 OpenClaw 配置", async ({ page }) => {
+    const original = await readInventory(page);
+    let savedIssue: { id: string; revision: string } | undefined;
+    try {
+      await connect(page);
+      await page.getByRole("button", { name: "模型", exact: true }).click();
+      await page.getByRole("button", { name: "需处理 1", exact: true }).click();
+      await page.getByRole("button", { name: "处理问题 ghost-provider/policy-only-model", exact: true }).click();
+      await page.getByRole("button", { name: "本问题不再提醒", exact: true }).click();
+      await expect(page.getByRole("button", { name: "需处理 0", exact: true })).toBeVisible();
+      const report = await (await page.request.get(`${BASE_URL}/api/model-attention`, { headers: fixtureHeaders })).json();
+      savedIssue = report.ignored.find((issue: { ownerId: string }) => issue.ownerId === "ghost-provider/policy-only-model");
+      expect(savedIssue).toBeTruthy();
+      await page.getByRole("button", { name: "Providers", exact: true }).click();
+      await expect(page.getByRole("button", { name: "已忽略 1", exact: true })).toBeVisible();
+      await page.reload();
+      await expect(page.getByRole("button", { name: "已忽略 1", exact: true })).toBeVisible();
+      await page.getByRole("button", { name: "已忽略 1", exact: true }).click();
+      await page.getByRole("button", { name: "处理问题 ghost-provider/policy-only-model", exact: true }).click();
+      await page.getByRole("button", { name: "恢复提醒", exact: true }).click();
+      await expect(page.getByRole("button", { name: "需处理 1", exact: true })).toBeVisible();
+      expect((await readInventory(page)).policyRules).toEqual(original.policyRules);
+    } finally {
+      if (savedIssue) await page.request.patch(`${BASE_URL}/api/model-attention/decision`, { headers: fixtureHeaders, data: { issueId: savedIssue.id, revision: savedIssue.revision, ignored: false } });
+    }
+  });
+
   test("Models 页：待处理区段 + 三维 badge + 处理对话框 + body 无横向溢出", async ({ page }, testInfo) => {
     await connect(page);
     await page.getByRole("button", { name: "模型" }).click();
     await expect(page.getByTestId("models-view")).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByTestId("pending-models-panel")).toBeVisible();
-
-    // 1. 待处理区段：policy-only 悬空 ref 可见且标记不可用
-    await expect(page.getByText("ghost-provider/policy-only-model").first()).toBeVisible();
-    // 状态列 badge：可用性为「不可用」（独立于策略维度，绝不写成「已禁用」）
-    await expect(page.getByText("不可用", { exact: true }).first()).toBeVisible();
-    // 汇总计数 Pill：至少 1 个不可用
-    await expect(page.getByText(/个不可用/).first()).toBeVisible();
-    // 三维独立：悬空行同时显示「精确策略」（策略维度）与「不可用」（可用性维度）
-    await expect(page.getByText("精确策略", { exact: true }).first()).toBeVisible();
-
-    // 2. 处理对话框：悬空 exact ref 且 Provider 缺配置 → 走「创建 Provider」向导
-    // （Task 8 语义：provider-not-found 优先创建 Provider，预填 providerId/modelId）
-    const handleButton = page.getByRole("button", { name: "处理 ghost-provider/policy-only-model" });
-    await handleButton.scrollIntoViewIfNeeded();
-    await expect(handleButton).toBeVisible();
-    await handleButton.click();
+    await expect(page.getByTestId("attention-panel")).toBeVisible();
+    await page.getByRole("button", { name: "需处理 1", exact: true }).click();
+    await page.getByRole("button", { name: "处理问题 ghost-provider/policy-only-model", exact: true }).click();
     await expect(page.getByRole("dialog")).toBeVisible();
-    await expect(page.getByRole("dialog").getByText(/Provider 不在本地配置中/)).toBeVisible();
-    await expect(page.getByRole("button", { name: "创建 Provider 并补全模型" })).toBeVisible();
-    // 保留不写配置；真正删除另有独立的 fixture 交互用例。
-    await page.getByRole("button", { name: "保留" }).click();
+    await expect(page.getByRole("button", { name: "配置 ghost-provider", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "本问题不再提醒", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "暂不处理", exact: true }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
 
     // 2b. 删除 policy 引用与独立 metadata 复选项对话框：通过 Policy 规则视图的 exact 删除入口触达
@@ -140,7 +152,7 @@ test.describe("Runtime model inventory（统一 inventory 浏览器实测）", (
     await removeRuleButton.click();
     await expect(page.getByRole("dialog")).toBeVisible();
     await expect(page.getByText(/确认删除 ghost-provider\/policy-only-model 的 modelPolicy\.allow 精确引用/)).toBeVisible();
-    await page.getByRole("button", { name: "保留" }).click();
+    await page.getByRole("button", { name: "暂不处理" }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
 
     // 3. unknown 行无删除建议（探测证据不足 ≠ 不可用）：面板内无「建议删除」类文案
@@ -231,8 +243,10 @@ test.describe("Runtime model inventory（统一 inventory 浏览器实测）", (
     const groupSection = page.locator("section[aria-label='插件 Provider']");
     await expect(groupSection).toBeVisible();
     await expect(groupSection.getByRole("heading", { name: "xiaomi", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "展开插件 xiaomi", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "展开插件 xiaomi", exact: true }).click();
     // 2. 同一插件贡献的两个 Provider 在同一组内（绝不能显示成两个独立插件）
-    await expect(groupSection.getByText("xiaomi-token-plan")).toBeVisible();
+    await expect(groupSection.getByText("xiaomi-token-plan", { exact: true })).toBeVisible();
     await expect(groupSection.getByText("xiaomi", { exact: true }).first()).toBeVisible();
     // 3. 组内只有一个插件级开关（aria-label 指向插件 id）
     await expect(page.getByLabel(/停用插件 xiaomi/)).toHaveCount(1);
@@ -300,23 +314,19 @@ test.describe("Runtime model inventory（统一 inventory 浏览器实测）", (
       });
     });
 
+    await page.route("**/api/model-attention", async route => { await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ pending: [{ id: "runtime:probe", revision: "probe", kind: "probe", ownerType: "runtime", ownerId: "gateway", providerIds: [], refs: [], protectedRefs: [], title: "运行状态尚未确认", detail: "探测超时", canIgnore: false, canDisable: false }], ignored: [] }) }); });
     await page.getByRole("button", { name: "模型" }).click();
-    await expect(page.getByTestId("models-view")).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByTestId("pending-models-panel")).toBeVisible();
-    // 页面不白屏：模型行照常渲染，unknown 徽章可见
-    await expect(page.getByText("无法确认", { exact: true }).first()).toBeVisible();
-    // unknown 行无「处理」按钮（禁止删除建议）
-    const handleButtons = page.getByRole("button", { name: /^处理 / });
-    await expect(handleButtons).toHaveCount(0);
-    // 无「不可用」误报（unknown ≠ unavailable，文案不得混用）
+    await expect(page.getByTestId("models-view")).toBeVisible();
+    await page.getByRole("button", { name: "需处理 1", exact: true }).click();
+    await expect(page.getByText("运行状态尚未确认", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: /^处理问题 / })).toHaveCount(1);
     await expect(page.getByText("不可用", { exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "展开 Policy 规则" }).click();
     await expect(page.getByRole("button", { name: /^删除规则 / })).toHaveCount(0);
-    await expect(page.getByText(/可安全移除/)).toHaveCount(0);
     await expectNoBodyOverflow(page, "models-unknown");
   });
 
-  test("真实启停插件后两个 Provider 同步变化，原策略保留", async ({ page }) => {
+  test("真实停用移出 IM 规则并收起插件，恢复时还原规则", async ({ page }) => {
     const before = await readInventory(page);
     const xiaomi = before.plugins.find(plugin => plugin.id === "xiaomi")!;
     expect(xiaomi.enabled).toBe(true);
@@ -334,25 +344,27 @@ test.describe("Runtime model inventory（统一 inventory 浏览器实测）", (
       const written = await disabled.json() as PluginStateMutationResult;
       backupId = written.backupId;
       expect(written.runtimeConfirmed).toBe(true);
-      await expect(page.getByRole("switch", { name: "启用插件 xiaomi", exact: true })).toBeVisible();
-      for (const providerId of xiaomi.providerIds) {
-        const row = groups.getByRole("row").filter({ has: page.getByText(providerId, { exact: true }) });
-        await expect(row.getByText("不可用·待处理", { exact: true })).toBeVisible();
-      }
+      await expect(page.getByRole("switch", { name: "启用插件 xiaomi", exact: true })).toHaveCount(0);
       const stopped = await readInventory(page);
-      expect(stopped.policyRules.map(rule => rule.value)).toEqual(before.policyRules.map(rule => rule.value));
+      expect(stopped.policyRules.map(rule => rule.value)).toEqual(before.policyRules.map(rule => rule.value).filter(ref => !ref.startsWith("xiaomi/") && !ref.startsWith("xiaomi-token-plan/")));
       for (const providerId of xiaomi.providerIds) {
         expect(stopped.providers.find(provider => provider.providerId === providerId)?.pluginEnabled).toBe(false);
-        const models = stopped.models.filter(model => model.providerId === providerId);
-        expect(models.length).toBeGreaterThan(0);
-        expect(models.every(model => model.availability === "unavailable" && model.availabilityReasons.includes("plugin-disabled"))).toBe(true);
+        expect(stopped.models.filter(model => model.providerId === providerId).every(model => !model.needsAttention && !model.pickerVisible)).toBe(true);
+      }
+      await page.getByRole("tab", { name: /^已停用/ }).click();
+      await expect(page.getByRole("switch", { name: "启用插件 xiaomi", exact: true })).toBeVisible();
+      // 未启用组只展示插件管理入口，不要求用户逐条处理模型。
+      for (const providerId of xiaomi.providerIds) {
+        await expect(groups.getByRole("row").filter({ has: page.getByText(providerId, { exact: true }) })).toHaveCount(0);
       }
 
       await page.getByRole("switch", { name: "启用插件 xiaomi", exact: true }).click();
       const enabledResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/plugins/xiaomi/state" && response.request().method() === "PATCH");
       await page.getByRole("dialog").getByRole("button", { name: "确认", exact: true }).click();
       expect((await enabledResponse).ok()).toBe(true);
+      await page.getByRole("tab", { name: "当前使用", exact: true }).click();
       await expect(page.getByRole("switch", { name: "停用插件 xiaomi", exact: true })).toBeVisible();
+      await page.getByRole("button", { name: "展开插件 xiaomi", exact: true }).click();
       for (const providerId of xiaomi.providerIds) {
         const row = groups.getByRole("row").filter({ has: page.getByText(providerId, { exact: true }) });
         await expect(row.getByText("可用", { exact: true })).toBeVisible();
@@ -377,12 +389,13 @@ test.describe("Runtime model inventory（统一 inventory 浏览器实测）", (
     try {
       await connect(page);
       await page.getByRole("button", { name: "模型", exact: true }).click();
-      await page.getByRole("button", { name: `处理 ${ref}`, exact: true }).click();
+      await page.getByRole("button", { name: "需处理 1", exact: true }).click();
+      await page.getByRole("button", { name: `处理问题 ${ref}`, exact: true }).click();
       const dialog = page.getByRole("dialog");
       // 初始 fixture 无 metadata；不会无端提供额外清理选项。
       await expect(dialog.getByRole("checkbox", { name: /metadata/ })).toHaveCount(0);
       const deletionResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/model-policy/exact-ref" && response.request().method() === "DELETE");
-      await dialog.getByRole("button", { name: "仅删除 policy 引用", exact: true }).click();
+      await dialog.getByRole("button", { name: "不再使用，保留 Key", exact: true }).click();
       const deleted = await deletionResponse;
       expect(deleted.ok()).toBe(true);
       backupId = (await deleted.json() as { backupId: string }).backupId;

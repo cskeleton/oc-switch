@@ -1,4 +1,6 @@
 import { extname, join, resolve, sep } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 
 /** 扩展名 → Content-Type 映射 */
 const MIME_BY_EXT: Record<string, string> = {
@@ -57,15 +59,23 @@ export function createStaticAwareFetch(
   apiFetch: (request: Request) => Response | Promise<Response>,
   webDistDir?: string
 ): (request: Request) => Promise<Response> {
+  const indexPath = webDistDir ? join(webDistDir, "index.html") : undefined;
+  const fingerprint = () => indexPath && existsSync(indexPath) ? createHash("sha256").update(readFileSync(indexPath)).digest("hex") : undefined;
+  const webBuildId = fingerprint();
   return async (request: Request) => {
     const { pathname } = new URL(request.url);
 
     if (isApiPath(pathname) || !webDistDir) {
-      return apiFetch(request);
+      const response = await apiFetch(request);
+      if (webBuildId) response.headers.set("X-OC-Switch-Web-Build", webBuildId);
+      return response;
     }
 
     if (request.method !== "GET" && request.method !== "HEAD") {
       return new Response("Not Found", { status: 404 });
+    }
+    if (webBuildId && fingerprint() !== webBuildId) {
+      return new Response(request.method === "HEAD" ? null : "<!doctype html><meta charset=utf-8><title>oc-switch 需要重启</title><p>前端资源已更新，请重启 oc-switch 后刷新页面。</p>", { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
     }
 
     const safePath = resolveSafePath(webDistDir, pathname);

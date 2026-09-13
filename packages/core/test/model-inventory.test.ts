@@ -49,6 +49,23 @@ function byProvider(inventory: ModelInventory): Map<string, ProviderInventoryEnt
   return new Map(inventory.providers.map((provider) => [provider.providerId, provider]));
 }
 
+test("默认选择器使用 Gateway 集合；闲置目录与停用插件不制造待处理", () => {
+  const inventory = buildModelInventory({
+    config: { agents: { defaults: { models: { "idle/missing": {} }, modelPolicy: { allow: ["active/one"] } } } },
+    pluginProviders: [pluginProvider({ pluginId: "anthropic", providerId: "anthropic", enabled: false, models: [{ id: "unused" }] })],
+    runtime: makeSnapshot({
+      configuredModels: [rt("idle/missing", { missing: true })],
+      allModels: [rt("catalog/unused", { available: false })],
+      pickerModels: [rt("active/one", { available: true })], pickerSource: "gateway"
+    })
+  });
+  expect(inventory.models.filter((m: any) => m.pickerVisible).map(m => m.ref)).toEqual(["active/one"]);
+  expect(inventory.models.filter((m: any) => m.needsAttention).map(m => m.ref)).toEqual([]);
+  expect(inventory.models.some(m => m.ref === "anthropic/unused")).toBe(false);
+  expect(inventory.models.some(m => m.ref === "catalog/unused")).toBe(false);
+  expect(inventory.plugins.find(p => p.id === "anthropic")?.enabled).toBe(false);
+});
+
 describe("buildModelInventory：来源并集与状态分离", () => {
   const config: OpenClawConfig = {
     models: {
@@ -425,23 +442,8 @@ describe("buildModelInventory：availability 证据规则（独立用例）", ()
     ];
     const runtime = makeSnapshot();
     const inventory = buildModelInventory({ config, pluginProviders, runtime });
-    expect(byRef(inventory).get("plugin/off")).toMatchObject({
-      catalogSources: ["plugin-manifest"],
-      referenceSources: ["policy-wildcard"],
-      policyAllowed: true,
-      availability: "unavailable",
-      availabilityReasons: ["plugin-disabled"],
-      capabilities: {
-        canSetPrimary: false,
-        canTogglePolicy: false,
-        canRemovePolicyExactRef: false
-      }
-    });
-    expect(byProvider(inventory).get("plugin")).toMatchObject({
-      pluginEnabled: false,
-      availability: "unavailable",
-      availabilityReasons: ["plugin-disabled"]
-    });
+    expect(byRef(inventory).has("plugin/off")).toBe(false);
+    expect(inventory.plugins[0]?.enabled).toBe(false);
   });
 
   test("provider-not-found：policy 引用了不存在的 Provider", () => {
@@ -769,10 +771,7 @@ describe("buildModelInventory：插件 descriptor 与多 Provider 归属", () =>
     ];
     const runtime = makeSnapshot();
     const inventory = buildModelInventory({ config, pluginProviders, plugins, runtime });
-    expect(byRef(inventory).get("plugin/live")).toMatchObject({
-      availability: "unavailable",
-      availabilityReasons: ["plugin-disabled"]
-    });
+    expect(byRef(inventory).has("plugin/live")).toBe(false);
     expect(byProvider(inventory).get("plugin")).toMatchObject({ pluginEnabled: false, pluginIds: ["plug"] });
     expect(inventory.plugins).toEqual(plugins);
   });

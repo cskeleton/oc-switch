@@ -7,13 +7,13 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { CheckCircle2, X, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, X, XCircle } from "lucide-react";
 import { cn } from "../lib/utils";
 
 /** 单条 toast */
 interface ToastItem {
   id: number;
-  kind: "success" | "error";
+  kind: "success" | "error" | "warning";
   message: string;
 }
 
@@ -21,6 +21,8 @@ interface ToastItem {
 export interface ToastApi {
   success: (message: string) => void;
   error: (message: string) => void;
+  /** 操作成功但附带提示（如删除后仍被 wildcard 覆盖） */
+  warning: (message: string) => void;
 }
 
 const ToastContext = createContext<ToastApi | null>(null);
@@ -65,6 +67,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     () => ({
       success: (message) => push("success", message),
       error: (message) => push("error", message),
+      warning: (message) => push("warning", message),
     }),
     [push],
   );
@@ -81,11 +84,15 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               "pointer-events-auto flex items-start gap-2 rounded-md border px-3 py-2 text-sm shadow-lg",
               t.kind === "success"
                 ? "border-success/30 bg-card text-success"
-                : "border-destructive/30 bg-card text-destructive",
+                : t.kind === "warning"
+                  ? "border-warning/30 bg-card text-warning"
+                  : "border-destructive/30 bg-card text-destructive",
             )}
           >
             {t.kind === "success" ? (
               <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+            ) : t.kind === "warning" ? (
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             ) : (
               <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
             )}

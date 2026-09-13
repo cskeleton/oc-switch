@@ -57,6 +57,122 @@ function backups(paths: OcSwitchPaths): string[] {
 
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
+test("问题忽略跨服务实例持久化，不能忽略主模型或提交过时 revision", async () => {
+  const ws = fixture();
+  const app = createApp(appOptions(ws.paths));
+  const before = readFileSync(ws.paths.openclawPath, "utf8");
+  const report = (await request(app, "/api/model-attention")).json;
+  const ghost = report.pending.find((i: any) => i.ownerId === "ghost/gone");
+  expect(ghost.canIgnore).toBe(true);
+  const stale = await request(app, "/api/model-attention/decision", "PATCH", { issueId: ghost.id, revision: "outdated", ignored: true });
+  expect(stale.response.status).toBe(409);
+  const saved = await request(app, "/api/model-attention/decision", "PATCH", { issueId: ghost.id, revision: ghost.revision, ignored: true });
+  expect(saved.response.status).toBe(200);
+  const restarted = createApp(appOptions(ws.paths));
+  const next = (await request(restarted, "/api/model-attention")).json;
+  expect(next.ignored.map((i: any) => i.id)).toContain(ghost.id);
+  expect(next.pending.some((i: any) => i.id === ghost.id)).toBe(false);
+  expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+  ws.config.agents!.defaults!.model = "ghost/gone";
+  writeFileSync(ws.paths.openclawPath, JSON.stringify(ws.config));
+  const dependency = (await request(restarted, "/api/model-attention")).json.pending.find((i: any) => i.ownerId === "ghost/gone");
+  expect(dependency.canIgnore).toBe(false);
+  expect((await request(restarted, "/api/model-attention/decision", "PATCH", { issueId: dependency.id, revision: dependency.revision, ignored: true })).response.status).toBe(400);
+});
+
+test("并发 inventory 共享异步探测，期间其他 HTTP 路由正常响应", async () => {
+  const ws = fixture();
+  let release!: () => void;
+  let calls = 0;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const app = createApp(appOptions(ws.paths, { runtimeModelCatalogProvider: (async () => {
+    calls++; await gate; return snapshot();
+  }) as any }));
+  const first = request(app, "/api/model-inventory");
+  const second = request(app, "/api/model-inventory");
+  try {
+    expect((await request(app, "/api/health")).response.status).toBe(200);
+  } finally { release(); }
+  const results = await Promise.all([first, second]);
+  expect(results.map(r => r.response.status)).toEqual([200, 200]);
+  expect(results[0]!.json.models.some((row: any) => row.ref === "cpa/main")).toBe(true);
+  expect(calls).toBe(1);
+});
+
+test("旧 scope 的异步完成不能污染新配置目录缓存", async () => {
+  const ws = fixture();
+  const other = fixture();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const runtime = createAppRuntime(appOptions(ws.paths, { runtimeModelCatalogProvider: (async (paths: OcSwitchPaths) => {
+    if (paths.openclawPath === ws.paths.openclawPath) await gate;
+    return { ...snapshot(), defaultModel: paths.openclawPath === ws.paths.openclawPath ? "old/one" : "new/two" };
+  }) as any }));
+  const old = runtime.currentRuntimeModelSnapshot();
+  runtime.setActivePaths(other.paths);
+  try { expect((await runtime.currentRuntimeModelSnapshot()).defaultModel).toBe("new/two"); }
+  finally { release(); }
+  await old;
+  expect((await runtime.currentRuntimeModelSnapshot()).defaultModel).toBe("new/two");
+});
+
+test("插件停用/恢复真实写策略，保留备用 Key 与 metadata，清理为独立选项", async () => {
+  const ws = fixture();
+  const env = "# reserved for later\nIDLE_API_KEY=fixture-secret-do-not-return\n";
+  writeFileSync(ws.paths.envPath, env);
+  const app = createApp(appOptions(ws.paths, {
+    pluginCatalogProvider: () => ({ providers: [], diagnostics: [], plugins: [{ id: "shelved", origin: "bundled",
+      enabled: JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")).plugins?.entries?.shelved?.enabled !== false,
+      providerIds: ["ghost"], nonModelCapabilities: ["speech"] }] })
+  }));
+  const off = await request(app, "/api/plugins/shelved/state", "PATCH", { enabled: false, confirm: true });
+  expect(off.response.status).toBe(200);
+  let saved = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+  expect(saved.plugins.entries.shelved.enabled).toBe(false);
+  expect(saved.agents.defaults.modelPolicy.allow).not.toContain("ghost/gone");
+  expect(saved.agents.defaults.models["ghost/gone"]).toEqual({ alias: "keep" });
+  expect(readFileSync(ws.paths.envPath, "utf8")).toBe(env);
+  const data = (await request(app, "/api/model-inventory")).json;
+  expect(data.models.find((row: any) => row.ref === "ghost/gone").needsAttention).toBe(false);
+  expect(JSON.stringify([off.json, data])).not.toContain("fixture-secret-do-not-return");
+  expect((await request(app, "/api/plugins/shelved/state", "PATCH", { enabled: true, confirm: true })).response.status).toBe(200);
+  saved = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+  expect(saved.agents.defaults.modelPolicy.allow).toContain("ghost/gone");
+  expect((await request(app, "/api/plugins/shelved/state", "PATCH", { enabled: false, confirm: true, cleanupMetadata: true })).response.status).toBe(200);
+  saved = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+  expect(saved.agents.defaults.models["ghost/gone"]).toBeUndefined();
+  expect(readFileSync(ws.paths.envPath, "utf8")).toBe(env);
+});
+
+test("旧 Provider 停用记录可重新应用到 policy，并保留原恢复资料", async () => {
+  const ws = fixture();
+  ws.config.models!.providers!.idle = { models: [{ id: "one", name: "One" }] };
+  ws.config.agents!.defaults!.modelPolicy!.allow!.push("idle/one");
+  writeFileSync(ws.paths.openclawPath, JSON.stringify(ws.config));
+  upsertDisabledProviderState(ws.paths.stateDir, { providerId: "idle", openclawPath: ws.paths.openclawPath, disabledAt: "2026-09-01", allowlistEntries: { "idle/one": { alias: "saved" } } });
+  const app = createApp(appOptions(ws.paths));
+  const off = await request(app, "/api/providers/idle/state", "PATCH", { enabled: false });
+  expect(off.response.status).toBe(200);
+  expect(JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")).agents.defaults.modelPolicy.allow).not.toContain("idle/one");
+  expect((await request(app, "/api/providers/idle/state", "PATCH", { enabled: true })).response.status).toBe(200);
+  const restored = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+  expect(restored.agents.defaults.modelPolicy.allow).toContain("idle/one");
+  expect(restored.agents.defaults.models["idle/one"]).toEqual({ alias: "saved" });
+});
+
+test("插件停用后 Gateway 仍显示该组，返回写入成功但未确认", async () => {
+  const ws = fixture();
+  const app = createApp(appOptions(ws.paths, {
+    pluginCatalogProvider: () => ({ providers: [], diagnostics: [], plugins: [{ id: "stale", origin: "bundled", enabled: false, providerIds: ["ghost"], nonModelCapabilities: [] }] }),
+    runtimeModelCatalogProvider: () => ({ ...snapshot(), pickerSource: "gateway", pickerModels: [{ ref: "ghost/gone", available: true, tags: [] }] })
+  }));
+  const result = await request(app, "/api/plugins/stale/state", "PATCH", { enabled: false, confirm: true });
+  expect(result.response.status).toBe(200);
+  expect(result.json.ok).toBe(true);
+  expect(result.json.runtimeConfirmed).toBe(false);
+  expect(JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")).agents.defaults.modelPolicy.allow).not.toContain("ghost/gone");
+});
+
 describe("runtime review: direct HTTP writes", () => {
   test("settings path report uses the same pinned paths as inventory and writes", async () => {
     const ws = fixture();
@@ -146,39 +262,41 @@ describe("runtime review: direct HTTP writes", () => {
     expect(backups(ws.paths)).toEqual([]);
   });
 
-  test("unknown exact ref removal is refused despite --style force fields", async () => {
+  test("unknown 可停用明确的精确引用，保留 metadata 不再成为待处理", async () => {
     const ws = fixture();
     const runtime = snapshot(false);
     runtime.completeness.configuredList = false;
     const app = createApp(appOptions(ws.paths, { runtimeModelCatalogProvider: () => runtime }));
-    const before = readFileSync(ws.paths.openclawPath, "utf8");
-    const { response } = await request(app, "/api/model-policy/exact-ref", "DELETE", { ref: "ghost/gone", removeMetadata: true, force: true });
-    expect(response.status).toBe(400);
-    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
-    expect(backups(ws.paths)).toEqual([]);
+    const { response } = await request(app, "/api/model-policy/exact-ref", "DELETE", { ref: "ghost/gone", removeMetadata: false });
+    expect(response.status).toBe(200);
+    const saved = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(saved.agents.defaults.modelPolicy.allow).not.toContain("ghost/gone");
+    expect(saved.agents.defaults.models["ghost/gone"]).toEqual({ alias: "keep" });
+    const { json } = await request(app, "/api/model-inventory");
+    expect(json.models.find((m: any) => m.ref === "ghost/gone").needsAttention).toBe(false);
   });
 });
 
 describe("runtime review: cache and probe scope", () => {
-  test("30 second TTL caches facts, expires at the boundary, and refresh invalidates both catalogs", () => {
+  test("30 second TTL caches facts, expires at the boundary, and refresh invalidates both catalogs", async () => {
     const ws = fixture();
     let now = 1_000;
     const clock = spyOn(Date, "now").mockImplementation(() => now);
     let available = true;
     const runtime = createAppRuntime(appOptions(ws.paths, { runtimeModelCatalogProvider: () => snapshot(available) }));
     try {
-      expect(runtime.buildCurrentInventory().models.find(row => row.ref === "cpa/local")?.availability).toBe("available");
+      expect((await runtime.buildCurrentInventory()).models.find(row => row.ref === "cpa/local")?.availability).toBe("available");
       available = false;
       now += 29_999;
-      expect(runtime.buildCurrentInventory().models.find(row => row.ref === "cpa/local")?.availability).toBe("available");
+      expect((await runtime.buildCurrentInventory()).models.find(row => row.ref === "cpa/local")?.availability).toBe("available");
       now += 1;
-      expect(runtime.buildCurrentInventory().models.find(row => row.ref === "cpa/local")?.availability).toBe("unavailable");
+      expect((await runtime.buildCurrentInventory()).models.find(row => row.ref === "cpa/local")?.availability).toBe("unavailable");
       available = true;
-      expect(runtime.buildCurrentInventory({ refresh: true }).models.find(row => row.ref === "cpa/local")?.availability).toBe("available");
+      expect((await runtime.buildCurrentInventory({ refresh: true })).models.find(row => row.ref === "cpa/local")?.availability).toBe("available");
     } finally { clock.mockRestore(); }
   });
 
-  test("external config replacement invalidates facts before TTL rather than mixing old runtime and new config", () => {
+  test("external config replacement invalidates facts before TTL rather than mixing old runtime and new config", async () => {
     const ws = fixture();
     const runtime = createAppRuntime(appOptions(ws.paths, { runtimeModelCatalogProvider: () => {
       const fresh = snapshot();
@@ -186,18 +304,18 @@ describe("runtime review: cache and probe scope", () => {
       if (config.models.providers.cpa.models.some((model: { id: string }) => model.id === "added")) fresh.allModels.push({ ref: "cpa/added", available: true, tags: [] });
       return fresh;
     } }));
-    runtime.buildCurrentInventory();
+    await runtime.buildCurrentInventory();
     ws.config.models!.providers!.cpa!.models!.push({ id: "added" });
     writeFileSync(ws.paths.openclawPath, JSON.stringify(ws.config));
-    expect(runtime.buildCurrentInventory().models.find(row => row.ref === "cpa/added")?.availability).toBe("available");
+    expect((await runtime.buildCurrentInventory()).models.find(row => row.ref === "cpa/added")?.availability).toBe("available");
   });
 
-  test("source env changes invalidate runtime auth facts without exposing env values", () => {
+  test("source env changes invalidate runtime auth facts without exposing env values", async () => {
     const ws = fixture();
     const runtime = createAppRuntime(appOptions(ws.paths, { runtimeModelCatalogProvider: () => snapshot(existsSync(ws.paths.envPath)) }));
-    expect(runtime.buildCurrentInventory().models.find(row => row.ref === "cpa/local")?.availability).toBe("unavailable");
+    expect((await runtime.buildCurrentInventory()).models.find(row => row.ref === "cpa/local")?.availability).toBe("unavailable");
     writeFileSync(ws.paths.envPath, "PROVIDER_API_KEY=AUTH_SECRET_MARKER\n");
-    const inventory = runtime.buildCurrentInventory();
+    const inventory = await runtime.buildCurrentInventory();
     expect(inventory.models.find(row => row.ref === "cpa/local")?.availability).toBe("available");
     expect(JSON.stringify(inventory)).not.toContain("AUTH_SECRET_MARKER");
   });
@@ -425,7 +543,7 @@ for (const action of ["exact", "materialize", "plugin"] as const) {
       : action === "materialize" ? await request(app, "/api/models/materialize", "POST", { ref: "cpa/runtime-only", input: { id: "runtime-only", enabled: false } })
       : await request(app, "/api/plugins/example/state", "PATCH", { enabled: false, confirm: true });
     expect(result.response.status).toBe(400);
-    expect(calls).toBe(2);
+    expect(calls).toBe(action === "plugin" ? 3 : 2);
     const saved = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
     expect(saved.models).toEqual(ws.config.models);
     expect(saved.agents.defaults.modelPolicy.allow).toEqual(ws.config.agents!.defaults!.modelPolicy!.allow);

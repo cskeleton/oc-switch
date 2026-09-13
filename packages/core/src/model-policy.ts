@@ -7,9 +7,11 @@ import type { ModelPolicyMode, ModelSelectionSource, OpenClawConfig } from "./ty
  * OpenClaw 语义（docs.openclaw.ai/concepts/models）：
  * - 非空时是 /model、session override、--model 的唯一 allowlist，覆盖 agents.defaults.models；
  * - 支持精确 ref 与尾部前缀通配（`provider/*`、`provider/namespace/*`）；
- * - 省略该键 = legacy，沿用 agents.defaults.models；设为 [] = unrestricted，放开本地目录模型。
+ * - 迁移前缺失 policy 才沿用旧 models；迁移标记/空 policy 对象使 metadata 不再限制选择。
+ * - 显式 [] = unrestricted。
  *
- * oc-switch 纪律：仅在 allow 存在且非空时同步成员变化；绝不创建该键、绝不清空，
+ * 常规单模型操作仅在 allow 存在且非空时同步成员变化，不创建或清空；
+ * 明确整 Provider/插件停用由 model-suspension.ts 负责可恢复的规则移出。
  * 避免给未迁移或已显式放开的配置凭空加限制。读取永不抛错。
  */
 
@@ -42,7 +44,14 @@ export function policyRestricts(config: OpenClawConfig): boolean {
 /** 根据原始 allow 数组区分 legacy、显式开放与受限 selection 模式。 */
 export function getModelPolicyMode(config: OpenClawConfig): ModelPolicyMode {
   const raw = readModelPolicyAllowRaw(config);
-  if (raw === undefined) return "legacy";
+  if (raw === undefined) {
+    const policy = readModelPolicyRecord(config);
+    // 非数组 allow 仍交由诊断阻断；迁移标记/空 policy 对象不允许旧 metadata 重新限制选择。
+    if (policy && Object.hasOwn(policy, "allow")) return "legacy";
+    const migrations = (config.meta as { migrations?: { modelPolicyAllowlist?: boolean } } | undefined)?.migrations;
+    if (policy || migrations?.modelPolicyAllowlist === true) return "unrestricted";
+    return "legacy";
+  }
   return raw.length === 0 ? "unrestricted" : "restricted";
 }
 
@@ -57,6 +66,10 @@ function exactEntryMatches(entry: string, ref: string): boolean {
   try {
     const parsedEntry = parseModelRef(entry);
     const parsedRef = parseModelRef(ref);
+    // OpenClaw 2026.9 的 OpenRouter 兼容别名：配置常写 openrouter/free，Gateway 返回 openrouter/openrouter/free。
+    const openRouterFree = normalizeProviderId(parsedEntry.providerId) === "openrouter" && normalizeProviderId(parsedRef.providerId) === "openrouter" &&
+      ["free", "openrouter/free"].includes(parsedEntry.modelId) && ["free", "openrouter/free"].includes(parsedRef.modelId);
+    if (openRouterFree) return true;
     return (
       normalizeProviderId(parsedEntry.providerId) === normalizeProviderId(parsedRef.providerId) &&
       parsedEntry.modelId === parsedRef.modelId
@@ -174,6 +187,46 @@ export function assertPolicyProviderExactRemovalAllowed(
   );
 }
 
+/** Provider 删除显式移除其 policy 条目的防清空 guard：exact 与 wildcard 合计移除后不得把受限 policy 清空为 unrestricted。 */
+export function assertPolicyProviderWildcardRemovalAllowed(
+  config: OpenClawConfig,
+  providerId: string,
+  action: string
+): void {
+  assertPolicyRemovalPreservesRestrictedMode(
+    config,
+    (entry) => {
+      if (typeof entry !== "string") return false;
+      const slashIndex = entry.indexOf("/");
+      return slashIndex > 0 && normalizeProviderId(entry.slice(0, slashIndex)) === normalizeProviderId(providerId);
+    },
+    action,
+    `provider ${providerId}`
+  );
+}
+
+/**
+ * 移除属于指定 Provider 的所有通配条目（仅在用户显式勾选时由调用方触发）。
+ * 返回被移除的条目；exact 条目、其他 Provider 的 wildcard 与非字符串条目原样保留，
+ * 不改写大小写、顺序与重复次数。调用前必须先过 assertPolicyProviderWildcardRemovalAllowed。
+ */
+export function removePolicyWildcardForProvider(config: OpenClawConfig, providerId: string): string[] {
+  if (!policyRestricts(config)) return [];
+  const raw = readModelPolicyAllowRaw(config)!;
+  const removed: string[] = [];
+  const next = raw.filter((entry) => {
+    if (typeof entry !== "string" || !isWildcard(entry)) return true;
+    const slashIndex = entry.indexOf("/");
+    if (slashIndex > 0 && normalizeProviderId(entry.slice(0, slashIndex)) === normalizeProviderId(providerId)) {
+      removed.push(entry);
+      return false;
+    }
+    return true;
+  });
+  if (removed.length > 0) readModelPolicyRecord(config)!.allow = next;
+  return removed;
+}
+
 /** allow 列表（精确 + 通配）是否覆盖 ref。 */
 export function isPolicyAllowsRef(allow: string[], ref: string): boolean {
   return allow.some((entry) => exactEntryMatches(entry, ref) || wildcardEntryMatches(entry, ref));
@@ -187,6 +240,7 @@ export function getModelSelectionSource(
   const mode = getModelPolicyMode(config);
   if (mode === "unrestricted") return "unrestricted";
   if (mode === "legacy") {
+    if (Object.keys(config.agents?.defaults?.models ?? {}).length === 0) return "unrestricted";
     return Object.keys(config.agents?.defaults?.models ?? {}).some((entry) => exactEntryMatches(entry, ref))
       ? "legacy"
       : undefined;

@@ -102,15 +102,18 @@ describe("modelPolicy.allow 双向同步", () => {
     expect(allow.filter((ref) => ref.startsWith("cpa/"))).toEqual(["cpa/m1", "cpa/b2"]);
   });
 
-  test("removeProvider 遇到 Provider 通配 policy 时拒绝且不写入", () => {
+  test("removeProvider 遇到 Provider 通配 policy 时删除成功并提示悬空 wildcard", () => {
     const config = migratedConfig();
     config.agents!.defaults!.modelPolicy!.allow!.push("cpa/*");
-    const before = JSON.stringify(config);
 
-    expect(() => removeProvider(config, "cpa", { force: false })).toThrow(
-      "Cannot remove provider cpa while agents.defaults.modelPolicy.allow contains cpa/*; narrow the policy first."
-    );
-    expect(JSON.stringify(config)).toBe(before);
+    const result = removeProvider(config, "cpa", { force: false });
+
+    expect(result.config.models?.providers?.cpa).toBeUndefined();
+    // exact 条目同步移除，用户 wildcard 原样保留（大小写/顺序不变）
+    expect(readModelPolicyAllow(config)).toEqual(["other/o1", "cpa/*"]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("cpa/*");
+    expect(result.warnings[0]).toContain("dangling");
   });
 
   test("disableProvider / restoreDisabledProvider 仅维护独立状态，不改 modelPolicy", () => {
@@ -140,7 +143,7 @@ describe("modelPolicy.allow 双向同步", () => {
     const config = migratedConfig();
     config.agents!.defaults!.modelPolicy!.allow = [];
 
-    const disabled = disableProvider(config, "cpa");
+    const disabled = disableProvider(config, "cpa", { visibleRefs: ["cpa/m1", "other/o1"] });
     expect(readModelPolicyAllow(config)).toEqual([]);
 
     restoreDisabledProvider(config, "cpa", disabled.disabledState.allowlistEntries);
@@ -216,7 +219,7 @@ describe("modelPolicy.allow 双向同步", () => {
     expect(JSON.stringify(config)).toBe(before);
   });
 
-  test("受限通配覆盖的单模型破坏性操作在任何写入前拒绝", () => {
+  test("受限通配覆盖的 disable/rename 在任何写入前拒绝；remove 降级为成功 + warning", () => {
     const disableConfig = migratedConfig();
     disableConfig.agents!.defaults!.modelPolicy!.allow = ["cpa/*", "other/o1"];
     const disableBefore = JSON.stringify(disableConfig);
@@ -233,13 +236,17 @@ describe("modelPolicy.allow 双向同步", () => {
     );
     expect(JSON.stringify(renameConfig)).toBe(renameBefore);
 
+    // remove：目录条目删除后模型自然从 picker 消失，wildcard 原样保留并提示
     const removeConfig = migratedConfig();
     removeConfig.agents!.defaults!.modelPolicy!.allow = ["cpa/*", "other/o1"];
-    const removeBefore = JSON.stringify(removeConfig);
-    expect(() => removeProviderModel(removeConfig, "cpa/m1", { force: false })).toThrow(
-      "Cannot remove cpa/m1 while agents.defaults.modelPolicy.allow contains cpa/*; narrow the policy first."
-    );
-    expect(JSON.stringify(removeConfig)).toBe(removeBefore);
+    const removed = removeProviderModel(removeConfig, "cpa/m1", { force: false });
+    expect(removed.config.models?.providers?.cpa?.models?.map((model) => model.id)).toEqual([
+      "vertex/gemini-3.8-flash",
+      "m2"
+    ]);
+    expect(removed.warnings).toHaveLength(1);
+    expect(removed.warnings[0]).toContain("cpa/*");
+    expect(readModelPolicyAllow(removeConfig)).toEqual(["cpa/*", "other/o1"]);
   });
 
   test("rename 后同时禁用时也 preflight 新 ref 的 namespace wildcard", () => {
@@ -267,21 +274,20 @@ describe("modelPolicy.allow 双向同步", () => {
     expect(JSON.stringify(config)).toBe(before);
   });
 
-  test("受限通配覆盖的批量删除与 Provider 停用在任何写入前拒绝", () => {
+  test("受限通配覆盖的批量删除降级为成功 + warning；Provider 停用仍移出规则", () => {
     const batchConfig = migratedConfig();
     batchConfig.agents!.defaults!.modelPolicy!.allow = ["cpa/*", "other/o1"];
-    const batchBefore = JSON.stringify(batchConfig);
-    expect(() => batchRemoveProviderModels(batchConfig, "cpa", { modelIds: ["m2"] })).toThrow(
-      "Cannot remove cpa/m2 while agents.defaults.modelPolicy.allow contains cpa/*; narrow the policy first."
-    );
-    expect(JSON.stringify(batchConfig)).toBe(batchBefore);
+    const batch = batchRemoveProviderModels(batchConfig, "cpa", { modelIds: ["m2"] });
+    expect(batch.removedModelIds).toEqual(["m2"]);
+    expect(batch.warnings).toHaveLength(1);
+    expect(batch.warnings[0]).toContain("cpa/*");
+    expect(readModelPolicyAllow(batchConfig)).toEqual(["cpa/*", "other/o1"]);
 
     const disableProviderConfig = migratedConfig();
     disableProviderConfig.agents!.defaults!.modelPolicy!.allow = ["cpa/*", "other/o1"];
     const disableProviderBefore = JSON.stringify(disableProviderConfig);
-    expect(() => disableProvider(disableProviderConfig, "cpa")).toThrow(
-      "Cannot disable provider cpa while agents.defaults.modelPolicy.allow contains cpa/*; narrow the policy first."
-    );
+    const disabled = disableProvider(disableProviderConfig, "cpa");
+    expect(readModelPolicyAllow(disabled.config)).toEqual(["other/o1"]);
     expect(JSON.stringify(disableProviderConfig)).toBe(disableProviderBefore);
   });
 
@@ -319,6 +325,125 @@ describe("modelPolicy.allow 双向同步", () => {
     const before = JSON.stringify(config);
 
     expect(() => batchRemoveProviderModels(config, "cpa", { keepEnabledOnly: true })).toThrow(/fallbacks/);
+    expect(JSON.stringify(config)).toBe(before);
+  });
+});
+
+describe("三层删除分级（layers）与 wildcard 提示", () => {
+  test("removeProviderModel 缺省 layers 保持三层全删", () => {
+    const config = migratedConfig();
+    const result = removeProviderModel(config, "cpa/m1", { force: false });
+    expect(config.models!.providers!.cpa!.models!.map((model) => model.id)).not.toContain("m1");
+    expect(config.agents!.defaults!.models!["cpa/m1"]).toBeUndefined();
+    expect(readModelPolicyAllow(config)).not.toContain("cpa/m1");
+    expect(result.warnings).toEqual([]);
+  });
+
+  test("removeProviderModel layers.metadata=false 保留 metadata", () => {
+    const config = migratedConfig();
+    removeProviderModel(config, "cpa/m1", { force: false, layers: { metadata: false } });
+    expect(config.models!.providers!.cpa!.models!.map((model) => model.id)).not.toContain("m1");
+    expect(config.agents!.defaults!.models!["cpa/m1"]).toEqual({ alias: "m-one" });
+    expect(readModelPolicyAllow(config)).not.toContain("cpa/m1");
+  });
+
+  test("removeProviderModel 缺省 layers 删除最后一条 restricted exact 仍 fail closed", () => {
+    const config = migratedConfig();
+    config.agents!.defaults!.modelPolicy!.allow = ["cpa/m1"];
+    const before = JSON.stringify(config);
+
+    expect(() => removeProviderModel(config, "cpa/m1", { force: false })).toThrow(/would make \[\] unrestricted/);
+    expect(JSON.stringify(config)).toBe(before);
+  });
+
+  test("removeProviderModel layers.policyExact=false 保留 policy exact 且不触发防清空", () => {
+    const config = migratedConfig();
+    config.agents!.defaults!.modelPolicy!.allow = ["cpa/m1"];
+
+    const result = removeProviderModel(config, "cpa/m1", { force: false, layers: { policyExact: false } });
+
+    expect(result.warnings).toEqual([]);
+    expect(config.models!.providers!.cpa!.models!.map((model) => model.id)).not.toContain("m1");
+    expect(config.agents!.defaults!.models!["cpa/m1"]).toBeUndefined();
+    expect(readModelPolicyAllow(config)).toEqual(["cpa/m1"]);
+  });
+
+  test("batchRemoveProviderModels modelIds 分支：同一 wildcard 只 warning 一次", () => {
+    const config = migratedConfig();
+    config.agents!.defaults!.modelPolicy!.allow = ["cpa/*", "other/o1"];
+
+    const result = batchRemoveProviderModels(config, "cpa", { modelIds: ["m1", "m2"] });
+
+    expect(result.removedModelIds).toEqual(["m1", "m2"]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("cpa/*");
+    expect(readModelPolicyAllow(config)).toEqual(["cpa/*", "other/o1"]);
+    expect(config.agents!.defaults!.models!["cpa/m1"]).toBeUndefined();
+  });
+
+  test("batchRemoveProviderModels modelIds 分支 layers.policyExact=false 跳过防清空并保留 exact", () => {
+    const config = migratedConfig();
+    config.agents!.defaults!.modelPolicy!.allow = ["cpa/m2"];
+    const before = JSON.stringify(config);
+
+    // 缺省 layers 仍套用防清空 guard
+    expect(() => batchRemoveProviderModels(config, "cpa", { modelIds: ["m2"] })).toThrow(/would make \[\] unrestricted/);
+    expect(JSON.stringify(config)).toBe(before);
+
+    const result = batchRemoveProviderModels(config, "cpa", { modelIds: ["m2"], layers: { policyExact: false } });
+    expect(result.removedModelIds).toEqual(["m2"]);
+    expect(readModelPolicyAllow(config)).toEqual(["cpa/m2"]);
+  });
+
+  test("batchRemoveProviderModels keepEnabledOnly 分支 layers.metadata=false 保留被删模型的 metadata", () => {
+    const config = migratedConfig();
+    // restricted：m2 exact 有效；m1 仅有 metadata（restricted 下不参与选择），vertex 未启用
+    config.agents!.defaults!.modelPolicy!.allow = ["cpa/m2", "other/o1"];
+
+    const result = batchRemoveProviderModels(config, "cpa", {
+      keepEnabledOnly: true,
+      layers: { metadata: false }
+    });
+
+    expect([...result.removedModelIds].sort()).toEqual(["m1", "vertex/gemini-3.8-flash"]);
+    expect(config.models!.providers!.cpa!.models!.map((model) => model.id)).toEqual(["m2"]);
+    expect(config.agents!.defaults!.models!["cpa/m1"]).toEqual({ alias: "m-one" });
+    expect(readModelPolicyAllow(config)).toEqual(["cpa/m2", "other/o1"]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  test("removeProvider 默认只提示悬空 wildcard，removePolicyWildcard:true 才显式移除", () => {
+    const warnConfig = migratedConfig();
+    warnConfig.agents!.defaults!.modelPolicy!.allow = ["cpa/m1", "cpa/*", "other/o1"];
+    const warned = removeProvider(warnConfig, "cpa", { force: false });
+    expect(readModelPolicyAllow(warnConfig)).toEqual(["cpa/*", "other/o1"]);
+    expect(warned.warnings.some((warning) => warning.includes("cpa/*"))).toBe(true);
+
+    const removeConfig = migratedConfig();
+    removeConfig.agents!.defaults!.modelPolicy!.allow = ["cpa/m1", "cpa/*", "other/o1"];
+    const removed = removeProvider(removeConfig, "cpa", { force: false, removePolicyWildcard: true });
+    expect(readModelPolicyAllow(removeConfig)).toEqual(["other/o1"]);
+    expect(removed.warnings).toEqual([]);
+    expect(removed.config.models?.providers?.cpa).toBeUndefined();
+  });
+
+  test("removeProvider removePolicyWildcard:true 只移除该 Provider 的 wildcard，其他条目大小写/顺序不变", () => {
+    const config = migratedConfig();
+    config.agents!.defaults!.modelPolicy!.allow = ["CPA/*", "cpa/m1", "other/*", "other/o1"];
+
+    removeProvider(config, "cpa", { force: false, removePolicyWildcard: true });
+
+    expect(readModelPolicyAllow(config)).toEqual(["other/*", "other/o1"]);
+  });
+
+  test("removeProvider removePolicyWildcard:true 移除会变空 policy 时 fail closed 且配置不变", () => {
+    const config = migratedConfig();
+    config.agents!.defaults!.modelPolicy!.allow = ["cpa/m1", "cpa/*"];
+    const before = JSON.stringify(config);
+
+    expect(() => removeProvider(config, "cpa", { force: false, removePolicyWildcard: true })).toThrow(
+      /would make \[\] unrestricted/
+    );
     expect(JSON.stringify(config)).toBe(before);
   });
 });

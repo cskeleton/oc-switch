@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { parseModelRef } from "./model-ref";
+import { runCatalogCommand } from "./catalog-command";
+import { resolve } from "node:path";
 
 /**
  * OpenClaw 运行时模型探测（只读、脱敏）。
@@ -29,7 +31,7 @@ export interface RuntimeProbeCompleteness {
 }
 
 export interface RuntimeModelDiagnostic {
-  command: "version" | "status" | "list" | "list-all" | "plugins";
+  command: "version" | "status" | "list" | "list-all" | "plugins" | "picker";
   code: "missing" | "timeout" | "non-zero-exit" | "invalid-json" | "invalid-shape";
   message: string;
 }
@@ -51,6 +53,9 @@ export interface RuntimeModelCatalogDependencies {
 }
 
 export interface RuntimeModelSnapshot {
+  /** Gateway 默认选择器；缺失时只能推算，不能声称与在线 IM 一致。 */
+  pickerModels?: RuntimeModelEntry[];
+  pickerSource?: "gateway" | "inferred";
   openClawVersion?: string;
   agentDir?: string;
   defaultModel?: string;
@@ -75,6 +80,58 @@ const PROBE_COMMANDS = {
 } as const satisfies Record<string, { command: string; args: string[] }>;
 
 type ProbeCommandName = keyof typeof PROBE_COMMANDS;
+
+export interface AsyncRuntimeModelCatalogDependencies extends Omit<RuntimeModelCatalogDependencies, "runCommand"> {
+  runCommand?: (command: string, args: string[], options: { timeoutMs: number; maxOutputBytes: number }) => Promise<RuntimeModelCommandResult>;
+  /** 隔离 fixture 或非运行中配置可以跳过 Gateway 连接。 */
+  useGateway?: boolean;
+}
+
+/** 独立 CLI 探测并行；随后复用同步纯解析器，避免两个解析口径。 */
+export async function discoverRuntimeModelCatalogAsync(deps: AsyncRuntimeModelCatalogDependencies = {}): Promise<RuntimeModelSnapshot> {
+  const runner = deps.runCommand ?? ((command, args, options) => runCatalogCommand(command, args, options, deps.configPath));
+  const safeRun = async (args: string[]): Promise<RuntimeModelCommandResult> => {
+    try { return await runner("openclaw", args, PROBE_OPTIONS); }
+    catch { return { status: -1, stdout: "", timedOut: false }; }
+  };
+  const commands = Object.values(PROBE_COMMANDS);
+  const pickerPromise = deps.useGateway === false ? undefined : safeRun(["gateway", "call", "models.list", "--params", '{"view":"default"}', "--json"]);
+  // config.get 原始内容可能带认证信息；只比较路径/版本，不缓存或返回内容。
+  const scopePromise = pickerPromise && deps.configPath ? safeRun(["gateway", "call", "config.get", "--json"]) : undefined;
+  const results = await Promise.all(commands.map(probe => safeRun([...probe.args])));
+  const snapshot = discoverRuntimeModelCatalog({
+    ...(deps.now ? { now: deps.now } : {}),
+    runCommand: (_command, args) => results[commands.findIndex(probe => probe.args.join(" ") === args.join(" "))]!
+  });
+  snapshot.pickerSource = "inferred";
+  if (!pickerPromise) return snapshot;
+  const picker = await pickerPromise;
+  let scopeMatches = !scopePromise;
+  if (scopePromise) {
+    const scope = await scopePromise;
+    try {
+      const data = JSON.parse(scope.stdout);
+      scopeMatches = scope.status === 0 && !scope.timedOut && typeof data.path === "string" && resolve(data.path) === resolve(deps.configPath!) &&
+        data.valid !== false && !(typeof data.configRevisionHash === "string" && typeof data.appliedConfigHash === "string" && data.configRevisionHash !== data.appliedConfigHash);
+    } catch { scopeMatches = false; }
+  }
+  if (scopeMatches && picker.status === 0 && !picker.timedOut) {
+    try {
+      const raw = JSON.parse(picker.stdout);
+      const rows = Array.isArray(raw.models) ? raw.models.map((row: Record<string, unknown>) => ({
+        key: typeof row.provider === "string" && typeof row.id === "string" ? `${row.provider}/${row.id}` : undefined,
+        name: row.name, available: row.available, missing: row.missing, tags: row.tags
+      })) : undefined;
+      if (rows && rows.every(validModelRow)) {
+        snapshot.pickerModels = parseModelEntries(rows);
+        snapshot.pickerSource = "gateway";
+        return snapshot;
+      }
+    } catch { /* 只返回脱敏诊断。 */ }
+  }
+  snapshot.diagnostics.push({ command: "picker", code: picker.timedOut ? "timeout" : picker.status === 0 ? "invalid-shape" : "non-zero-exit", message: "Gateway model picker unavailable; visibility is inferred from local config" });
+  return snapshot;
+}
 
 function defaultRunCommand(
   command: string,

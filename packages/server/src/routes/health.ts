@@ -16,23 +16,23 @@ import { readConfig, readDisabledProviderIds, readEnvContent, type AppRuntime } 
 import { jsonError } from "../errors";
 
 export function registerHealthRoutes(app: Hono, runtime: AppRuntime): void {
-  app.get("/api/status", (c) => {
+  app.get("/api/status", async (c) => {
     const paths = runtime.currentPaths();
     // 注入插件目录：providerCount / providerModelCount 仍是 config-only，
     // 但 effectiveModelCount 必须与 /api/config-status 的 effectiveCatalogCount 一致。
     const adapter = createConfigAdapter(readConfig(paths), {
       disabledProviderIds: readDisabledProviderIds(paths),
-      pluginProviders: runtime.currentPluginProviders()
+      pluginProviders: await runtime.currentPluginProviders()
     });
     const status = adapter.getStatus();
     return c.json({ ok: true, ...status });
   });
 
-  app.get("/api/health", (c) => {
+  app.get("/api/health", async (c) => {
     return c.json(inspectConfigHealth(readConfig(runtime.currentPaths())));
   });
 
-  app.get("/api/config-status", (c) => {
+  app.get("/api/config-status", async (c) => {
     const paths = runtime.currentPaths();
     let config: OpenClawConfig | undefined;
     let configReadError: string | undefined;
@@ -52,11 +52,11 @@ export function registerHealthRoutes(app: Hono, runtime: AppRuntime): void {
       ...(configReadError ? { configReadError } : {}),
       paths,
       envContent,
-      pluginProviders: runtime.currentPluginProviders()
+      pluginProviders: await runtime.currentPluginProviders()
     }));
   });
 
-  app.get("/api/diff", (c) => {
+  app.get("/api/diff", async (c) => {
     try {
       const paths = runtime.currentPaths();
       const [latest] = listBackups(paths.stateDir);

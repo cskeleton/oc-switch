@@ -1,5 +1,5 @@
 import { formatModelRef, normalizeModelRefForStorage, normalizeProviderId, parseModelRef } from "./model-ref";
-import { assertNoPolicyWildcardForProvider } from "./model-policy";
+import { restoreModelProviderSelection, suspendModelProviders, type ModelSuspensionOptions } from "./model-suspension";
 import { ensureDefaults, resolveProviderId, type OperationResult } from "./operation-common";
 import { readFallbackModelRefs, readPrimaryModelRef } from "./primary-model";
 import type { AllowlistEntry, OpenClawConfig } from "./types";
@@ -8,10 +8,11 @@ export interface DisableProviderResult extends OperationResult {
   disabledState: {
     providerId: string;
     allowlistEntries: Record<string, AllowlistEntry>;
+    policyEntries: string[];
   };
 }
 
-export function disableProvider(config: OpenClawConfig, providerId: string): DisableProviderResult {
+export function disableProvider(config: OpenClawConfig, providerId: string, options: ModelSuspensionOptions = {}): DisableProviderResult {
   const resolvedProviderId = resolveProviderId(config, providerId);
   if (!resolvedProviderId || !config.models!.providers![resolvedProviderId]) {
     throw new Error(`Provider ${providerId} not found`);
@@ -30,28 +31,31 @@ export function disableProvider(config: OpenClawConfig, providerId: string): Dis
     );
   }
 
-  // 必须先于 ensureDefaults 与 allowlist 删除，保证通配拒绝不触碰配置。
-  assertNoPolicyWildcardForProvider(config, resolvedProviderId, "disable");
+  // 先完成引用保护和策略预检，保留 metadata 与可恢复规则。
+  const originalMetadata = config.agents?.defaults?.models ?? {};
+  const suspended = suspendModelProviders(config, [resolvedProviderId], options);
+  config = suspended.config;
   ensureDefaults(config);
 
   const allowlistEntries: Record<string, AllowlistEntry> = {};
-  for (const [ref, entry] of Object.entries(config.agents!.defaults!.models!)) {
+  for (const [ref, entry] of Object.entries(originalMetadata)) {
     if (normalizeProviderId(parseModelRef(ref).providerId) === normalizeProviderId(resolvedProviderId)) {
       allowlistEntries[normalizeModelRefForStorage(ref)] = structuredClone(entry);
-      delete config.agents!.defaults!.models![ref];
+      if (options.cleanupMetadata) delete config.agents!.defaults!.models![ref];
     }
   }
   return {
     config,
     warnings: [],
-    disabledState: { providerId: normalizeProviderId(resolvedProviderId), allowlistEntries }
+    disabledState: { providerId: normalizeProviderId(resolvedProviderId), allowlistEntries, policyEntries: suspended.policyEntries }
   };
 }
 
 export function restoreDisabledProvider(
   config: OpenClawConfig,
   providerId: string,
-  allowlistEntries: Record<string, AllowlistEntry>
+  allowlistEntries: Record<string, AllowlistEntry>,
+  policyEntries?: string[]
 ): OperationResult {
   const resolvedProviderId = resolveProviderId(config, providerId);
   if (!resolvedProviderId || !config.models!.providers![resolvedProviderId]) {
@@ -69,8 +73,8 @@ export function restoreDisabledProvider(
   for (const [ref, entry] of Object.entries(allowlistEntries)) {
     const modelId = parseModelRef(ref).modelId;
     const restoredRef = formatModelRef(normalizeProviderId(resolvedProviderId), modelId);
-    config.agents!.defaults!.models![restoredRef] = structuredClone(entry);
+    config.agents!.defaults!.models![restoredRef] ??= structuredClone(entry);
   }
 
-  return { config, warnings: [] };
+  return { config: restoreModelProviderSelection(config, policyEntries ?? Object.keys(allowlistEntries), { providerIds: [providerId] }), warnings: [] };
 }

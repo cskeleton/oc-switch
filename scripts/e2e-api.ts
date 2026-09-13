@@ -38,14 +38,18 @@ process.env.OPENCLAW_STATE_DIR = dir;
 process.env.OPENCLAW_CONFIG_PATH = openclawPath;
 // restricted policy + 悬空 exact + wildcard + xiaomi 插件双 Provider（Task 9 Step 8 浏览器实测 fixture）。
 // 另加 `metadata-e2e` Provider：专供 webgui.e2e 的模型参数 round-trip 用例——
-// 该用例要「添加→编辑→删除」模型，而 restricted 模式下被 wildcard 覆盖的
-// Provider（nvidia/*）删除会 fail closed（spec 语义），故测试目标必须落在
-// 不被任何 wildcard 覆盖的 Provider 上。
+// 该用例要「添加→编辑→删除」模型；删除测试目标落在不被任何 wildcard 覆盖的
+// Provider 上，避免与 nvidia/* 通配覆盖场景的 warning 提示语义耦合
+// （2026-09-13 起 wildcard 不再阻断删除，只产生 warning）。
 const e2eConfig = structuredClone(sample) as OpenClawConfig;
+// sample fixture 里 minimax-portal 的 authHeader 被故意写成密钥引用（health 用例的历史素材）；
+// 它属于 config blocking 问题，会并入统一问题列表。E2E 的待处理计数只针对悬空 exact，
+// 这里把 authHeader 修正为合法 boolean，避免无关 blocking 干扰计数。
+e2eConfig.models!.providers!["minimax-portal"]!.authHeader = true;
 e2eConfig.models!.providers!["metadata-e2e"] = {
   baseUrl: "https://metadata-e2e.example/v1",
   api: "openai-completions",
-  models: [{ id: "seed-model" }]
+  models: [{ id: "seed-model", name: "Seed model" }]
 };
 e2eConfig.agents!.defaults!.modelPolicy = {
   allow: [

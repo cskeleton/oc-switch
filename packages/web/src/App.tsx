@@ -76,6 +76,7 @@ function BrandMark() {
 
 /** 应用主壳：顶栏 + 响应式导航（桌面侧栏 / 移动端横滚 tab） */
 export function App() {
+  const [requestedProviderId, setRequestedProviderId] = useState<string | undefined>();
   // 初始快照只读一次，供下方各 state 的初始值共用
   const [initialAuth] = useState(() => readAuthSnapshot(defaultBaseUrl()));
   const [token, setToken] = useState(initialAuth.token);
@@ -87,6 +88,7 @@ export function App() {
   const [route, setRoute] = useState<AppRoute>("dashboard");
   const [connectError, setConnectError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
+  const [service, setService] = useState<{ ready: boolean; error?: string }>({ ready: false });
 
   const client = useMemo(
     () => createApiClient({ baseUrl, token }),
@@ -94,6 +96,16 @@ export function App() {
   );
 
   const refresh = useCallback(() => setTick((n) => n + 1), []);
+  useEffect(() => {
+    if (!connected) return;
+    let cancelled = false;
+    setService({ ready: false });
+    void client.getServiceInfo().then(info => {
+      if (info.protocolVersion !== 2) throw new Error("前后端版本不兼容，请重启 oc-switch 后刷新页面。");
+      if (!cancelled) setService({ ready: true });
+    }).catch(() => { if (!cancelled) setService({ ready: false, error: "无法确认服务版本。请重启 oc-switch 后刷新；依赖新版状态的操作暂不可用。" }); });
+    return () => { cancelled = true; };
+  }, [client, connected]);
 
   // 顶栏展示的连接 host（mono 字体 + 状态点）
   const hostLabel = useMemo(() => {
@@ -258,13 +270,14 @@ export function App() {
   }
 
   function renderRoute() {
+    if (!service.ready) return <div role="status" className="rounded-md border border-border p-4 text-sm">{service.error ?? "正在确认服务版本…"}{service.error ? <Button variant="outline" className="ml-3" onClick={refresh}>重试</Button> : null}</div>;
     switch (route) {
       case "dashboard":
-        return <Dashboard client={client} />;
+        return <Dashboard client={client} onConfigureProvider={id => { setRequestedProviderId(id); setRoute("providers"); }} />;
       case "providers":
-        return <ProvidersView client={client} onRefresh={refresh} onOpenSettings={() => setRoute("settings")} onOpenModels={() => setRoute("models")} />;
+        return <ProvidersView client={client} requestedProviderId={requestedProviderId} onRequestHandled={() => setRequestedProviderId(undefined)} onRefresh={refresh} onOpenSettings={() => setRoute("settings")} onOpenModels={() => setRoute("models")} />;
       case "models":
-        return <ModelsView client={client} onOpenProviders={() => setRoute("providers")} />;
+        return <ModelsView client={client} onOpenProviders={id => { setRequestedProviderId(id); setRoute("providers"); }} />;
       case "presets":
         return <PresetsView client={client} onRefresh={refresh} />;
       case "backups":

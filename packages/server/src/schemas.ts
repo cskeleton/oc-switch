@@ -243,25 +243,45 @@ export function requireBatchAddProviderModelsInput(body: Record<string, unknown>
   };
 }
 
-/** batch-remove 请求体：modelIds 与 keepEnabledOnly 二选一 */
+/** 删除分级 layers：缺省 undefined（三层全删，保持旧默认）；显式 boolean 才收窄 */
+export interface RemovalLayers {
+  metadata?: boolean;
+  policyExact?: boolean;
+}
+
+export function optionalRemovalLayers(body: Record<string, unknown>): RemovalLayers | undefined {
+  if (body.layers === undefined) return undefined;
+  if (!body.layers || typeof body.layers !== "object" || Array.isArray(body.layers)) {
+    throw new Error("layers must be an object");
+  }
+  const value = body.layers as Record<string, unknown>;
+  return {
+    ...(value.metadata !== undefined ? { metadata: requireBoolean(value.metadata, "layers.metadata") } : {}),
+    ...(value.policyExact !== undefined ? { policyExact: requireBoolean(value.policyExact, "layers.policyExact") } : {})
+  };
+}
+
+/** batch-remove 请求体：modelIds 与 keepEnabledOnly 二选一，可选删除分级 layers */
 export function requireBatchRemoveProviderModelsInput(
   body: Record<string, unknown>
-): { modelIds: string[]; keepEnabledOnly?: undefined } | { keepEnabledOnly: true; modelIds?: undefined } {
+): { modelIds: string[]; keepEnabledOnly?: undefined; layers?: RemovalLayers } | { keepEnabledOnly: true; modelIds?: undefined; layers?: RemovalLayers } {
   const hasKeepEnabledOnly = body.keepEnabledOnly === true;
   const modelIdsValue = body.modelIds;
   const hasModelIds = Array.isArray(modelIdsValue) && modelIdsValue.length > 0;
+  const layers = optionalRemovalLayers(body);
 
   if (hasKeepEnabledOnly && hasModelIds) {
     throw new Error("modelIds and keepEnabledOnly are mutually exclusive");
   }
   if (hasKeepEnabledOnly) {
-    return { keepEnabledOnly: true };
+    return { keepEnabledOnly: true, ...(layers ? { layers } : {}) };
   }
   if (!hasModelIds) {
     throw new Error("modelIds must be a non-empty array");
   }
   return {
-    modelIds: modelIdsValue.map((id, index) => requireString(id, `modelIds.${index}`))
+    modelIds: modelIdsValue.map((id, index) => requireString(id, `modelIds.${index}`)),
+    ...(layers ? { layers } : {})
   };
 }
 

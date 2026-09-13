@@ -15,6 +15,7 @@ import {
   listProviderEnvRefs,
   loadPreset,
   mergeProviderCaseDuplicates,
+  mergeModelSelectionEntries,
   migrateProviderSecretRefs,
   normalizeModelRefForStorage,
   normalizeProviderId,
@@ -67,6 +68,19 @@ function envStatus(summary: EnvVariableSummary | undefined) {
   return summary.managed ? "managed" : "unmanaged";
 }
 
+/** 写入成功与在线生效分开报告；Gateway 未应用时不缓存旧选择器。 */
+async function confirmProviderVisibility(runtime: AppRuntime, paths: OcSwitchPaths, providerId: string, enabled: boolean): Promise<boolean> {
+  try {
+    const inventory = await runtime.buildCurrentInventory({ refresh: true, paths });
+    const confirmed = inventory.pickerSource === "gateway" && (enabled || !inventory.models.some(model => model.pickerVisible && normalizeProviderId(model.providerId) === normalizeProviderId(providerId)));
+    if (!confirmed) runtime.invalidateCatalogCaches();
+    return confirmed;
+  } catch {
+    runtime.invalidateCatalogCaches();
+    return false;
+  }
+}
+
 function providerEnvPreview(paths: OcSwitchPaths, envVar: string) {
   const config = readConfig(paths);
   return previewEnvUpdates({
@@ -88,7 +102,8 @@ type SecretRefMigrationBlocker =
 function inspectSecretRefMigrations(runtime: AppRuntime) {
   const paths = runtime.currentPaths();
   const config = readConfig(paths);
-  const migrationCandidates = inspectProviderSecretRefMigrations(config);
+  const disabledIds = new Set(readDisabledProviderIds(paths).map(normalizeProviderId));
+  const migrationCandidates = inspectProviderSecretRefMigrations(config).filter(candidate => !disabledIds.has(normalizeProviderId(candidate.providerId)));
   const envContent = readEnvContent(paths) ?? "";
   const envInspection = inspectEnvFile({
     content: envContent,
@@ -148,8 +163,12 @@ async function handleProviderDiscover(c: Context, runtime: AppRuntime) {
   const providerId = requireString(c.req.param("id"), "id");
   const config = readConfig(runtime.currentPaths());
   const envContent = readEnvContent(runtime.currentPaths());
+  // 注入当前插件目录：config 条目缺 Key 时回退同名插件 manifest 声明的 env 变量；
+  // currentPluginProviders 内部对目录探测失败降级为空结果，不抛错
+  const pluginProviders = await runtime.currentPluginProviders();
   const discoverResult = await discoverProviderModels(config, providerId, {
     fetchImpl: runtime.fetchImpl,
+    pluginProviders,
     ...(envContent !== undefined ? { envContent } : {})
   });
   if (discoverResult.unsupportedReason) {
@@ -183,7 +202,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
   // 仅写 provider-states.json 的 disable/restore 不需要（buildCurrentInventory
   // 每次都重读该文件）。失效只在事务成功后调用，失败路径不触碰缓存。
 
-  app.get("/api/providers/secret-ref-migrations", (c) => {
+  app.get("/api/providers/secret-ref-migrations", async (c) => {
     try {
       return c.json(inspectSecretRefMigrations(runtime));
     } catch (error) {
@@ -215,7 +234,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
         ...runtime.currentPaths(),
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `migrate Provider SecretRefs: ${providerIds.join(", ")}`,
-        mutate(config) {
+        async mutate(config) {
           return migrateProviderSecretRefs(config, providerIds).config;
         }
       });
@@ -231,10 +250,10 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
     }
   });
 
-  app.get("/api/providers", (c) => {
+  app.get("/api/providers", async (c) => {
     const paths = runtime.currentPaths();
     const config = readConfig(paths);
-    const pluginProviders = runtime.currentPluginProviders();
+    const pluginProviders = await runtime.currentPluginProviders();
     const adapter = createConfigAdapter(config, {
       disabledProviderIds: readDisabledProviderIds(paths),
       pluginProviders
@@ -284,7 +303,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
         manifestUpdates: [
           { type: "upsert-provider-env", providerId: presetId, envVar: preset.provider.apiKeyEnv }
         ],
-        mutate(config) {
+        async mutate(config) {
           return addProviderFromPreset(config, preset, enabledModels).config;
         }
       });
@@ -359,7 +378,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
             }
           }
         ],
-        mutate(config) {
+        async mutate(config) {
           return addCustomProvider(config, input).config;
         }
       });
@@ -428,7 +447,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
         ...runtime.currentPaths(),
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `merge case duplicate ${input.groupKey} -> ${input.canonicalId}`,
-        mutate(config) {
+        async mutate(config) {
           const merged = mergeProviderCaseDuplicates(config, input);
           warnings = merged.warnings;
           return merged.config;
@@ -453,15 +472,27 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       const enabled = requireBoolean(body.enabled, "enabled");
       const paths = runtime.currentPaths();
 
+      if (body.cleanupMetadata !== undefined && typeof body.cleanupMetadata !== "boolean") throw new Error("cleanupMetadata must be boolean");
       if (!enabled) {
-        let disabledState: { providerId: string; allowlistEntries: Record<string, unknown> } | undefined;
+        let disabledState: { providerId: string; allowlistEntries: Record<string, unknown>; policyEntries: string[] } | undefined;
         const result = await writeOpenClawTransaction({
           ...paths,
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
           reason: `disable provider ${providerId}`,
-          mutate(config) {
-            const disabled = disableProvider(config, providerId);
-            disabledState = disabled.disabledState;
+          normalizeConfig: false,
+          async mutate(config) {
+            const previous = getDisabledProviderState(paths.stateDir, providerId);
+            if (previous && previous.openclawPath !== paths.openclawPath) throw new Error("Disabled snapshot belongs to another OpenClaw config");
+            const inventory = await runtime.buildCurrentInventory({ refresh: true, config, paths });
+            const disabled = disableProvider(config, providerId, {
+              cleanupMetadata: body.cleanupMetadata === true,
+              ...(inventory.pickerSource === "gateway" ? { visibleRefs: inventory.models.filter(model => model.pickerVisible).map(model => model.ref) } : {})
+            });
+            disabledState = {
+              ...disabled.disabledState,
+              allowlistEntries: { ...previous?.allowlistEntries, ...disabled.disabledState.allowlistEntries },
+              policyEntries: mergeModelSelectionEntries(previous?.policyEntries ?? Object.keys(previous?.allowlistEntries ?? {}), disabled.disabledState.policyEntries)
+            };
             return disabled.config;
           },
           afterWrite() {
@@ -470,15 +501,18 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
               providerId,
               openclawPath: paths.openclawPath,
               disabledAt: new Date().toISOString(),
+              policyEntries: disabledState.policyEntries,
               allowlistEntries: disabledState.allowlistEntries as never
             });
           }
         });
+        runtime.invalidateCatalogCaches();
         return c.json({
           ok: true,
           providerId,
           enabled: false,
-          disabledModelCount: Object.keys(disabledState?.allowlistEntries ?? {}).length,
+          runtimeConfirmed: await confirmProviderVisibility(runtime, paths, providerId, false),
+          disabledModelCount: disabledState?.policyEntries.length ?? 0,
           backupId: result.backupDir.split("/").pop()
         });
       }
@@ -492,17 +526,20 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
         ...paths,
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `enable provider ${providerId}`,
-        mutate(config) {
-          return restoreDisabledProvider(config, providerId, snapshot.allowlistEntries).config;
+        normalizeConfig: false,
+        async mutate(config) {
+          return restoreDisabledProvider(config, providerId, snapshot.allowlistEntries, snapshot.policyEntries).config;
         },
         afterWrite() {
           removeDisabledProviderState(paths.stateDir, providerId);
         }
       });
+      runtime.invalidateCatalogCaches();
       return c.json({
         ok: true,
         providerId,
         enabled: true,
+        runtimeConfirmed: await confirmProviderVisibility(runtime, paths, providerId, true),
         restoredModelCount: Object.keys(snapshot.allowlistEntries).length,
         backupId: result.backupDir.split("/").pop()
       });
@@ -559,7 +596,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
               }))
             }
           : {}),
-        mutate(config) {
+        async mutate(config) {
           const changes: { baseUrl?: string; api?: ApiType } = {};
           if (body.baseUrl !== undefined) changes.baseUrl = requireString(body.baseUrl, "baseUrl");
           if (body.api !== undefined) changes.api = requireApiType(body.api, "api");
@@ -582,14 +619,19 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
     try {
       const providerId = c.req.param("id");
       const body = await c.req.json().catch(() => ({}));
-      const removeOptions: { force: boolean; newPrimary?: string } = {
+      const removeOptions: { force: boolean; newPrimary?: string; removePolicyWildcard?: boolean } = {
         force: Boolean(body.force)
       };
       if (body.newPrimary !== undefined) {
         removeOptions.newPrimary = requireString(body.newPrimary, "newPrimary");
       }
+      // 显式勾选才移除该 Provider 的 policy wildcard 条目；缺省保留为悬空规则（warning）
+      if (body.removePolicyWildcard !== undefined) {
+        removeOptions.removePolicyWildcard = requireBoolean(body.removePolicyWildcard, "removePolicyWildcard");
+      }
       const config = readConfig(runtime.currentPaths());
       const envVar = contextProviderEnvVar(config, providerId);
+      let warnings: string[] = [];
       const result = await writeOpenClawTransaction({
         ...runtime.currentPaths(),
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
@@ -597,15 +639,17 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
         ...(envVar
           ? { manifestUpdates: [{ type: "mark-provider-orphan" as const, providerId, envVar }] }
           : {}),
-        mutate(config) {
-          return removeProvider(config, providerId, removeOptions).config;
+        async mutate(config) {
+          const removed = removeProvider(config, providerId, removeOptions);
+          warnings = removed.warnings;
+          return removed.config;
         },
         afterWrite() {
           removeDisabledProviderState(runtime.currentPaths().stateDir, providerId);
         }
       });
       runtime.invalidateCatalogCaches();
-      return c.json({ ok: true, backupId: result.backupDir.split("/").pop() });
+      return c.json({ ok: true, warnings, backupId: result.backupDir.split("/").pop() });
     } catch (error) {
       return jsonError(c, error);
     }
@@ -641,7 +685,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
         ...paths,
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `batch-add models for provider ${providerId}`,
-        mutate(config) {
+        async mutate(config) {
           const batch = batchAddProviderModels(config, providerId, input);
           addedModelIds = batch.addedModelIds;
           skippedModelIds = batch.skippedModelIds;
@@ -668,12 +712,13 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       const input = requireBatchRemoveProviderModelsInput(body);
       const paths = runtime.currentPaths();
       let removedModelIds: string[] = [];
+      let warnings: string[] = [];
       const result = await writeOpenClawTransaction({
         ...paths,
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `batch-remove models for provider ${providerId}`,
-        mutate(config) {
-          const inventory = runtime.buildCurrentInventory({ refresh: true, config, paths });
+        async mutate(config) {
+          const inventory = await runtime.buildCurrentInventory({ refresh: true, config, paths });
           const batch = batchRemoveProviderModels(config, providerId, input);
           // 仅校验本次确实会删除的模型，不能因未选中的 unknown 行锁死整份目录。
           for (const modelId of batch.removedModelIds) {
@@ -682,6 +727,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
             if (!entry || entry.availability === "unknown") throw new Error("Runtime model availability is unknown; refresh before cleaning its catalog entry.");
           }
           removedModelIds = batch.removedModelIds;
+          warnings = batch.warnings;
           return batch.config;
         }
       });
@@ -689,6 +735,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       return c.json({
         ok: true,
         removedModelIds,
+        warnings,
         backupId: result.backupDir.split("/").pop()
       });
     } catch (error) {
@@ -715,7 +762,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
           ...paths,
           runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
           reason: `sync model metadata for provider ${providerId}`,
-          mutate(config) {
+          async mutate(config) {
             const applied = applyModelMetadataSyncPlan(config, plan);
             updated = applied.updated;
             return applied.config;

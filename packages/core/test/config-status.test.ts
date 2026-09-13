@@ -56,6 +56,16 @@ afterEach(() => {
 });
 
 describe("inspectConfigStatus", () => {
+  test("保留未选用 metadata 和停用 Provider 的缺密钥不算行动项", () => {
+    const { paths } = workspace();
+    writeFileSync(paths.envPath, "");
+    const config: OpenClawConfig = { models: { providers: { idle: { apiKey: { source: "env", provider: "default", id: "IDLE_KEY" }, models: [{ id: "one", name: "One" }] } } },
+      agents: { defaults: { modelPolicy: { allow: ["active/main"] }, models: { "idle/one": {} } } } };
+    upsertDisabledProviderState(paths.stateDir, { providerId: "idle", openclawPath: paths.openclawPath, disabledAt: "2026-09-11", allowlistEntries: {} });
+    const report = inspect(paths, { config, envContent: "export RESERVED_API_KEY=reserved-for-later\n" });
+    expect(report.issues).toEqual([]);
+    expect(report.summary.disabledProviderCount).toBe(1);
+  });
   test("无问题时 issues 为空且 summary.issueCount 为 0", () => {
     const { paths } = workspace();
     const config: OpenClawConfig = {
@@ -96,7 +106,7 @@ describe("inspectConfigStatus", () => {
     expect(report.issues.find((i) => i.id === "health:duplicate:deepseek")?.severity).toBe("warning");
   });
 
-  test("disabled provider 计入 disabledProviderCount 并产生 providers:disabled issue", () => {
+  test("disabled provider 只计入状态，不制造待处理 issue", () => {
     const { paths } = workspace();
     const config = JSON.parse(readFileSync(paths.openclawPath, "utf8")) as OpenClawConfig;
     upsertDisabledProviderState(paths.stateDir, {
@@ -109,10 +119,10 @@ describe("inspectConfigStatus", () => {
     expect(report.summary.disabledProviderCount).toBe(1);
     expect(report.disabledProviders[0]?.providerId).toBe("nvidia");
     expect(report.disabledProviders[0]?.hiddenModelCount).toBe(1);
-    expect(report.issues.some((i) => i.id === "providers:disabled:nvidia")).toBe(true);
+    expect(report.issues.some((i) => i.id === "providers:disabled:nvidia")).toBe(false);
   });
 
-  test("orphan env key 计入 orphanEnvKeyCount 并产生 env:orphan issue", () => {
+  test("保留备用 env key 只计入原始事实，不制造待处理 issue", () => {
     const { paths } = workspace();
     const config = JSON.parse(readFileSync(paths.openclawPath, "utf8")) as OpenClawConfig;
     const manifestPath = join(paths.stateDir, "manifest.json");
@@ -124,7 +134,7 @@ describe("inspectConfigStatus", () => {
     const report = inspect(paths, { config });
     expect(report.summary.orphanEnvKeyCount).toBe(1);
     expect(report.orphanEnvKeys).toEqual(["OLD_KEY"]);
-    expect(report.issues.some((i) => i.id === "env:orphan:OLD_KEY")).toBe(true);
+    expect(report.issues.some((i) => i.id === "env:orphan:OLD_KEY")).toBe(false);
   });
 
   test("缺失 provider env key 产生 env:missing issue 且不与 orphan 重复", () => {
@@ -221,9 +231,7 @@ describe("inspectConfigStatus", () => {
     };
     const report = inspect(paths, { config });
     const issue = report.issues.find((i) => i.id === "health:model-policy-not-covered:modelPolicy.allow");
-    expect(issue?.severity).toBe("warning");
-    expect(issue?.detail).toContain("cpa/m2");
-    expect(issue?.detail).not.toContain("cpa/m1,");
+    expect(issue).toBeUndefined();
   });
 
   test("modelPolicy.allow 缺省、为空或通配已覆盖时不产生 issue", () => {
@@ -304,28 +312,14 @@ describe("inspectConfigStatus", () => {
       policyOnlyExactRefs: ["cpa/policy-only", "nvidia/unknown", "absent-provider/model"],
       knownProviderUnknownModelRefs: ["cpa/policy-only", "nvidia/unknown"]
     });
-    expect(report.issues).toContainEqual(expect.objectContaining({
-      id: "health:model-policy-not-covered:modelPolicy.allow",
-      source: "health",
-      severity: "warning",
-      detail: expect.stringContaining("OpenCode/legacy-only"),
-      action: expect.stringContaining("metadata")
-    }));
+    expect(report.issues.some(issue => issue.id === "health:model-policy-not-covered:modelPolicy.allow")).toBe(false);
     expect(report.issues).toContainEqual(expect.objectContaining({
       id: "health:invalid-model-policy-entry:modelPolicy.allow[8]",
       source: "health",
       severity: "blocking"
     }));
-    expect(report.issues).toContainEqual(expect.objectContaining({
-      id: "providers:disabled:nvidia",
-      source: "providers",
-      severity: "info"
-    }));
-    expect(report.issues).toContainEqual(expect.objectContaining({
-      id: "providers:disabled:openrouter",
-      source: "providers",
-      severity: "info"
-    }));
+    expect(report.issues.some(issue => issue.id === "providers:disabled:nvidia")).toBe(false);
+    expect(report.issues.some(issue => issue.id === "providers:disabled:openrouter")).toBe(false);
     const issueIds = report.issues.map((issue) => issue.id);
     expect(new Set(issueIds).size).toBe(issueIds.length);
   });

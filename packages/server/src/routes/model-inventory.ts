@@ -25,18 +25,18 @@ import {
  * 两端都是只读：不写 openclaw.json/.env、不创建 backup。
  */
 export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): void {
-  app.get("/api/model-inventory", (c) => {
+  app.get("/api/model-inventory", async (c) => {
     try {
-      const inventory = runtime.buildCurrentInventory();
+      const inventory = await runtime.buildCurrentInventory();
       return c.json(inventory);
     } catch (error) {
       return jsonError(c, error);
     }
   });
 
-  app.post("/api/model-inventory/refresh", (c) => {
+  app.post("/api/model-inventory/refresh", async (c) => {
     try {
-      const inventory = runtime.buildCurrentInventory({ refresh: true });
+      const inventory = await runtime.buildCurrentInventory({ refresh: true });
       return c.json(inventory);
     } catch (error) {
       return jsonError(c, error);
@@ -49,18 +49,18 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
    * 写入已成功时绝不把确认失败伪装成整体失败：
    * `ok: true, runtimeConfirmed: false, diagnostics: [...]`。
    */
-  function postWriteConfirmation(paths: OcSwitchPaths): {
+  async function postWriteConfirmation(paths: OcSwitchPaths): Promise<{
     runtimeConfirmed: boolean;
     diagnostics: { command: string; code: string; message: string }[];
     inventory: Record<string, unknown>;
-  } {
+  }> {
     runtime.invalidateCatalogCaches();
     let inventory;
-    try { inventory = runtime.buildCurrentInventory({ refresh: true, paths }); }
+    try { inventory = await runtime.buildCurrentInventory({ refresh: true, paths }); }
     catch { return { runtimeConfirmed: false, diagnostics: [{ command: "status", code: "invalid-shape", message: "Write succeeded; runtime confirmation failed" }], inventory: {} }; }
     const diagnostics = inventory.diagnostics;
     // 探测完整 = 三项 completeness 全到位；诊断非空视为不完整（provider 抛错降级路径）
-    const snapshotComplete = diagnostics.length === 0 && Object.values(runtime.currentRuntimeModelSnapshot({ paths }).completeness).every(Boolean);
+    const snapshotComplete = diagnostics.length === 0 && Object.values((await runtime.currentRuntimeModelSnapshot({ paths })).completeness).every(Boolean);
     return {
       runtimeConfirmed: snapshotComplete,
       diagnostics: diagnostics.map((diagnostic) => ({ ...diagnostic })),
@@ -80,10 +80,10 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `remove policy exact ref ${parsed.ref}`,
         normalizeConfig: false,
-        mutate(config) {
-          const inventory = runtime.buildCurrentInventory({ refresh: true, config, paths });
+        async mutate(config) {
+          const inventory = await runtime.buildCurrentInventory({ refresh: true, config, paths });
           const entry = inventory.models.find(model => normalizeModelRefForStorage(model.ref) === normalizeModelRefForStorage(parsed.ref));
-          if (entry?.availability === "unknown") throw new Error("Runtime model availability is unknown; refresh before removing references.");
+          // 精确引用停用只减少选择范围；保护与最后一条规则校验由 Core 执行，不依赖在线可用性。
           const operation = removeModelPolicyExactRef(config, parsed.ref, {
             ...(parsed.removeMetadata === undefined ? {} : { removeMetadata: parsed.removeMetadata })
           });
@@ -91,7 +91,7 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
           return operation.config;
         }
       });
-      const confirmation = postWriteConfirmation(paths);
+      const confirmation = await postWriteConfirmation(paths);
       return c.json({
         ok: true,
         ref: parsed.ref,
@@ -118,8 +118,8 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `materialize runtime model ${parsed.ref}`,
         normalizeConfig: false,
-        mutate(config) {
-          const inventory = runtime.buildCurrentInventory({ refresh: true, config, paths });
+        async mutate(config) {
+          const inventory = await runtime.buildCurrentInventory({ refresh: true, config, paths });
           const entry = inventory.models.find(model => normalizeModelRefForStorage(model.ref) === normalizeModelRefForStorage(parsed.ref));
           if (!entry) throw new Error(`Model ${parsed.ref} not found in current inventory.`);
           assertProviderCanEnable(paths, entry.providerId);
@@ -128,7 +128,7 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
           return operation.config;
         }
       });
-      const confirmation = postWriteConfirmation(paths);
+      const confirmation = await postWriteConfirmation(paths);
       return c.json({
         ok: true,
         ref: parsed.ref,

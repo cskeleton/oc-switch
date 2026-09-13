@@ -371,6 +371,7 @@ describe("插件 provider 字段透传", () => {
 /** 最小但字段齐全的 ModelInventory fixture（与 core DTO 同名同值） */
 function inventoryFixture(): ModelInventory {
   return {
+    schemaVersion: 2,
     providers: [{
       providerId: "cpa",
       sources: ["config", "plugin-manifest"],
@@ -391,7 +392,7 @@ function inventoryFixture(): ModelInventory {
       }
     }],
     models: [{
-      ref: "cpa/m2",
+      ref: "cpa/m2", pickerVisible: true, inactive: false, needsAttention: false,
       providerId: "cpa",
       modelId: "m2",
       catalogSources: ["config"],
@@ -436,6 +437,10 @@ function inventoryFixture(): ModelInventory {
 }
 
 describe("runtime model inventory API client", () => {
+  test("旧 inventory 协议不能恢复成逐模型假待办", async () => {
+    const client = createApiClient({ baseUrl: "http://fixture", token: "fixture", fetchImpl: async () => new Response(JSON.stringify({ ...inventoryFixture(), schemaVersion: undefined })) });
+    await expect(client.getModelInventory()).rejects.toThrow("版本不兼容");
+  });
   test("getModelInventory GET /api/model-inventory 并携带 Bearer", async () => {
     const calls: Request[] = [];
     const client = createApiClient({

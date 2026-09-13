@@ -1,6 +1,7 @@
+import { ModelAttentionPanel } from "../components/ModelAttentionPanel";
 import { Box, Cpu, ListChecks, RefreshCw, Star } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import type { ApiClient, CaseDuplicateGroup, ConfigDiffSummary, ConfigHealthReport, StatusResponse } from "../api";
+import type { ApiClient, CaseDuplicateGroup, ConfigDiffSummary, ConfigHealthReport, StatusResponse, ModelInventory } from "../api";
 import { countDiffChangelogEntries, DiffChangelog } from "../components/DiffChangelog";
 import { MergeCaseDuplicateDialog } from "../components/MergeCaseDuplicateDialog";
 import { Button } from "../components/ui/button";
@@ -10,6 +11,7 @@ import { cn } from "../lib/utils";
 
 interface DashboardProps {
   client: ApiClient;
+  onConfigureProvider?: ((id: string) => void) | undefined;
 }
 
 const modelPolicyModeLabels = {
@@ -19,7 +21,8 @@ const modelPolicyModeLabels = {
 } as const;
 
 /** 仪表盘：当前主模型与统计概览 */
-export function Dashboard({ client }: DashboardProps) {
+export function Dashboard({ client, onConfigureProvider }: DashboardProps) {
+  const [inventory, setInventory] = useState<ModelInventory | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [diff, setDiff] = useState<ConfigDiffSummary | null>(null);
   const [diffUnavailable, setDiffUnavailable] = useState(false);
@@ -33,10 +36,11 @@ export function Dashboard({ client }: DashboardProps) {
     setError(null);
     setDiffUnavailable(false);
     try {
-      const [statusResult, diffResult, healthResult] = await Promise.allSettled([
+      const [statusResult, diffResult, healthResult, inventoryResult] = await Promise.allSettled([
         client.getStatus(),
         client.getDiff(),
-        client.getHealth()
+        client.getHealth(),
+        client.getModelInventory()
       ]);
       if (statusResult.status === "fulfilled") {
         setStatus(statusResult.value);
@@ -49,6 +53,8 @@ export function Dashboard({ client }: DashboardProps) {
         setDiff(null);
         setDiffUnavailable(true);
       }
+      if (inventoryResult.status === "fulfilled") setInventory(inventoryResult.value);
+      else setError(inventoryResult.reason instanceof Error ? inventoryResult.reason.message : "模型状态未确认");
       setHealth(healthResult.status === "fulfilled" ? healthResult.value : null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载失败");
@@ -81,6 +87,7 @@ export function Dashboard({ client }: DashboardProps) {
       ) : null}
       {error ? <p className="text-sm font-medium text-destructive">{error}</p> : null}
 
+      <div className="mb-4"><ModelAttentionPanel client={client} inventory={inventory} onChanged={load} onConfigure={onConfigureProvider} /></div>
       {status ? (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
           <StatCard label="主模型" value={status.primaryModel ?? "未设置"} icon={Star} className="lg:col-span-2" />

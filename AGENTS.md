@@ -30,7 +30,7 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 - **Web 主题**：双主题用 `styles.css` 的 `@theme inline` + `:root` / `.dark` token。禁止硬编码 `slate-*` / `sky-*` / `red-*`——Tailwind v4 会静默丢弃未声明 token 的工具类且不报错。`brand` / `success` / `warning` / `danger` 等语义色 token 已在 `styles.css` 声明，同样禁止硬编码 `amber-*` / `emerald-*`。
 - **Web 表格换行与宽度**：`DataTable` 的单元格默认 `wrap: "normal"`（按词边界断行）。历史上 `<td>` 是无条件 `break-all`，会把 `openai-completions`、`qwen-token-plan` 这类短标识拦腰截断——列一被挤窄就大面积折行。只有长 URL / 长 ModelRef 才声明 `wrap: "anywhere"`，状态与操作列声明 `wrap: "nowrap"`。`Pill` / `Badge` 自带 `whitespace-nowrap shrink-0`，徽章永不折行。列数多的表必须显式传 `minWidthClass`（可带断点，如 `min-w-[22rem] lg:min-w-[62rem]`）：宽度不足时应横向滚动，而不是继续挤压列宽；同时用 `className: "hidden md:table-cell"` 在窄屏隐藏低价值列，保证 ID / 状态 / 操作 在手机上不横滚即可达。改动后须实测「表格 scrollWidth ≤ 容器 clientWidth」与「页面 body 不横向溢出」，别凭感觉估宽度。**实测别手搓 mock**：自造 API fixture 极易漏掉必填数组（如 `/api/settings` 的 `orphanEnvKeys`），页面会白屏并抛 `Cannot read properties of undefined`，看着像产品 bug 其实是 fixture bug。正确做法是另起一个隔离的 `oc-switch serve`：`HOME` 指向 mkdtemp fixture（stateDir / 备份 / .env 全部隔离），PATH 前置一个假 `openclaw` 脚本回放事先只读捕获的 `plugins list --json`，这样能拿到真实 DTO 与真实插件行（含同名遮蔽、已停用），且不碰用户常驻实例和真实 `openclaw.json`。注意 `overflow-x-auto` 容器 scrollWidth 超出属设计（App.tsx 的移动端 nav tab 条、对话框内表格），`truncate` 元素同理，不要当成回归。
 - **Web 共享组件**：`Button` / `Pill` / `Toast`（`ToastProvider` + `useToast`）/ `EmptyState` / `Skeleton` / `DataTable`（支持列排序）位于 `packages/web/src/components(/ui)`，新代码应直接使用，不得再内联拼 class。
-- **Web 单测 DOM 全局**：`packages/web/src/test-setup.ts` 逐项挑选 happy-dom 全局注入 `globalThis`，缺项不会在启动时报错，只在渲染时抛 `X is not defined` 且堆栈指向组件库内部。已知项：Radix `Switch` 位于 `<form>` 内会额外渲染依赖 `ResizeObserver` 的隐藏 bubble input（表单外不会），故该全局必须注入。引入新 Radix 组件后若测试炸在这类报错上，补 test-setup 而非改组件；单个用例的崩溃会经 `cleanup()` 连带打挂同文件其它用例，别被表象误导。
+- **Web 单测 DOM 全局**：`packages/web/src/test-setup.ts` 逐项挑选 happy-dom 全局注入 `globalThis`，缺项不会在启动时报错，只在渲染时抛 `X is not defined` 且堆栈指向组件库内部。已知项：Radix `Switch` 位于 `<form>` 内会额外渲染依赖 `ResizeObserver` 的隐藏 bubble input（表单外不会），故该全局必须注入。引入新 Radix 组件后若测试炸在这类报错上，补 test-setup 而非改组件；单个用例的崩溃会经 `cleanup()` 连带打挂同文件其它用例，别被表象误导。另外 `@testing-library` 的 `screen` 在模块加载期一次性绑定 `document.body`，bun test 下它先于 test-setup 的注入完成求值，导致单文件独立运行时 `screen.*` 抛「global document has to be available」（全量套件因跨文件模块缓存被掩盖）；test-setup 末尾已在注入 `document` 后用 `getQueriesForElement` 重建 screen 绑定，新增测试文件务必第一行 `import "./test-setup"`。
 - **共享类型**：不新建 shared contracts 包；core 类型由 server/cli/web 各自引用。
 
 ## 领域约定
@@ -44,6 +44,39 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 - **malformed modelPolicy.allow**：`allow` 非数组按 `legacy` 兼容解释，`ConfigStatusReport.modelPolicy.policyEntryCount` 固定为 `0`，但产生 blocking `health:invalid-model-policy-allow:modelPolicy.allow`；数组中的非字符串条目保留、忽略匹配，并逐项产生 blocking `health:invalid-model-policy-entry:modelPolicy.allow[<zero-based-index>]`。`ConfigStatusReport.modelPolicy` 固定包含 `mode`、`policyEntryCount`、`effectiveCatalogCount`、`unknownProviderRefs`、`policyOnlyExactRefs`、`knownProviderUnknownModelRefs`；unknown refs 只返回 Provider 不存在的字符串 exact refs，policy-only refs 只返回不在 `agents.defaults.models` 的字符串 exact refs，known-provider/unknown-model refs 是其子集；三者均排除 wildcard 和非字符串条目，不返回 secrets。
 - **Provider 模型目录**：`models.providers`；`listModels` 合并两者。
 - **主模型**：`agents.defaults.model`，双形态（见下节）。
+
+### 三层写模型与删除分级（2026-09-13 起）
+
+规格见 `docs/superpowers/specs/2026-09-13-oc-switch-three-layer-write-model-design.md`（已实施）。
+
+- 模型配置分三层：① 目录 `models.providers`（不是隐式 allowlist）、② 使用配置 `agents.defaults.models`、③ 策略 `modelPolicy.allow`；精确与通配放行混用合法，wildcard 永不隐式改写（唯一例外仍是 Provider/插件停用）。
+- **删除不再被 wildcard 阻断**：`removeProviderModel` / `batchRemoveProviderModels` / `removeProvider` 的 wildcard guard 降级为 `OperationResult.warnings` 提示；保留不动的 fail-closed：disable / rename / `removeModelPolicyExactRef` 的 wildcard guard、primary/fallback 命中、删除最后一条 restricted exact、unknown 可用性门禁。
+- **删除分级**：Core options/input 新增 `layers: { metadata?: boolean; policyExact?: boolean }`，缺省三层全删（CLI 与既有调用方语义不变）；Web 删除对话框显式传层级，默认「临时移除」只删目录条目，wildcard 覆盖行「连同精确放行」置灰。API Key 永不在删除范围内。
+- **Provider 删除**：`removeProvider` 新增 `removePolicyWildcard?: boolean`（默认 false）；残留的悬空 wildcard 不自动删（warning 提示），显式勾选才移除，且不得把 restricted policy 清空（fail closed）。
+- **discover 鉴权回退**：`ProviderDiscoverOptions.pluginProviders` 由 server/CLI 注入当前插件目录；config 条目缺 Key 时回退同名（大小写折叠）插件 manifest 的 `apiKeyEnvVars` 从 `.env` 取值，声明了变量但 `.env` 缺失时发请求前报错；无鉴权 401/403 报错带 `(missing or invalid API key)`。
+
+### OpenClaw 2026.9 选择器与停用（2026-09-11 修正）
+
+以下修正规则优先于后文的 2026-09-09/v1 历史描述；规格见 `docs/superpowers/specs/2026-09-11-model-picker-and-disable-design.md`。
+
+- 日常 Web Provider/模型选项使用 Gateway `models.list` 的 default 视图；`config.get` 仅校验所选配置路径及已应用版本，原始配置/认证内容不返回、不缓存。CLI `models list` 和 `--all` 是目录证据，不能冒充 IM 选择器。`pickerSource="inferred"` 必须明确提示未确认在线 IM 一致性。
+- `models.providers` 是目录，`agents.defaults.models` 是别名/参数，`modelPolicy.allow` 是策略。`meta.migrations.modelPolicyAllowlist=true` 或已有空 policy 对象时，不再把 metadata 当 legacy 限制；尚未迁移且有旧 model map 时保留 legacy 行为。
+- `pickerVisible`、`inactive`、`needsAttention` 由 Core 计算。只有正在选择/保护的模型出现可用性问题才进入待处理。未启用插件不展开未引用的模型；未被 policy 覆盖的 metadata、主动停用状态、保留备用 Key 不产生全局待办。真正的配置语法/结构错误仍须报告。
+- **明确 Provider/插件级停用是 wildcard 写入纪律的限定例外**：通过 `suspendModelProviders` 移出该目标的 exact/wildcard 规则，不改其他规则的大小写、顺序和重复次数；恢复只补保存的目标规则。开放策略必须取得可靠当前选择器后收窄为其他可见模型，禁止清成 `[]`。单模型 disable/rename/batch 仍拒绝 wildcard。
+- `.env` 原样保留；目录默认保留，`cleanupMetadata` / CLI `--cleanup-metadata` 可选清理别名与模型参数。完整 Provider 目录清理走已有删除入口，密钥仍不自动删除。插件停用同时写 `plugins.entries.<id>.enabled=false`；低层 `setModelPluginEnabled` 只写开关，CLI/API 必须组合 selection suspension。旧 Provider 快照可重复应用真实停用并保留恢复资料；插件恢复不能越过另一个独立 Provider 停用。
+- 精确引用主动移除只收窄选择范围，不依赖 availability；unknown 仍不得启用、设主模型或物化目录。primary/fallback/wildcard/最后一条规则保护仍生效。Provider/插件停用还检查其他 Agent 显式模型/策略及 image/pdf/utility 依赖；不静默改其他 Agent。
+- Server/CLI 使用异步有界探测：并行命令、30 秒缓存、同 scope 并发去重；config/env 路径和文件版本变化、写后均失效。事务 `mutate` 支持 Promise，保留文件变化重读/重做一次的保护。`provider-states.json` 只对同路径、仍存在的 config Provider 生效，旧孤立记录不能锁死插件。
+- 正常视图/配置管理视图分开；未启用插件折叠，残留选项可整组移出。配置写入成功与 Gateway 确认分开，未确认不得声称 IM 已生效。
+
+### 问题处理与用户决定（2026-09-12 起）
+
+方案见 `docs/superpowers/specs/2026-09-11-provider-attention-workflow-proposal.md`（已实施）。
+
+- **统一问题列表**：`packages/core/src/model-attention.ts` 的 `buildModelAttention(config, inventory)` 是唯一来源，同一根因只产生一条 issue（如停用 anthropic 的 7 个目录模型 ≠ 7 个待办）；config blocking 问题并入且不可忽略。Dashboard / Models / Providers 三页消费同一列表，按 `issueId` 去重，前端不得自行把 `unavailable` 重新分类成待办。
+- **持久化忽略**：`~/.oc-switch/attention-decisions.json`，按 scope（`openclawPath\0envPath\0agent`）+ issue revision 指纹记录；问题事实变化自动失效，重新启用 / 新增实际依赖 / 升级为加载阻断会恢复提醒。primary/fallback/实际依赖与 blocking 问题 `canIgnore=false`，禁止用忽略伪装恢复健康。
+- **动作语义**：「本问题不再提醒」只改 oc-switch 提醒、不改 OpenClaw 配置与 IM（文案必须明确）；「不再使用」走真实停用并默认保留配置与 API Key；清理是独立可选后续，绝不自动删 Key；「暂不处理」只关面板。
+- **API**：`GET /api/model-attention`（`schemaVersion: 2`）；`PATCH /api/model-attention/decision` 要求携带当前 revision，不匹配返回 409，写入经 decisionLock 串行 + 文件锁。
+- **前后端版本一致**：`GET /api/meta` 返回 `protocolVersion: 2` 与 capabilities；inventory 响应必须 `schemaVersion: 2` 且 `needsAttention`/`inactive`/`pickerVisible` 为 boolean，前端遇旧协议只报「前后端版本不兼容」，**禁止**用 `?? availability` 回退成旧告警逻辑；`static-web.ts` 启动时对 dist 取指纹，运行中 dist 被更新则静态页返回 503 提示重启。
 
 ### 运行时模型协调（2026-09-09 起）
 
@@ -94,7 +127,7 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 
 - CRUD、从 preset / 自定义添加（`provider add-custom`、`POST /api/providers/custom*`）
 - 可逆关闭（`provider disable/enable`、`PATCH /api/providers/:id/state`）：快照 `agents.defaults.models` metadata 至 `provider-states.json`，保留 `models.providers`、不改 `modelPolicy.allow` / `.env`；含主模型时不可关闭
-- 删除级联：移除 `models.providers[<id>]` 与 `agents.defaults.models` 中第一段等于该 ID 的 metadata；restricted exact policy 在可安全表达时同步，通配覆盖则 fail closed；`.env` Key 不自动删，标为 orphan；含当前主模型须先切换
+- 删除级联：移除 `models.providers[<id>]` 与 `agents.defaults.models` 中第一段等于该 ID 的 metadata；restricted exact policy 在可安全表达时同步；残留 wildcard 不阻断（warning 提示），仅显式 `removePolicyWildcard` 才移除且不得清空 restricted policy；`.env` Key 不自动删，标为 orphan；含当前主模型须先切换
 - 大小写重复：`inspectConfigHealth` / `mergeProviderCaseDuplicates`；`GET /api/health`（legacy，仅大小写检查）；CLI `health` / `providers merge-duplicates`；`addCustomProvider` 含大小写防重复
 - 插件 Provider 只读接入：`providers list` 标注 `plugin`、`GET /api/providers` 返回 `source`、Providers 页「插件」徽章 + 编辑/删除/发现模型/同步参数/关闭恢复禁用 + 「设置 Key」走 `.env` upsert；`ProviderModelsDialog` 对插件 provider 全只读
 
@@ -192,6 +225,9 @@ bun run packages/cli/src/index.ts     # 直接调用 CLI
 | Plugin Provider | `docs/superpowers/specs/2026-09-07-oc-switch-plugin-provider-design.md` |
 | Runtime Model Management | `docs/superpowers/specs/2026-09-09-oc-switch-runtime-model-management-design.md` |
 | Config Sync（跨机同步） | `docs/superpowers/specs/2026-09-09-oc-switch-config-sync-design.md` |
+| Model Picker & Disable（2026.9 选择器与停用） | `docs/superpowers/specs/2026-09-11-model-picker-and-disable-design.md` |
+| Provider Attention Workflow（问题处理与用户决定） | `docs/superpowers/specs/2026-09-11-provider-attention-workflow-proposal.md` |
+| 三层写模型与删除分级 | `docs/superpowers/specs/2026-09-13-oc-switch-three-layer-write-model-design.md` |
 
 ## Learned User Preferences
 

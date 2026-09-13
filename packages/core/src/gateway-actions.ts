@@ -48,6 +48,8 @@ function mergeRestartEnv(
   restartEnv: GatewayRuntimeTarget["restartEnv"]
 ): NodeJS.ProcessEnv {
   const merged: NodeJS.ProcessEnv = { ...base };
+  // 目标 selector 必须独立，不能继承启动 oc-switch 的另一个 Gateway 标识。
+  for (const key of RESTART_ENV_ALLOWLIST) delete merged[key];
   for (const [key, value] of Object.entries(restartEnv)) {
     if (!RESTART_ENV_ALLOWLIST.has(key as GatewayRestartEnvKey) || value === undefined) continue;
     merged[key] = value;

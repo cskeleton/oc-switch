@@ -29,6 +29,15 @@ afterEach(() => {
 });
 
 describe("createStaticAwareFetch", () => {
+  test("运行中替换 dist 明确要求重启，API 继续可用，不混用前后端", async () => {
+    const distDir = createDistFixture();
+    const serve = createStaticAwareFetch(mockApiFetch(), distDir);
+    writeFileSync(join(distDir, "index.html"), "new frontend");
+    const response = await serve(new Request("http://localhost/"));
+    expect(response.status).toBe(503);
+    expect(await response.text()).toContain("重启");
+    expect((await serve(new Request("http://localhost/api/meta"))).status).toBe(200);
+  });
   test("GET / serves index.html", async () => {
     const distDir = createDistFixture();
     const fetch = createStaticAwareFetch(mockApiFetch(), distDir);

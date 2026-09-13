@@ -11,6 +11,7 @@ import {
   addPolicyAllow,
   assertNoPolicyWildcardForRef,
   assertPolicyExactRefsRemovalAllowed,
+  findPolicyWildcardForRef,
   removePolicyAllow
 } from "./model-policy";
 import { isPrimaryModelRef, readFallbackModelRefs, readPrimaryModelRef, writePrimaryModelRef } from "./primary-model";
@@ -300,28 +301,45 @@ export function updateProviderModel(config: OpenClawConfig, ref: string, input: 
 export function removeProviderModel(
   config: OpenClawConfig,
   ref: string,
-  options: { force: boolean; newPrimary?: string }
+  options: { force: boolean; newPrimary?: string; layers?: { metadata?: boolean; policyExact?: boolean } }
 ): OperationResult {
   const { providerId, modelId } = parseModelRef(ref);
   const resolvedProviderId = resolveProviderId(config, providerId);
   const provider = resolvedProviderId ? config.models!.providers![resolvedProviderId] : undefined;
   if (!provider) throw new Error(`Provider ${providerId} not found`);
 
+  // 删除分级：缺省三层全删（保持旧行为）；显式 false 才跳过对应层
+  const removeMetadata = options.layers?.metadata ?? true;
+  const removePolicyExact = options.layers?.policyExact ?? true;
+
   // fallback 依赖保护必须发生在任何 mutation 之前（force 也不可绕过）
   assertFallbackRemovalAllowed(config, ref);
-  assertNoPolicyWildcardForRef(config, ref, "remove");
-  assertPolicyExactRefsRemovalAllowed(config, [ref], "remove", ref);
+  // 防清空 guard 只在实际删除 policy exact 时套用
+  if (removePolicyExact) {
+    assertPolicyExactRefsRemovalAllowed(config, [ref], "remove", ref);
+  }
   assertPrimaryRemovalAllowed(config, ref, options);
+  // wildcard 覆盖不再阻断删除（目录删除后模型自然从 picker 消失），降级为提示
+  const wildcard = findPolicyWildcardForRef(config, ref);
 
   ensureDefaults(config);
 
   provider.models = (provider.models ?? []).filter((model) => model.id !== modelId);
-  for (const allowlistRef of matchingAllowlistRefs(config, ref)) {
-    delete config.agents!.defaults!.models![allowlistRef];
+  if (removeMetadata) {
+    for (const allowlistRef of matchingAllowlistRefs(config, ref)) {
+      delete config.agents!.defaults!.models![allowlistRef];
+    }
   }
-  removePolicyAllow(config, ref);
+  if (removePolicyExact) {
+    removePolicyAllow(config, ref);
+  }
 
   const warnings: string[] = [];
+  if (wildcard) {
+    warnings.push(
+      `Model ${ref} is still covered by policy wildcard ${wildcard}: re-adding it to the catalog restores pickability, and exact input may still select it.`
+    );
+  }
   if (isPrimaryModelRef(config, ref) && options.force) {
     warnings.push(`Primary model ${ref} was removed`);
   }

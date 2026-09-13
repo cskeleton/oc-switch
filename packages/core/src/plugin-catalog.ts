@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { runCatalogCommand } from "./catalog-command";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelPluginDescriptor, ModelPluginNonModelCapability } from "./model-inventory";
@@ -60,6 +61,12 @@ export interface PluginCatalogDependencies {
 }
 
 const PLUGINS_LIST_PROBE = { timeoutMs: 8_000, maxOutputBytes: 1_048_576 };
+
+/** HTTP 读路径异步执行 CLI，manifest 解析与同步入口共享。 */
+export async function discoverPluginCatalogAsync(deps: Pick<PluginCatalogDependencies, "configPath" | "readTextFile"> = {}): Promise<PluginCatalogResult> {
+  const result = await runCatalogCommand("openclaw", ["plugins", "list", "--json"], PLUGINS_LIST_PROBE, deps.configPath);
+  return discoverPluginCatalog({ ...deps, runCommand: () => result });
+}
 
 function defaultRunCommand(
   command: string,
@@ -301,7 +308,7 @@ export function discoverPluginCatalog(deps: PluginCatalogDependencies = {}): Plu
     try {
       manifestText = readTextFile(join(entry.rootDir, "openclaw.plugin.json"));
     } catch {
-      diagnostics.push(`plugin ${entry.id}: manifest not readable; skipped`);
+      if (entry.enabled) diagnostics.push(`plugin ${entry.id}: manifest not readable; skipped`);
       // manifest 缺失不阻止 descriptor：启停插件只需 plugins list 事实，Provider 目录才是可选增强
       contractCapabilities = [];
       plugins.push(makeDescriptor(entry, parsedEntry, baseCapabilities));
@@ -312,7 +319,7 @@ export function discoverPluginCatalog(deps: PluginCatalogDependencies = {}): Plu
       providers.push(...parsedProviders);
       contractCapabilities = capabilities;
     } catch {
-      diagnostics.push(`plugin ${entry.id}: manifest parse failed; skipped`);
+      if (entry.enabled) diagnostics.push(`plugin ${entry.id}: manifest parse failed; skipped`);
     }
     plugins.push(makeDescriptor(entry, parsedEntry, [...baseCapabilities, ...contractCapabilities]));
   }

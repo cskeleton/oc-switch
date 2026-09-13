@@ -1,3 +1,4 @@
+import { ModelAttentionPanel } from "../components/ModelAttentionPanel";
 import { Edit3, Inbox, Plus, RefreshCw, Search, Star, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState, useMemo } from "react";
 import { DataTable } from "../components/DataTable";
@@ -5,6 +6,7 @@ import { EmptyState } from "../components/EmptyState";
 import { ModelDialog } from "../components/ModelDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { CustomProviderDialog } from "../components/CustomProviderDialog";
+import { ModelDeleteLayers } from "../components/ModelDeleteLayers";
 import { ModelPolicyPanel } from "../components/ModelPolicyPanel";
 import { AVAILABILITY_REASON_LABELS, ModelStateBadges } from "../components/ModelStateBadges";
 import { UnavailableModelsPanel } from "../components/UnavailableModelsPanel";
@@ -33,7 +35,7 @@ import type {
 
 interface ModelsViewProps {
   client: ApiClient;
-  onOpenProviders?: () => void;
+  onOpenProviders?: (providerId?: string) => void;
 }
 
 /** 处理向导只记录目标；权限始终读取当前 inventory，不复制策略算法。 */
@@ -46,8 +48,10 @@ interface PendingModelAction {
 function canDeleteCatalogEntry(entry: ModelInventoryEntry): boolean {
   if (!entry.capabilities.canEditCatalogEntry || entry.availability === "unknown") return false;
   if (entry.referenceSources.includes("primary") || entry.referenceSources.includes("fallback")) return false;
-  const hasPolicyReference = entry.referenceSources.includes("policy-exact") || entry.referenceSources.includes("policy-wildcard");
-  return !hasPolicyReference || entry.capabilities.canRemovePolicyExactRef;
+  // wildcard 覆盖不再阻止删除（服务端已放宽，删除后仅以 warning 提示）；
+  // 仅 policy-exact 引用仍要求 Core 许可（防清空 guard 等）
+  if (entry.referenceSources.includes("policy-exact")) return entry.capabilities.canRemovePolicyExactRef;
+  return true;
 }
 
 /** 待处理行的严重性权重（小者在前）：主模型 > fallback > 悬空精确引用 > 其余不可用 > 探测未知 */
@@ -76,11 +80,14 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
   /** 编辑对话框的目录定义（打开编辑时经兼容期 GET /api/models 补全） */
   const [editSummary, setEditSummary] = useState<ModelSummary | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ModelInventoryEntry | null>(null);
+  /** 删除分级（三层写模型）：默认全 false = 临时移除，仅删目录条目 */
+  const [deleteLayers, setDeleteLayers] = useState({ metadata: false, policyExact: false });
   const [newPrimary, setNewPrimary] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState("");
+  const [manageCatalog, setManageCatalog] = useState(false);
   const [providerQuery, setProviderQuery] = useState("");
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
   /** 处理向导（待处理区段「处理」入口）：补全 / 替换 / 独立 metadata 复选 / 保留 */
@@ -195,10 +202,15 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
   async function confirmDelete() {
     if (!deleteTarget || busy || !canDeleteCatalogEntry(deleteTarget)) return;
     setBusy(deleteTarget.ref);
+    // wildcard 覆盖行不存在可删的 exact 条目，policyExact 恒为 false
+    const wildcardCovered = deleteTarget.referenceSources.includes("policy-wildcard");
     try {
-      await client.deleteModel(deleteTarget.ref, {});
+      const result = await client.deleteModel(deleteTarget.ref, {
+        layers: { metadata: deleteLayers.metadata, policyExact: wildcardCovered ? false : deleteLayers.policyExact }
+      });
       setDeleteTarget(null);
       toast.success(`已删除模型 ${deleteTarget.ref}`);
+      for (const warning of result.warnings ?? []) toast.warning(warning);
       await load();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "删除模型失败");
@@ -220,7 +232,7 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
 
   function openPendingAction(ref: string) {
     const entry = inventory?.models.find(model => model.ref === ref);
-    if (!entry || entry.availability === "unknown") return;
+    if (!entry || (entry.availability === "unknown" && !entry.capabilities.canRemovePolicyExactRef)) return;
     const protectedRef = entry.referenceSources.includes("primary") || entry.referenceSources.includes("fallback");
     setNewPrimary(inventory?.models.find(model => model.capabilities.canSetPrimary)?.ref ?? "");
     openAction({ kind: protectedRef ? "replace" : "handle", ref });
@@ -303,12 +315,12 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
 
   // 左侧 Provider 导航：未关闭在前、已关闭沉底，组内按 id localeCompare
   const providerIds = useMemo(() => {
-    const providers = inventory?.providers ?? [];
+    const providers = (inventory?.providers ?? []).filter(provider => manageCatalog || inventory?.pickerSource === undefined || (inventory?.models ?? []).some(model => model.providerId.toLowerCase() === provider.providerId.toLowerCase() && (model.pickerVisible ?? true)));
     const disabledIds = new Set(providers.filter((p) => p.disabled).map((p) => p.providerId));
     const enabled = providers.filter((p) => !disabledIds.has(p.providerId)).map((p) => p.providerId).sort((a, b) => a.localeCompare(b));
     const disabled = providers.filter((p) => disabledIds.has(p.providerId)).map((p) => p.providerId).sort((a, b) => a.localeCompare(b));
     return [...enabled, ...disabled];
-  }, [inventory]);
+  }, [inventory, manageCatalog]);
 
   useEffect(() => {
     setSelectedProviderId(previous => providerIds.find(id => id.toLowerCase() === previous?.toLowerCase()) ?? providerIds[0] ?? null);
@@ -320,20 +332,20 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
     return providerIds.filter((pId) => pId.toLowerCase().includes(normalized));
   }, [providerIds, providerQuery]);
 
-  /** 普通区段模型：排除不可用 / 未知行（进入待处理区段） */
+  /** 默认完整呈现选择器选项；管理视图另外显示闲置目录，问题行集中在待处理区。 */
   const selectableModels = useMemo(() => {
     const models = inventory?.models ?? [];
-    return models.filter((model) => model.availability === "available");
-  }, [inventory]);
+    return models.filter((model) => manageCatalog ? !model.needsAttention : (model.pickerVisible ?? model.availability === "available"));
+  }, [inventory, manageCatalog]);
 
   const providerCounts = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const model of inventory?.models ?? []) {
+    for (const model of selectableModels) {
       const providerId = model.providerId.toLowerCase();
       counts[providerId] = (counts[providerId] || 0) + 1;
     }
     return counts;
-  }, [inventory]);
+  }, [selectableModels]);
 
   const activeModels = useMemo(() => {
     if (!selectedProviderId) return [];
@@ -357,7 +369,7 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
   // 待处理区段：unavailable / unknown 全量（跨 Provider 汇总入口），按严重性排序
   const pendingModels = useMemo(() => {
     const models = (inventory?.models ?? []).filter(
-      (model) => model.availability === "unavailable" || model.availability === "unknown"
+      (model) => model.needsAttention === true
     );
     return models.slice().sort(comparePendingModels);
   }, [inventory]);
@@ -369,8 +381,8 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
   const pluginOnlyProvider = activeProvider?.sources.includes("plugin-manifest") && !activeProviderFromConfig;
   const providerDisabledHint = "该 Provider 已关闭，请先恢复 Provider 后再启用模型";
 
-  const unavailableCount = inventory?.summary?.unavailableCount ?? 0;
-  const unknownCount = inventory?.summary?.unknownCount ?? 0;
+  const unavailableCount = pendingModels.filter(model => model.availability === "unavailable").length;
+  const unknownCount = pendingModels.filter(model => model.availability === "unknown").length;
 
   function renderModelTable(list: ModelInventoryEntry[], opacityClass: string = "") {
     return (
@@ -481,7 +493,7 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
                         variant="ghost"
                         size="icon"
                         disabled={busy !== null}
-                        onClick={() => setDeleteTarget(row)}
+                        onClick={() => { setDeleteLayers({ metadata: false, policyExact: false }); setDeleteTarget(row); }}
                         aria-label={`删除模型 ${row.ref}`}
                         className="text-muted-foreground hover:text-destructive"
                       >
@@ -500,47 +512,12 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
 
   return (
     <section data-testid="models-view" className="flex flex-col gap-6 min-h-[calc(100vh-4rem)]">
-      {/* 顶部：不可用与待处理汇总区段（spec §11.2），跨 Provider */}
-      <div data-testid="pending-models-panel">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-sm font-semibold text-foreground uppercase tracking-wider">不可用与待处理</h2>
-            {pendingModels.length > 0 ? (
-              <Pill variant="warning">
-                {unavailableCount} 个不可用，{unknownCount} 个未知
-              </Pill>
-            ) : (
-              inventory ? <Pill variant="success">全部可用</Pill> : <Pill variant="muted">{error ? "状态未加载" : "正在加载…"}</Pill>
-            )}
-          </div>
-          {/* unknown 行的统一处理入口：刷新探测（不提供删除建议） */}
-          <Button
-            variant="outline"
-            size="sm"
-            aria-label="刷新探测"
-            disabled={refreshing || busy !== null}
-            onClick={() => void refreshProbe()}
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
-            刷新探测
-          </Button>
-        </div>
-        {inventory?.diagnostics.length ? (
-          <div role="status" className="mb-3 rounded-md border border-warning/40 p-3 text-sm text-warning">
-            <p>探测未完成：未知状态不能用于清理。</p>
-            <ul className="list-inside list-disc break-words">
-              {inventory.diagnostics.map((diagnostic, index) => <li key={index}>{diagnostic.command} / {diagnostic.code}：<span>{diagnostic.message}</span></li>)}
-            </ul>
-          </div>
-        ) : null}
-        {inventory?.policyRules.some(rule => rule.kind === "wildcard" && rule.matchedModelCount === 0) ? (
-          <p className="mb-3 text-sm text-warning">
-            存在零命中通配规则；规则本身不代表模型。<Button variant="ghost" size="sm" onClick={() => setShowPolicyRules(true)}>查看 Policy 规则</Button>
-          </p>
-        ) : null}
-        {inventory ? <UnavailableModelsPanel models={pendingModels} plugins={inventory.plugins} onHandleRef={openPendingAction} /> : null}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-muted-foreground">{manageCatalog ? "配置目录：保留参数不代表启用。" : inventory?.pickerSource === "gateway" ? "当前 Gateway 模型选项（默认 Agent）；独立策略的 Agent 可能不同。" : "本地推算的模型选项；尚未确认与运行中的 IM 一致。"}</p>
+        <Button variant="outline" onClick={() => setManageCatalog(value => !value)}>{manageCatalog ? "返回 IM 模型选项" : "管理配置目录"}</Button>
       </div>
-
+      <ModelAttentionPanel client={client} inventory={inventory} onChanged={load} onConfigure={onOpenProviders ? id => onOpenProviders(id) : undefined} />
+      <div className="flex justify-end"><Button variant="outline" size="sm" aria-label="刷新探测" disabled={refreshing || busy !== null} onClick={() => void refreshProbe()}>刷新探测</Button></div>
       {/* 主体：左 Provider 导航 + 右模型区段 */}
       <div className="flex flex-col md:flex-row gap-6">
         {/* Left Column: Provider List */}
@@ -680,7 +657,7 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
                   {activeAvailableModels.length > 0 && (
                     <div className="space-y-2">
                       <h3 className="text-xs font-semibold text-success uppercase tracking-wider">
-                        运行可用模型 ({activeAvailableModels.length})
+                        {manageCatalog ? "目录模型" : "模型选项"} ({activeAvailableModels.length})
                       </h3>
                       {renderModelTable(activeAvailableModels)}
                     </div>
@@ -746,7 +723,7 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
           {pendingEntry && (pendingEntry.pluginIds.length > 0 || pendingEntry.catalogSources.includes("plugin-manifest")) ? (
             <div className="space-y-2 text-sm text-muted-foreground">
               <p>插件目录由 OpenClaw 管理；已下架模型不可伪造为本地配置。插件停用或缺少认证时，请到 Providers 页检查插件状态与凭据。</p>
-              {onOpenProviders ? <Button variant="outline" disabled={busy !== null} onClick={onOpenProviders}>前往 Providers</Button> : null}
+              {onOpenProviders ? <Button variant="outline" disabled={busy !== null} onClick={() => onOpenProviders?.(pendingEntry?.providerId)}>前往 Providers</Button> : null}
             </div>
           ) : null}
           {canRemovePendingRef ? (
@@ -764,7 +741,7 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
             </form>
           ) : <p className="text-sm text-muted-foreground">当前引用不能安全删除；可保留配置，等待恢复或先处理受保护的引用。</p>}
           {actionError ? <p role="alert" className="text-sm text-destructive">{actionError}</p> : null}
-          <DialogFooter><Button variant="outline" disabled={busy !== null} onClick={closeAction}>保留</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" disabled={busy !== null} onClick={closeAction}>暂不处理</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -811,7 +788,7 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
             </div>
           )}
           {actionError ? <p role="alert" className="text-sm text-destructive">{actionError}</p> : null}
-          <DialogFooter><Button variant="outline" disabled={busy !== null} onClick={closeAction}>保留</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" disabled={busy !== null} onClick={closeAction}>暂不处理</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -857,7 +834,17 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
         confirmDisabled={busy !== null}
         onCancel={() => { if (!busy) setDeleteTarget(null); }}
         onConfirm={() => void confirmDelete()}
-      />
+      >
+        {deleteTarget ? (
+          <ModelDeleteLayers
+            metadata={deleteLayers.metadata}
+            policyExact={deleteLayers.policyExact}
+            wildcardCovered={deleteTarget.referenceSources.includes("policy-wildcard")}
+            disabled={busy !== null}
+            onChange={setDeleteLayers}
+          />
+        ) : null}
+      </ConfirmDialog>
     </section>
   );
 }

@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import { listBackups } from "../packages/core/src/backup-manager";
 import { parseLaunchAgentGatewayMetadata } from "../packages/core/src/gateway-launchd-metadata";
 import { discoverPluginCatalog } from "../packages/core/src/plugin-catalog";
-import { discoverRuntimeModelCatalog } from "../packages/core/src/runtime-model-catalog";
+import { discoverRuntimeModelCatalog, discoverRuntimeModelCatalogAsync } from "../packages/core/src/runtime-model-catalog";
 import { discoverLinuxOpenClawRuntime } from "../packages/core/src/path-discovery-linux";
 import { discoverMacOSOpenClawRuntime } from "../packages/core/src/path-discovery-macos";
 import { validateRuntimePathSelection } from "../packages/core/src/paths";
@@ -121,7 +121,7 @@ if (args[0] === "--version") {
   console.log(readFileSync(join(dir, "version.txt"), "utf8").trim());
   process.exit(0);
 }
-if (args[0] === "models" && mode === "invalid-json") {
+if ((args[0] === "models" || args[0] === "gateway") && mode === "invalid-json") {
   console.log("<html>gateway crashed</html>");
   process.exit(0);
 }
@@ -137,6 +137,19 @@ const fallbacks = typeof defaults.model === "object" ? defaults.model?.fallbacks
 const refs = new Set([...Object.keys(defaults.models ?? {}), ...(policy ?? []).filter(ref => !ref.endsWith("/*")), ...(primary ? [primary] : []), ...fallbacks].map(identity));
 const disabled = new Set(plugins.plugins.filter(plugin => !plugin.enabled).flatMap(plugin => plugin.providerIds));
 const catalog = read("list-all.json").models.filter(entry => entry.missing !== true);
+// Gateway 的默认选择器与 config 归属检查同样使用 fixture，不连接用户 Gateway。
+if (args[0] === "gateway") {
+  if (args[2] === "config.get") { emit({ path: process.env.OPENCLAW_CONFIG_PATH, valid: true, configRevisionHash: "fixture", appliedConfigHash: "fixture" }); process.exit(0); }
+  const allow = policy === undefined ? Object.keys(defaults.models ?? {}) : policy;
+  const selected = ref => !allow.length || allow.some(rule => rule.endsWith("/*") ? identity(ref).startsWith(identity(rule).slice(0, -1)) : identity(ref) === identity(rule));
+  const picked = catalog.filter(entry => selected(entry.key) && !disabled.has(entry.key.split("/")[0]));
+  for (const ref of [...(allow ?? []).filter(ref => !ref.endsWith("/*")), ...(primary ? [primary] : []), ...fallbacks]) {
+    if (!picked.some(entry => identity(entry.key) === identity(ref))) picked.push({ key: ref, available: false, missing: true });
+  }
+  emit({ models: picked.map(entry => ({ ...entry, provider: entry.key.slice(0, entry.key.indexOf("/")), id: entry.key.slice(entry.key.indexOf("/") + 1) })) });
+  process.exit(0);
+}
+
 if (args[0] === "models" && args[1] === "status") {
   const payload = read("status.json");
   payload.allowed = policy === undefined ? Object.keys(defaults.models ?? {}) : policy.length === 0 ? catalog.map(entry => entry.key)
@@ -1048,7 +1061,7 @@ async function assertRuntimeModelAcceptance(rootDir: string, outputs: string[]):
     return { status: result.status, stdout: result.stdout ?? "", timedOut: (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT" };
   };
   const fakeCatalogProvider: PluginCatalogProvider = () => discoverPluginCatalog({ runCommand: runFakeOpenClaw });
-  const fakeRuntimeProvider: RuntimeModelCatalogProvider = () => discoverRuntimeModelCatalog({ runCommand: runFakeOpenClaw });
+  const fakeRuntimeProvider: RuntimeModelCatalogProvider = (paths) => discoverRuntimeModelCatalogAsync({ configPath: paths.openclawPath, runCommand: async (command, args, options) => runFakeOpenClaw(command, args, options) });
   const app = createApp({
     token: TOKEN,
     paths: { openclawPath, envPath, stateDir },
@@ -1108,7 +1121,7 @@ async function assertRuntimeModelAcceptance(rootDir: string, outputs: string[]):
     "删除后 policyRules 不得再含该 exact 规则"
   );
   assert(!inventory.models.some(m => m.ref === "ghost-provider/policy-only-model"), "删除唯一 exact 引用后，缺失占位必须从 inventory 消失");
-  assert(!fakeRuntimeProvider({ openclawPath, envPath, stateDir }).allowedRefs.includes("ghost-provider/policy-only-model"), "删除后 OpenClaw allowed 同步移除该 exact ref");
+  assert(!(await fakeRuntimeProvider({ openclawPath, envPath, stateDir })).allowedRefs.includes("ghost-provider/policy-only-model"), "删除后 OpenClaw allowed 同步移除该 exact ref");
   assert(
     inventory.models.some((m) => m.ref === "nvidia/deepseek-ai/deepseek-v4-flash"),
     "删除操作不得影响其余模型"
@@ -1121,7 +1134,7 @@ async function assertRuntimeModelAcceptance(rootDir: string, outputs: string[]):
   const backupConfig = readFileSync(join(latestBackupDir, "openclaw.json"), "utf8");
   assertRuntimeOutputNoSecrets(backupConfig, "备份 openclaw.json");
 
-  // ---------- Step 4/5：xiaomi 插件启停，两个 Provider 同步变化且 policy 原样保留 ----------
+  // ---------- Step 4/5：xiaomi 插件启停，两个 Provider 同步停用，移出选择规则并可恢复 ----------
   writeRuntimeConfig();
   const beforePlugin = readFileSync(openclawPath, "utf8");
   const beforePolicy = (JSON.parse(beforePlugin) as OpenClawConfig).agents?.defaults?.modelPolicy?.allow ?? [];
@@ -1142,8 +1155,8 @@ async function assertRuntimeModelAcceptance(rootDir: string, outputs: string[]):
   };
   assert(afterDisable.plugins?.entries?.xiaomi?.enabled === false, "停用后 plugins.entries.xiaomi.enabled 应为 false");
   assert(
-    JSON.stringify(afterDisable.agents?.defaults?.modelPolicy?.allow ?? []) === JSON.stringify(beforePolicy),
-    "插件停用后 policy 必须逐项原样保留，大小写与重复规则也不得改写"
+    JSON.stringify(afterDisable.agents?.defaults?.modelPolicy?.allow ?? []) === JSON.stringify(beforePolicy.filter(ref => typeof ref !== "string" || !["xiaomi", "xiaomi-token-plan"].includes(ref.split("/")[0]!.toLowerCase()))),
+    "停用必须移出目标选择规则；其他规则的大小写、重复和顺序保持原样"
   );
 
   // fake CLI 自行回读 config；不要在写后替它手动改 enabled 或模型目录来制造确认成功。
@@ -1152,8 +1165,8 @@ async function assertRuntimeModelAcceptance(rootDir: string, outputs: string[]):
   inventory = JSON.parse(result.stdout) as typeof inventory;
   const disabledModel = inventory.models.find((m) => m.ref === "xiaomi/mi-1");
   assert(
-    disabledModel?.availability === "unavailable" && disabledModel?.availabilityReasons.includes("plugin-disabled"),
-    "插件停用后其模型应为 unavailable/plugin-disabled"
+    (!disabledModel || (!disabledModel.needsAttention && !disabledModel.pickerVisible)),
+    "停用插件模型不应留在选择器或待处理列表"
   );
   for (const providerId of ["xiaomi", "xiaomi-token-plan"]) {
     const provider = inventory.providers.find((p) => p.providerId === providerId);
@@ -1175,8 +1188,8 @@ async function assertRuntimeModelAcceptance(rootDir: string, outputs: string[]):
   };
   assert(afterEnable.plugins?.entries?.xiaomi?.enabled === true, "启用后 plugins.entries.xiaomi.enabled 应为 true");
   assert(
-    JSON.stringify(afterEnable.agents?.defaults?.modelPolicy?.allow ?? []) === JSON.stringify(beforePolicy),
-    "插件启停全程 policy 必须逐项原样保留"
+    JSON.stringify([...(afterEnable.agents?.defaults?.modelPolicy?.allow ?? [])].sort()) === JSON.stringify([...beforePolicy].sort()),
+    "重新启用必须恢复原规则和重复次数"
   );
 
   // ---------- Step 6：探测超时 → unknown，清理操作禁用 ----------
@@ -1196,21 +1209,22 @@ async function assertRuntimeModelAcceptance(rootDir: string, outputs: string[]):
     );
     if (model.availability === "unknown") {
       assert(
-        model.capabilities.canRemovePolicyExactRef !== true
-          && model.capabilities.canTogglePolicy !== true
+        model.capabilities.canTogglePolicy !== true
           && model.capabilities.canSetPrimary !== true,
-        `unknown 模型 ${model.ref} 不得携带任何清理/编排能力`
+        `unknown 模型 ${model.ref} 不得携带启用/设主模型能力`
       );
     }
   }
-  // 超时模式下的删除操作必须被拒绝（unknown 状态不可依据不完整证据清理）
+  // 明确移除 exact 是收窄选择范围，不宣称模型不可用；主模型/fallback/wildcard 门禁仍在 Core。
   const beforeUnknownRemoval = readFileSync(openclawPath, "utf8");
   const beforeUnknownBackups = listBackups(stateDir).length;
   const removeOnUnknown = await runCli(["model", "remove-policy-ref", "ghost-provider/policy-only-model", "--yes"], timeoutEnv);
   outputs.push(removeOnUnknown.combined);
-  assert(removeOnUnknown.code !== 0, "unknown 下显式删除也必须失败，不能仅在 UI 隐藏按钮");
-  assert(readFileSync(openclawPath, "utf8") === beforeUnknownRemoval, "unknown 下拒绝删除必须保持 config 原样");
-  assert(listBackups(stateDir).length === beforeUnknownBackups, "拒绝的删除不得生成备份");
+  assert(removeOnUnknown.code === 0, "unknown 下用户仍可停用不受保护的精确规则");
+  const afterUnknownRemoval = JSON.parse(readFileSync(openclawPath, "utf8"));
+  assert(!afterUnknownRemoval.agents.defaults.modelPolicy.allow.includes("ghost-provider/policy-only-model"), "仅移出用户指定的精确规则");
+  assert(JSON.stringify(afterUnknownRemoval.models) === JSON.stringify(JSON.parse(beforeUnknownRemoval).models), "停用不改动 Provider 目录");
+  assert(listBackups(stateDir).length === beforeUnknownBackups + 1, "精确停用应生成备份");
   assertRuntimeOutputNoSecrets(removeOnUnknown.combined, "超时模式 remove-policy-ref 输出");
   // 下一失败模式使用同一基线，不替前一步的失败掩盖写入。
   writeRuntimeConfig();
@@ -1237,10 +1251,9 @@ async function assertRuntimeModelAcceptance(rootDir: string, outputs: string[]):
   for (const model of inventory.models) {
     if (model.availability === "unknown") {
       assert(
-        model.capabilities.canRemovePolicyExactRef !== true
-          && model.capabilities.canTogglePolicy !== true
+        model.capabilities.canTogglePolicy !== true
           && model.capabilities.canSetPrimary !== true,
-        `unknown 模型 ${model.ref} 不得携带任何清理/编排能力（invalid JSON 模式）`
+        `unknown 模型 ${model.ref} 不得携带启用/设主模型能力（invalid JSON 模式）`
       );
     }
   }

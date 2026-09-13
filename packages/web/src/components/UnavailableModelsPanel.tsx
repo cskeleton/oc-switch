@@ -21,7 +21,7 @@ const REFERENCE_LABELS = {
 } as const;
 
 function guidance(entry: ModelInventoryEntry): string {
-  if (entry.availability === "unknown") return "探测证据不足，请刷新后复核；暂不提供清理操作。";
+  if (entry.availability === "unknown") return entry.capabilities.canRemovePolicyExactRef ? "可调用性未确认；可停用精确选择规则，配置清理由你决定。" : "探测证据不足，请刷新后复核。";
   if (entry.referenceSources.includes("primary")) return "主模型不可直接删除，请先替换主模型（agents.defaults.model）";
   if (entry.referenceSources.includes("fallback")) return "fallback 引用不可直接删除，请先更新回退链（agents.defaults.model.fallbacks）";
   return entry.availabilityReasons.map(reason => AVAILABILITY_REASON_LABELS[reason] ?? reason).join("、") || "运行时标记为不可用";
@@ -52,7 +52,7 @@ export function UnavailableModelsPanel({ models, plugins = [], onHandleRef }: Un
       header: "操作",
       wrap: "nowrap",
       render: row => {
-        if (row.availability === "unknown") return null;
+        if (row.availability === "unknown" && !row.capabilities.canRemovePolicyExactRef) return null;
         const label = row.referenceSources.includes("primary")
           ? "替换主模型"
           : row.referenceSources.includes("fallback") ? "查看替换指引" : "处理";

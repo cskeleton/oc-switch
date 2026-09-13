@@ -14,6 +14,19 @@ function configWithPolicy(allow: unknown): OpenClawConfig {
   return { agents: { defaults: { modelPolicy: { allow } } } } as OpenClawConfig;
 }
 
+test("2026.9 已迁移或 policy 对象存在时 metadata 不恢复旧限制", () => {
+  const migrated = { meta: { migrations: { modelPolicyAllowlist: true } }, agents: { defaults: { models: { "old/one": {} } } } };
+  expect(getModelPolicyMode(migrated)).toBe("unrestricted");
+  expect(getModelSelectionSource(migrated, "new/two")).toBe("unrestricted");
+  expect(getModelPolicyMode({ agents: { defaults: { models: { "old/one": {} }, modelPolicy: {} } } })).toBe("unrestricted");
+  expect(getModelPolicyMode({ agents: { defaults: { models: { "old/one": {} } } } })).toBe("legacy");
+});
+
+test("OpenClaw 的 OpenRouter free 兼容 ref 与 Gateway canonical ref 使用相同策略", () => {
+  expect(getModelSelectionSource(configWithPolicy(["openrouter/free"]), "openrouter/openrouter/free")).toBe("policy-exact");
+  expect(getModelSelectionSource(configWithPolicy(["custom/free"]), "custom/openrouter/free")).toBeUndefined();
+});
+
 describe("model-policy 归一层", () => {
   test("有效 selection 模式区分缺失、显式空数组与非空原始数组", () => {
     expect(getModelPolicyMode({})).toBe("legacy");

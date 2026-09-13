@@ -8,6 +8,10 @@ export * from "./config-adapter";
 export * from "./primary-model";
 export * from "./env-manager";
 export * from "./operations";
+export {
+  assertPolicyProviderWildcardRemovalAllowed,
+  removePolicyWildcardForProvider
+} from "./model-policy";
 export * from "./config-health";
 export * from "./config-status";
 export * from "./config-sync";
@@ -20,6 +24,9 @@ export * from "./runtime-model-catalog";
 export * from "./model-inventory";
 export * from "./model-reconciliation";
 export * from "./plugin-state";
+export * from "./model-suspension";
+export * from "./model-attention";
+export { withFileLock } from "./lock";
 export * from "./path-discovery-linux";
 export * from "./path-discovery-macos";
 export * from "./backup-manager";

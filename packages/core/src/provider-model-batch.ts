@@ -1,8 +1,8 @@
 import { formatModelRef, normalizeProviderId, parseModelRef } from "./model-ref";
 import {
   addPolicyAllow,
-  assertNoPolicyWildcardForRef,
   assertPolicyExactRefsRemovalAllowed,
+  findPolicyWildcardForRef,
   getModelSelectionSource,
   removePolicyAllow
 } from "./model-policy";
@@ -23,8 +23,8 @@ export interface BatchAddProviderModelsResult extends OperationResult {
 }
 
 export type BatchRemoveProviderModelsInput =
-  | { modelIds: string[]; keepEnabledOnly?: undefined }
-  | { keepEnabledOnly: true; modelIds?: undefined };
+  | { modelIds: string[]; keepEnabledOnly?: undefined; layers?: { metadata?: boolean; policyExact?: boolean } }
+  | { keepEnabledOnly: true; modelIds?: undefined; layers?: { metadata?: boolean; policyExact?: boolean } };
 
 export interface BatchRemoveProviderModelsResult extends OperationResult {
   removedModelIds: string[];
@@ -143,6 +143,22 @@ function collectEffectivelyEnabledModelIds(config: OpenClawConfig, providerId: s
   return ids;
 }
 
+/** 被删 ref 仍被 wildcard 覆盖时按 wildcard 条目去重生成提示（同一条 wildcard 只提示一次）。 */
+function collectWildcardRemovalWarnings(config: OpenClawConfig, refs: string[]): string[] {
+  const warnings: string[] = [];
+  const seen = new Set<string>();
+  for (const ref of refs) {
+    const wildcard = findPolicyWildcardForRef(config, ref);
+    if (wildcard && !seen.has(wildcard)) {
+      seen.add(wildcard);
+      warnings.push(
+        `Removed models are still covered by policy wildcard ${wildcard}: re-adding them to the catalog restores pickability, and exact input may still select them.`
+      );
+    }
+  }
+  return warnings;
+}
+
 /** 批量删除 provider-local 模型；或 keepEnabledOnly 仅保留已启用（及主模型目录项） */
 export function batchRemoveProviderModels(
   config: OpenClawConfig,
@@ -154,6 +170,9 @@ export function batchRemoveProviderModels(
   if (!provider) throw new Error(`Provider ${providerId} not found`);
 
   const models = provider.models ?? [];
+  // 删除分级：缺省三层全删（保持旧行为）；显式 false 才跳过对应层
+  const removeMetadata = input.layers?.metadata ?? true;
+  const removePolicyExact = input.layers?.policyExact ?? true;
 
   if ("keepEnabledOnly" in input && input.keepEnabledOnly) {
     assertPrimaryCatalogPresentForKeepEnabledOnly(config, providerId, models);
@@ -169,14 +188,19 @@ export function batchRemoveProviderModels(
     // fallback 依赖保护（fail closed）：将要移除的目录项命中 fallbacks 引用时整单拒绝，
     // 不做静默保留例外；检查先于任何 mutation
     assertNotRemovingFallbackModel(config, providerId, removedModelIds);
-    for (const id of removedModelIds) {
-      assertNoPolicyWildcardForRef(config, formatModelRef(resolvedProviderId!, id), "remove");
+    // 防清空 guard 只在实际删除 policy exact 时套用
+    if (removePolicyExact) {
+      assertPolicyExactRefsRemovalAllowed(
+        config,
+        removedModelIds.map((id) => formatModelRef(resolvedProviderId!, id)),
+        "remove",
+        `models from provider ${resolvedProviderId}`
+      );
     }
-    assertPolicyExactRefsRemovalAllowed(
+    // wildcard 覆盖不再阻断删除（目录删除后模型自然从 picker 消失），降级为提示
+    const warnings = collectWildcardRemovalWarnings(
       config,
-      removedModelIds.map((id) => formatModelRef(resolvedProviderId!, id)),
-      "remove",
-      `models from provider ${resolvedProviderId}`
+      removedModelIds.map((id) => formatModelRef(resolvedProviderId!, id))
     );
 
     ensureDefaults(config);
@@ -185,13 +209,17 @@ export function batchRemoveProviderModels(
 
     for (const id of removedModelIds) {
       const ref = formatModelRef(resolvedProviderId!, id);
-      for (const allowlistRef of matchingAllowlistRefs(config, ref)) {
-        delete config.agents!.defaults!.models![allowlistRef];
+      if (removeMetadata) {
+        for (const allowlistRef of matchingAllowlistRefs(config, ref)) {
+          delete config.agents!.defaults!.models![allowlistRef];
+        }
       }
-      removePolicyAllow(config, ref);
+      if (removePolicyExact) {
+        removePolicyAllow(config, ref);
+      }
     }
 
-    return { config, warnings: [], removedModelIds };
+    return { config, warnings, removedModelIds };
   }
 
   const modelIds = input.modelIds ?? [];
@@ -203,29 +231,39 @@ export function batchRemoveProviderModels(
   // fallback 依赖保护：先于任何 mutation
   assertNotRemovingFallbackModel(config, providerId, modelIds);
 
-  for (const id of modelIds) {
-    assertNoPolicyWildcardForRef(config, formatModelRef(resolvedProviderId!, id), "remove");
+  const removeSet = new Set(modelIds);
+  const removedModelIds = models.filter((model) => removeSet.has(model.id)).map((model) => model.id);
+
+  // 防清空 guard 只在实际删除 policy exact 时套用
+  if (removePolicyExact) {
+    assertPolicyExactRefsRemovalAllowed(
+      config,
+      modelIds.map((id) => formatModelRef(resolvedProviderId!, id)),
+      "remove",
+      `models from provider ${resolvedProviderId}`
+    );
   }
-  assertPolicyExactRefsRemovalAllowed(
+  // wildcard 覆盖不再阻断删除（目录删除后模型自然从 picker 消失），降级为提示
+  const warnings = collectWildcardRemovalWarnings(
     config,
-    modelIds.map((id) => formatModelRef(resolvedProviderId!, id)),
-    "remove",
-    `models from provider ${resolvedProviderId}`
+    removedModelIds.map((id) => formatModelRef(resolvedProviderId!, id))
   );
 
   ensureDefaults(config);
 
-  const removeSet = new Set(modelIds);
-  const removedModelIds = models.filter((model) => removeSet.has(model.id)).map((model) => model.id);
   provider.models = models.filter((model) => !removeSet.has(model.id));
 
   for (const id of modelIds) {
     const ref = formatModelRef(resolvedProviderId!, id);
-    for (const allowlistRef of matchingAllowlistRefs(config, ref)) {
-      delete config.agents!.defaults!.models![allowlistRef];
+    if (removeMetadata) {
+      for (const allowlistRef of matchingAllowlistRefs(config, ref)) {
+        delete config.agents!.defaults!.models![allowlistRef];
+      }
     }
-    removePolicyAllow(config, ref);
+    if (removePolicyExact) {
+      removePolicyAllow(config, ref);
+    }
   }
 
-  return { config, warnings: [], removedModelIds };
+  return { config, warnings, removedModelIds };
 }

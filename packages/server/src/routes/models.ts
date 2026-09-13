@@ -13,14 +13,14 @@ import {
 import type { Hono } from "hono";
 import { assertProviderCanEnable, readConfig, readDisabledProviderIds, type AppRuntime } from "../context";
 import { jsonError } from "../errors";
-import { optionalString, requireBoolean, requireBooleanDefault, requireJsonObject, requireProviderModelInput, requireString } from "../schemas";
+import { optionalRemovalLayers, optionalString, requireBoolean, requireBooleanDefault, requireJsonObject, requireProviderModelInput, requireString, type RemovalLayers } from "../schemas";
 
 export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
-  app.get("/api/models", (c) => {
+  app.get("/api/models", async (c) => {
     const paths = runtime.currentPaths();
     const adapter = createConfigAdapter(readConfig(paths), {
       disabledProviderIds: readDisabledProviderIds(paths),
-      pluginProviders: runtime.currentPluginProviders()
+      pluginProviders: await runtime.currentPluginProviders()
     });
     return c.json({ models: adapter.listModels() });
   });
@@ -40,11 +40,11 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
         ...paths,
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `set primary model ${ref}`,
-        mutate(config) {
-          const entry = runtime.buildCurrentInventory({ refresh: true, config, paths }).models.find(row => normalizeModelRefForStorage(row.ref) === normalizeModelRefForStorage(ref));
+        async mutate(config) {
+          const entry = (await runtime.buildCurrentInventory({ refresh: true, config, paths })).models.find(row => normalizeModelRefForStorage(row.ref) === normalizeModelRefForStorage(ref));
           if (!entry) throw new Error(`Model ${ref} not found in current inventory.`);
           assertProviderCanEnable(paths, entry.providerId);
-          return setPrimaryModel(config, ref, runtime.currentPluginProviders({ paths }), entry).config;
+          return setPrimaryModel(config, ref, await runtime.currentPluginProviders({ paths }), entry).config;
         }
       });
       runtime.invalidateCatalogCaches();
@@ -65,12 +65,12 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
         ...paths,
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: enabled ? `enable model ${ref}` : `disable model ${ref}`,
-        mutate(config) {
-          const entry = runtime.buildCurrentInventory({ refresh: true, config, paths }).models.find(row => normalizeModelRefForStorage(row.ref) === normalizeModelRefForStorage(ref));
+        async mutate(config) {
+          const entry = (await runtime.buildCurrentInventory({ refresh: true, config, paths })).models.find(row => normalizeModelRefForStorage(row.ref) === normalizeModelRefForStorage(ref));
           if (!entry) throw new Error(`Model ${ref} not found in current inventory.`);
           if (enabled) {
             assertProviderCanEnable(paths, entry.providerId);
-            return enableModel(config, ref, alias, runtime.currentPluginProviders({ paths }), entry).config;
+            return enableModel(config, ref, alias, await runtime.currentPluginProviders({ paths }), entry).config;
           }
           if (entry.availability !== "available") throw new Error(`Runtime model availability is ${entry.availability}; use reference reconciliation instead of disabling.`);
           return disableModel(config, ref).config;
@@ -96,7 +96,7 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
         ...runtime.currentPaths(),
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `add model ${ref}`,
-        mutate(config) {
+        async mutate(config) {
           return addProviderModel(config, providerId, model).config;
         }
       });
@@ -117,8 +117,8 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
         ...paths,
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `edit model ${ref}`,
-        mutate(config) {
-          const entry = runtime.buildCurrentInventory({ refresh: true, config, paths }).models.find(row => normalizeModelRefForStorage(row.ref) === normalizeModelRefForStorage(ref));
+        async mutate(config) {
+          const entry = (await runtime.buildCurrentInventory({ refresh: true, config, paths })).models.find(row => normalizeModelRefForStorage(row.ref) === normalizeModelRefForStorage(ref));
           if (entry?.availability === "unknown") throw new Error("Runtime model availability is unknown; refresh before editing its catalog entry.");
           if (model.enabled) assertProviderCanEnable(paths, parseModelRef(ref).providerId);
           return updateProviderModel(config, ref, model).config;
@@ -135,25 +135,31 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
     try {
       const body = await requireJsonObject(c.req);
       const ref = requireString(body.ref, "ref");
-      const removeOptions: { force: boolean; newPrimary?: string } = {
+      const removeOptions: { force: boolean; newPrimary?: string; layers?: RemovalLayers } = {
         force: requireBooleanDefault(body.force, "force", false)
       };
       if (body.newPrimary !== undefined) {
         removeOptions.newPrimary = requireString(body.newPrimary, "newPrimary");
       }
+      // 删除分级（三层写模型）：缺省三层全删；Web 删除对话框显式传 layers
+      const layers = optionalRemovalLayers(body);
+      if (layers) removeOptions.layers = layers;
       const paths = runtime.currentPaths();
+      let warnings: string[] = [];
       const result = await writeOpenClawTransaction({
         ...paths,
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `remove model ${ref}`,
-        mutate(config) {
-          const entry = runtime.buildCurrentInventory({ refresh: true, config, paths }).models.find(row => normalizeModelRefForStorage(row.ref) === normalizeModelRefForStorage(ref));
+        async mutate(config) {
+          const entry = (await runtime.buildCurrentInventory({ refresh: true, config, paths })).models.find(row => normalizeModelRefForStorage(row.ref) === normalizeModelRefForStorage(ref));
           if (entry?.availability === "unknown") throw new Error("Runtime model availability is unknown; refresh before removing its catalog entry.");
-          return removeProviderModel(config, ref, removeOptions).config;
+          const removed = removeProviderModel(config, ref, removeOptions);
+          warnings = removed.warnings;
+          return removed.config;
         }
       });
       runtime.invalidateCatalogCaches();
-      return c.json({ ok: true, ref, backupId: result.backupDir.split("/").pop() });
+      return c.json({ ok: true, ref, warnings, backupId: result.backupDir.split("/").pop() });
     } catch (error) {
       return jsonError(c, error);
     }

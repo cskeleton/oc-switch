@@ -80,12 +80,12 @@ export function ModelStateBadges({ entry, plugins = [], showCatalogSource = true
       {entry.pluginIds.map(id => {
         const plugin = plugins.find(candidate => candidate.id === id);
         return (
-          <Pill key={id} variant={plugin?.enabled ? "success" : "warning"}>
+          <Pill key={id} variant={plugin?.enabled ? "success" : entry.inactive ? "muted" : "warning"}>
             插件 {id}：{plugin ? plugin.enabled ? "启用中" : "已停用" : "状态未知"}
           </Pill>
         );
       })}
-      <Pill variant={availability.tone} title={reasonText || undefined}>
+      <Pill variant={entry.inactive ? "muted" : availability.tone} title={reasonText || undefined}>
         {availability.label}
       </Pill>
     </span>

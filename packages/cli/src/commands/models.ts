@@ -55,10 +55,10 @@ function requireNonInteractiveYes(command: string, confirmed: boolean | undefine
 
 export function registerModelCommands(program: Command, context: CommandContext): void {
   const models = program.command("models");
-  models.command("list").option("--provider <name>").action((options: { provider?: string }) => {
+  models.command("list").option("--provider <name>").action(async (options: { provider?: string }) => {
     const paths = context.activePaths();
     const rows = createConfigAdapter(context.readConfig(paths), {
-      pluginProviders: context.pluginCatalog(paths).providers,
+      pluginProviders: (await context.pluginCatalog(paths)).providers,
       disabledProviderIds: Object.keys(readProviderStates(paths.stateDir).disabledProviders)
     }).listModels()
       .filter((row) => !options.provider || row.providerId === options.provider);
@@ -72,8 +72,8 @@ export function registerModelCommands(program: Command, context: CommandContext)
     .description("统一模型 inventory（config / 插件 / OpenClaw 运行时三来源合并视图）")
     .option("--json", "输出 Core ModelInventory 原样 JSON")
     .option("--refresh", "强制重新探测")
-    .action((options: { json?: boolean; refresh?: boolean }) => {
-      const inventory = context.buildInventory({ refresh: options.refresh === true });
+    .action(async (options: { json?: boolean; refresh?: boolean }) => {
+      const inventory = await context.buildInventory({ refresh: options.refresh === true });
       if (options.json) {
         console.log(JSON.stringify(inventory, null, 2));
         return;
@@ -84,10 +84,10 @@ export function registerModelCommands(program: Command, context: CommandContext)
   models.command("unavailable")
     .description("只列 unavailable / unknown 的模型行（unknown 明确标注，不给删除建议）")
     .option("--json", "输出过滤后的模型行 JSON")
-    .action((options: { json?: boolean }) => {
-      const inventory = context.buildInventory();
+    .action(async (options: { json?: boolean }) => {
+      const inventory = await context.buildInventory();
       const rows = inventory.models.filter(
-        (entry) => entry.availability === "unavailable" || entry.availability === "unknown"
+        (entry) => entry.needsAttention ?? (entry.availability === "unavailable" || entry.availability === "unknown")
       );
       if (options.json) {
         console.log(JSON.stringify(rows, null, 2));
@@ -109,11 +109,11 @@ export function registerModelCommands(program: Command, context: CommandContext)
         ...paths,
         runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `set primary model ${ref}`,
-        mutate(config) {
-          const entry = findInventoryEntry(context.buildInventory({ refresh: true, config, paths }), ref);
+        async mutate(config) {
+          const entry = findInventoryEntry(await context.buildInventory({ refresh: true, config, paths }), ref);
           if (!entry) throw new Error(`Model ${ref} not found in current inventory.`);
           context.assertProviderCanEnable(entry.providerId, paths);
-          return setPrimaryModel(config, ref, context.pluginCatalog(paths).providers, entry).config;
+          return setPrimaryModel(config, ref, (await context.pluginCatalog(paths)).providers, entry).config;
         }
       });
       console.log(`Primary model set to ${ref}`);
@@ -128,8 +128,8 @@ export function registerModelCommands(program: Command, context: CommandContext)
         ...paths,
         runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `disable model ${ref}`,
-        mutate(config) {
-          const entry = findInventoryEntry(context.buildInventory({ refresh: true, config, paths }), ref);
+        async mutate(config) {
+          const entry = findInventoryEntry(await context.buildInventory({ refresh: true, config, paths }), ref);
           if (!entry) throw new Error(`Model ${ref} not found in current inventory.`);
           if (entry.availability !== "available") throw new Error(`Runtime model availability is ${entry.availability}; use reference reconciliation instead of disabling.`);
           return disableModel(config, ref).config;
@@ -147,11 +147,11 @@ export function registerModelCommands(program: Command, context: CommandContext)
         ...paths,
         runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `enable model ${ref}`,
-        mutate(config) {
-          const entry = findInventoryEntry(context.buildInventory({ refresh: true, config, paths }), ref);
+        async mutate(config) {
+          const entry = findInventoryEntry(await context.buildInventory({ refresh: true, config, paths }), ref);
           if (!entry) throw new Error(`Model ${ref} not found in current inventory.`);
           context.assertProviderCanEnable(entry.providerId, paths);
-          return enableModel(config, ref, options.alias, context.pluginCatalog(paths).providers, entry).config;
+          return enableModel(config, ref, options.alias, (await context.pluginCatalog(paths)).providers, entry).config;
         }
       });
       console.log(`Enabled ${ref}`);
@@ -172,7 +172,7 @@ export function registerModelCommands(program: Command, context: CommandContext)
         ...paths,
         runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `add model ${ref}`,
-        mutate(config) {
+        async mutate(config) {
           return addProviderModel(config, ref, input).config;
         }
       });
@@ -191,8 +191,8 @@ export function registerModelCommands(program: Command, context: CommandContext)
         ...paths,
         runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `remove model ${ref}`,
-        mutate(config) {
-          const entry = findInventoryEntry(context.buildInventory({ refresh: true, config, paths }), ref);
+        async mutate(config) {
+          const entry = findInventoryEntry(await context.buildInventory({ refresh: true, config, paths }), ref);
           if (entry?.availability === "unknown") throw new Error("Runtime model availability is unknown; refresh before removing its catalog entry.");
           return removeProviderModel(config, ref, removeOptions).config;
         }
@@ -216,9 +216,9 @@ export function registerModelCommands(program: Command, context: CommandContext)
           runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
           reason: `remove policy exact ref ${ref}`,
           normalizeConfig: false,
-          mutate(config) {
-            const entry = findInventoryEntry(context.buildInventory({ refresh: true, config, paths }), ref);
-            if (entry?.availability === "unknown") throw new Error("Runtime model availability is unknown; refresh before removing references.");
+          async mutate(config) {
+            const entry = findInventoryEntry(await context.buildInventory({ refresh: true, config, paths }), ref);
+            // 精确停用不判断可调用性，仍由 Core 校验主模型、fallback 与 wildcard。
             const operation = removeModelPolicyExactRef(config, ref, {
               ...(options.removeMetadata === undefined ? {} : { removeMetadata: options.removeMetadata })
             });
@@ -251,7 +251,7 @@ export function registerModelCommands(program: Command, context: CommandContext)
     .action(async (ref: string, options: { yes?: boolean; json?: boolean }) => {
       try {
         const paths = context.activePaths();
-        const inventory = context.buildInventory({ paths });
+        const inventory = await context.buildInventory({ paths });
         const entry = findInventoryEntry(inventory, ref);
         if (entry === undefined) {
           throw new Error(`Model ${ref} not found in current inventory; nothing to reconcile.`);
@@ -276,8 +276,8 @@ export function registerModelCommands(program: Command, context: CommandContext)
             runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
             reason: `materialize runtime model ${ref}`,
             normalizeConfig: false,
-            mutate(config) {
-              const freshEntry = findInventoryEntry(context.buildInventory({ refresh: true, config, paths }), ref);
+            async mutate(config) {
+              const freshEntry = findInventoryEntry(await context.buildInventory({ refresh: true, config, paths }), ref);
               if (!freshEntry) throw new Error(`Model ${ref} not found in current inventory.`);
               context.assertProviderCanEnable(freshEntry.providerId, paths);
               const operation = materializeRuntimeModel(config, freshEntry, input);

@@ -18,8 +18,9 @@ describe("provider disable and restore", () => {
       "deepseek-ai/deepseek-v4-flash",
       "z-ai/glm5.1"
     ]);
-    expect(result.config.agents?.defaults?.models?.["nvidia/deepseek-ai/deepseek-v4-flash"]).toBeUndefined();
-    expect(result.config.agents?.defaults?.models?.["nvidia/z-ai/glm5.1"]).toBeUndefined();
+    expect(result.config.agents?.defaults?.models?.["nvidia/deepseek-ai/deepseek-v4-flash"]).toBeDefined();
+    expect(result.config.agents?.defaults?.modelPolicy?.allow?.some(ref => typeof ref === "string" && ref.startsWith("nvidia/"))).toBe(false);
+    expect(result.config.agents?.defaults?.models?.["nvidia/z-ai/glm5.1"]).toBeDefined();
     expect(result.config.agents?.defaults?.models?.["DeepSeek/deepseek-chat"]).toEqual({ alias: "ds-chat" });
     expect(result.disabledState.allowlistEntries).toEqual({
       "nvidia/deepseek-ai/deepseek-v4-flash": {

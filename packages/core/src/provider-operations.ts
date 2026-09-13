@@ -1,12 +1,14 @@
 import { formatModelRef, normalizeProviderId, parseModelRef } from "./model-ref";
 import {
   addPolicyAllow,
-  assertNoPolicyWildcardForProvider,
   assertNoPolicyWildcardForRef,
   assertPolicyExactRefsRemovalAllowed,
   assertPolicyProviderExactRemovalAllowed,
+  assertPolicyProviderWildcardRemovalAllowed,
+  findPolicyWildcardForProvider,
   removePolicyAllow,
-  removePolicyAllowForProvider
+  removePolicyAllowForProvider,
+  removePolicyWildcardForProvider
 } from "./model-policy";
 import { setPrimaryModel } from "./model-operations";
 import { formatEnvRefForOpenClaw, ensureModelName } from "./openclaw-compat";
@@ -60,7 +62,7 @@ export function deleteProvider(config: OpenClawConfig, providerId: string, optio
 export function removeProvider(
   config: OpenClawConfig,
   providerId: string,
-  options: { force: boolean; newPrimary?: string }
+  options: { force: boolean; newPrimary?: string; removePolicyWildcard?: boolean }
 ): OperationResult {
   // 显式拒绝不存在的 provider（含插件 provider），避免静默 no-op 假成功
   const resolvedProviderId = resolveProviderId(config, providerId);
@@ -68,8 +70,13 @@ export function removeProvider(
   const primary = readPrimaryModelRef(config);
   // fallback 依赖保护必须发生在任何 mutation 之前（force 也不可绕过）
   assertProviderFallbackRemovalAllowed(config, resolvedProviderId);
-  assertNoPolicyWildcardForProvider(config, resolvedProviderId, "remove");
   assertPolicyProviderExactRemovalAllowed(config, resolvedProviderId, "remove");
+  // 残留 wildcard 不再阻断删除（降级为提示）；仅显式 removePolicyWildcard 时才移除该 Provider 的通配条目，
+  // 且不得把受限 policy 清空为 unrestricted（防清空 guard 先于任何 mutation）
+  const leftoverWildcard = findPolicyWildcardForProvider(config, resolvedProviderId);
+  if (options.removePolicyWildcard) {
+    assertPolicyProviderWildcardRemovalAllowed(config, resolvedProviderId, "remove");
+  }
   assertProviderPrimaryRemovalAllowed(config, resolvedProviderId, options);
 
   ensureDefaults(config);
@@ -82,10 +89,19 @@ export function removeProvider(
     }
   }
   removePolicyAllowForProvider(config, resolvedProviderId);
+  if (options.removePolicyWildcard) {
+    removePolicyWildcardForProvider(config, resolvedProviderId);
+  }
 
-  const warnings = primary && normalizeProviderId(parseModelRef(primary).providerId) === normalizeProviderId(resolvedProviderId) && options.force
-    ? [`Primary model ${primary} now points to a deleted provider`]
-    : [];
+  const warnings: string[] = [];
+  if (!options.removePolicyWildcard && leftoverWildcard) {
+    warnings.push(
+      `Policy wildcard ${leftoverWildcard} still references provider ${resolvedProviderId}; it is now dangling and can be removed explicitly.`
+    );
+  }
+  if (primary && normalizeProviderId(parseModelRef(primary).providerId) === normalizeProviderId(resolvedProviderId) && options.force) {
+    warnings.push(`Primary model ${primary} now points to a deleted provider`);
+  }
   return { config, warnings };
 }
 

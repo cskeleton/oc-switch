@@ -1,6 +1,6 @@
-import { setModelPluginEnabled, writeOpenClawTransaction } from "@oc-switch/core";
+import { setModelPluginEnabled, writeOpenClawTransaction, suspendModelProviders, restoreModelProviderSelection, readPluginSelectionState, savePluginSelectionState, mergeModelSelectionEntries } from "@oc-switch/core";
 import type { Hono } from "hono";
-import type { AppRuntime } from "../context";
+import { readDisabledProviderIds, type AppRuntime } from "../context";
 import { jsonError } from "../errors";
 import { requireJsonObject, requirePluginStateInput } from "../schemas";
 
@@ -24,27 +24,40 @@ export function registerPluginRoutes(app: Hono, runtime: AppRuntime): void {
       const pluginId = c.req.param("pluginId");
       const body = await requireJsonObject(c.req);
       const { enabled } = requirePluginStateInput(body);
+      if (body.cleanupMetadata !== undefined && typeof body.cleanupMetadata !== "boolean") throw new Error("cleanupMetadata must be boolean");
 
       const paths = runtime.currentPaths();
       let capturedWarnings: string[] = [];
       let affectedProviderIds: string[] = [];
+      let policyEntries: string[] = [];
 
       const result = await writeOpenClawTransaction({
         ...paths,
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `${enabled ? "enable" : "disable"} plugin ${pluginId}`,
         normalizeConfig: false,
-        mutate(config) {
+        async mutate(config) {
           // Core 可能因文件变化重新执行 mutate，每次都必须重新发现 descriptor。
           runtime.invalidateCatalogCaches();
-          const catalog = runtime.currentPluginCatalog({ paths });
+          const catalog = await runtime.currentPluginCatalog({ paths });
           if (catalog.diagnostics.length > 0) throw new Error("Plugin catalog is incomplete; refresh before changing plugin state.");
           const descriptor = catalog.plugins.find((plugin) => plugin.id === pluginId);
           if (!descriptor) throw new UnknownModelPluginError(`Plugin ${pluginId} is not installed or does not contribute any model provider; oc-switch only manages installed model plugins.`);
           const operation = setModelPluginEnabled(config, descriptor, enabled);
           affectedProviderIds = [...new Set(descriptor.providerIds)].sort();
-          capturedWarnings = operation.warnings;
-          return operation.config;
+          capturedWarnings = operation.warnings.filter(warning => warning.includes("non-model capabilities"));
+          const saved = config.plugins?.entries?.[pluginId]?.enabled === false ? readPluginSelectionState(paths.stateDir, pluginId, paths.openclawPath) : undefined;
+          if (enabled) return restoreModelProviderSelection(operation.config, saved?.policyEntries ?? [], { providerIds: descriptor.providerIds, blockedProviderIds: readDisabledProviderIds(paths).filter(id => !!config.models?.providers?.[id]) });
+          const inventory = await runtime.buildCurrentInventory({ config, paths });
+          const suspended = suspendModelProviders(operation.config, descriptor.providerIds, {
+            cleanupMetadata: body.cleanupMetadata === true,
+            ...(inventory.pickerSource === "gateway" ? { visibleRefs: inventory.models.filter(model => model.pickerVisible).map(model => model.ref) } : {})
+          });
+          policyEntries = mergeModelSelectionEntries(saved?.policyEntries ?? [], suspended.policyEntries);
+          return suspended.config;
+        },
+        afterWrite() {
+          savePluginSelectionState(paths.stateDir, pluginId, enabled ? undefined : { openclawPath: paths.openclawPath, policyEntries });
         }
       });
 
@@ -53,14 +66,16 @@ export function registerPluginRoutes(app: Hono, runtime: AppRuntime): void {
       let runtimeConfirmed = false;
       let diagnostics: { command: string; code: string; message: string }[];
       try {
-        const inventory = runtime.buildCurrentInventory({ refresh: true, paths });
+        const inventory = await runtime.buildCurrentInventory({ refresh: true, paths });
         diagnostics = inventory.diagnostics;
-        runtimeConfirmed = diagnostics.length === 0 && Object.values(runtime.currentRuntimeModelSnapshot({ paths }).completeness).every(Boolean) &&
-          inventory.plugins.some(plugin => plugin.id === pluginId && plugin.enabled === enabled);
+        runtimeConfirmed = diagnostics.length === 0 && Object.values((await runtime.currentRuntimeModelSnapshot({ paths })).completeness).every(Boolean) &&
+          inventory.plugins.some(plugin => plugin.id === pluginId && plugin.enabled === enabled) &&
+          (enabled || !inventory.models.some(model => model.pickerVisible && affectedProviderIds.some(id => id.toLowerCase() === model.providerId.toLowerCase())));
       } catch {
         diagnostics = [{ command: "status", code: "invalid-shape", message: "Write succeeded; runtime confirmation failed" }];
       }
 
+      if (!runtimeConfirmed) runtime.invalidateCatalogCaches();
       return c.json({
         ok: true,
         pluginId,

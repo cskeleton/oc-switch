@@ -2,6 +2,7 @@ import { readEnvValue } from "./env-manager";
 import { normalizeProviderId } from "./model-ref";
 import { providerEnvVar } from "./openclaw-compat";
 import { resolveProviderId } from "./operation-common";
+import type { PluginProvider } from "./plugin-catalog";
 import type { OpenClawConfig, OpenClawProvider } from "./types";
 
 /** 远端模型条目（发现结果，不写盘） */
@@ -54,6 +55,8 @@ export type FetchImpl = (input: RequestInfo | URL, init?: RequestInit) => Promis
 export interface ProviderDiscoverOptions {
   fetchImpl?: FetchImpl;
   envContent?: string;
+  /** 当前插件目录（server/CLI 注入）；用于 config 无可用 Key 时回退 manifest 声明的 env 变量。 */
+  pluginProviders?: PluginProvider[];
 }
 
 /** 基于表单凭证的临时 discover 输入（只读，不写盘） */
@@ -68,13 +71,14 @@ export interface ProviderDiscoverCredentialsInput {
 
 function resolveDiscoverOptions(
   input?: FetchImpl | ProviderDiscoverOptions
-): Required<Pick<ProviderDiscoverOptions, "fetchImpl">> & Pick<ProviderDiscoverOptions, "envContent"> {
+): Required<Pick<ProviderDiscoverOptions, "fetchImpl">> & Pick<ProviderDiscoverOptions, "envContent" | "pluginProviders"> {
   if (typeof input === "function") {
     return { fetchImpl: input };
   }
   return {
     fetchImpl: input?.fetchImpl ?? fetch,
-    ...(input?.envContent !== undefined ? { envContent: input.envContent } : {})
+    ...(input?.envContent !== undefined ? { envContent: input.envContent } : {}),
+    ...(input?.pluginProviders !== undefined ? { pluginProviders: input.pluginProviders } : {})
   };
 }
 
@@ -112,6 +116,50 @@ function anthropicAuthHeaders(
     "x-api-key": value,
     "anthropic-version": ANTHROPIC_API_VERSION
   };
+}
+
+/** 401/403 且本次未携带鉴权头时补充「未配置 Key 或 Key 无效」提示，其余维持原文案。 */
+function discoverHttpError(status: number, hasAuth: boolean): Error {
+  if (!hasAuth && (status === 401 || status === 403)) {
+    return new Error(`Model discover failed: HTTP ${status} (missing or invalid API key)`);
+  }
+  return new Error(`Model discover failed: HTTP ${status}`);
+}
+
+/**
+ * 解析 discover 鉴权：config 条目经 providerEnvVar 的变量优先；解析不到变量名、
+ * 或 envContent 里取不到值时，回退同名（大小写折叠）插件 Provider 的 apiKeyEnvVars
+ * （已按含 API_KEY 优先排序，取首个在 envContent 里有非空值者），返回携带 legacy
+ * "${VAR}" ref 的内存 provider 副本——只为复用鉴权头逻辑，绝不写盘。
+ * 插件声明了变量但 envContent 里全部缺失/为空时，在发任何请求前抛错。
+ */
+function resolveDiscoverAuth(
+  providerId: string,
+  provider: OpenClawProvider,
+  envContent: string | undefined,
+  pluginProviders: PluginProvider[] | undefined
+): { provider: OpenClawProvider; hasAuth: boolean } {
+  const configEnvVar = providerEnvVar(provider);
+  if (configEnvVar && envContent !== undefined && readEnvValue(envContent, configEnvVar)) {
+    return { provider, hasAuth: true };
+  }
+  const plugin = (pluginProviders ?? []).find(
+    (candidate) => normalizeProviderId(candidate.providerId) === normalizeProviderId(providerId)
+  );
+  if (!plugin || plugin.apiKeyEnvVars.length === 0 || envContent === undefined) {
+    // 无插件信息时维持现状（含 config 有变量名但缺值时由 resolveEnvKey 抛错）
+    return { provider, hasAuth: false };
+  }
+  const fallbackVar = plugin.apiKeyEnvVars.find((name) => {
+    const value = readEnvValue(envContent, name);
+    return value !== undefined && value.length > 0;
+  });
+  if (!fallbackVar) {
+    throw new Error(
+      `Provider ${providerId} has no API key configured; set one of ${plugin.apiKeyEnvVars.join(", ")} in .env or use the Providers page to set a key.`
+    );
+  }
+  return { provider: { ...provider, apiKey: `\${${fallbackVar}}` }, hasAuth: true };
 }
 
 interface AnthropicModelsPayload {
@@ -172,7 +220,8 @@ async function discoverOpenAiModels(
   provider: OpenClawProvider,
   fetchImpl: FetchImpl,
   envContent: string | undefined,
-  normalizeBaseUrl = true
+  normalizeBaseUrl = true,
+  hasAuth = false
 ): Promise<ProviderDiscoverResult> {
   if (!provider.baseUrl) throw new Error(`Provider ${providerId} has no baseUrl`);
 
@@ -180,7 +229,7 @@ async function discoverOpenAiModels(
     headers: { accept: "application/json", ...openaiAuthHeaders(providerId, provider, envContent) }
   });
   if (!response.ok) {
-    throw new Error(`Model discover failed: HTTP ${response.status}`);
+    throw discoverHttpError(response.status, hasAuth);
   }
 
   const payload = (await response.json()) as { data?: Array<{ id?: string; name?: string }> };
@@ -202,7 +251,8 @@ async function discoverAnthropicModels(
   provider: OpenClawProvider,
   fetchImpl: FetchImpl,
   envContent: string | undefined,
-  normalizeBaseUrl = true
+  normalizeBaseUrl = true,
+  hasAuth = false
 ): Promise<ProviderDiscoverResult> {
   if (!provider.baseUrl) throw new Error(`Provider ${providerId} has no baseUrl`);
 
@@ -221,7 +271,7 @@ async function discoverAnthropicModels(
       }
     });
     if (!response.ok) {
-      throw new Error(`Model discover failed: HTTP ${response.status}`);
+      throw discoverHttpError(response.status, hasAuth);
     }
 
     const payload = (await response.json()) as AnthropicModelsPayload;
@@ -260,7 +310,7 @@ export async function discoverProviderModels(
   providerId: string,
   options?: FetchImpl | ProviderDiscoverOptions
 ): Promise<ProviderDiscoverResult> {
-  const { fetchImpl, envContent } = resolveDiscoverOptions(options);
+  const { fetchImpl, envContent, pluginProviders } = resolveDiscoverOptions(options);
   const resolvedProviderId = resolveProviderId(config, providerId);
   const provider = resolvedProviderId ? config.models?.providers?.[resolvedProviderId] : undefined;
   if (!provider) throw new Error(`Provider ${providerId} not found`);
@@ -277,11 +327,13 @@ export async function discoverProviderModels(
     };
   }
 
+  const auth = resolveDiscoverAuth(canonicalProviderId, provider, envContent, pluginProviders);
+
   if (api === "anthropic-messages") {
-    return discoverAnthropicModels(canonicalProviderId, provider, fetchImpl, envContent);
+    return discoverAnthropicModels(canonicalProviderId, auth.provider, fetchImpl, envContent, true, auth.hasAuth);
   }
 
-  return discoverOpenAiModels(canonicalProviderId, provider, fetchImpl, envContent);
+  return discoverOpenAiModels(canonicalProviderId, auth.provider, fetchImpl, envContent, true, auth.hasAuth);
 }
 
 /**
@@ -321,8 +373,8 @@ export async function discoverProviderModelsFromCredentials(
   const envContent = `EPHEMERAL_PROVIDER_API_KEY=${input.apiKey}\n`;
   const discovered =
     api === "anthropic-messages"
-      ? await discoverAnthropicModels(providerId, provider, fetchImpl, envContent, !input.isFullUrl)
-      : await discoverOpenAiModels(providerId, provider, fetchImpl, envContent, !input.isFullUrl);
+      ? await discoverAnthropicModels(providerId, provider, fetchImpl, envContent, !input.isFullUrl, true)
+      : await discoverOpenAiModels(providerId, provider, fetchImpl, envContent, !input.isFullUrl, true);
   const alreadyAddedIds = Array.isArray(input.alreadyAddedIds)
     ? discovered.remoteModels
         .map((model) => model.id)

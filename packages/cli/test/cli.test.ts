@@ -951,7 +951,8 @@ describe("cli provider disable/enable", () => {
     expect(disable.stdout).toContain("Disabled provider nvidia (2 model(s) hidden)");
     let config = JSON.parse(readFileSync(configPath, "utf8"));
     expect(config.models.providers.nvidia).toBeDefined();
-    expect(config.agents.defaults.models["nvidia/deepseek-ai/deepseek-v4-flash"]).toBeUndefined();
+    expect(config.agents.defaults.models["nvidia/deepseek-ai/deepseek-v4-flash"]).toBeDefined();
+    expect(config.agents.defaults.modelPolicy.allow.some((ref: string) => ref.startsWith("nvidia/"))).toBe(false);
 
     const list = await runCli(["providers", "list"], {
       OPENCLAW_CONFIG_PATH: configPath,
@@ -1842,7 +1843,7 @@ describe("cli 运行时模型管理（inventory / reconcile / plugin）", () => 
   });
 
   describe("plugin enable / disable", () => {
-    test("停用 xiaomi 插件：提示两个 Provider 与 speech/contract 影响；policy 原样保留；非 TTY 需 --yes", async () => {
+    test("停用 xiaomi 插件移出选择规则、恢复时还原；非模型影响和 --yes 门禁保留", async () => {
       const { dir, configPath } = writeXiaomiConfig();
       const before = readFileSync(configPath, "utf8");
       const pluginsListJson = prepareXiaomiPluginFixture();
@@ -1875,7 +1876,7 @@ describe("cli 运行时模型管理（inventory / reconcile / plugin）", () => 
       // policy 原样保留（插件启停绝不联动删 policy）
       const config = JSON.parse(readFileSync(configPath, "utf8"));
       expect(config.plugins.entries.xiaomi.enabled).toBe(false);
-      expect(config.agents.defaults.modelPolicy.allow).toEqual(["other/primary-model", "xiaomi/mi-1", "xiaomi-token-plan/*"]);
+      expect(config.agents.defaults.modelPolicy.allow).toEqual(["other/primary-model"]);
 
       // 重新启用：恢复可用性，policy 仍原样
       const enabled = await runCli(["plugin", "enable", "xiaomi", "--yes"], env, { pluginsListJson });

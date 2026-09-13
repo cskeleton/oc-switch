@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { ApiClient, ModelInventoryEntry, ModelSummary, ProviderModelInput, ProviderSummary } from "../api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DataTable } from "./DataTable";
+import { ModelDeleteLayers } from "./ModelDeleteLayers";
 import { ModelDialog } from "./ModelDialog";
 import { useToast } from "./Toast";
 import { Button } from "./ui/button";
@@ -34,6 +35,8 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<ModelSummary | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ModelSummary | null>(null);
+  /** 删除分级（三层写模型）：默认全 false = 临时移除，仅删目录条目 */
+  const [deleteLayers, setDeleteLayers] = useState({ metadata: false, policyExact: false });
   const [newPrimary, setNewPrimary] = useState("");
   const [error, setError] = useState<string | null>(null);
   /** 多选：存 raw modelId（非完整 ref） */
@@ -92,6 +95,7 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
 
   function openDelete(row: ModelSummary) {
     setDeleteTarget(row);
+    setDeleteLayers({ metadata: false, policyExact: false });
     setNewPrimary(row.isPrimary ? models.find((entry) => entry.ref !== row.ref)?.ref ?? "" : "");
   }
 
@@ -118,10 +122,16 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
       toast.error("删除当前主模型前请选择新的主模型");
       return;
     }
+    // wildcard 覆盖行不存在可删的 exact 条目，policyExact 恒为 false
+    const wildcardCovered = inventoryByModelId.get(deleteTarget.modelId)?.referenceSources.includes("policy-wildcard") === true;
     try {
-      await client.deleteModel(deleteTarget.ref, deleteTarget.isPrimary ? { newPrimary } : {});
+      const result = await client.deleteModel(deleteTarget.ref, {
+        ...(deleteTarget.isPrimary ? { newPrimary } : {}),
+        layers: { metadata: deleteLayers.metadata, policyExact: wildcardCovered ? false : deleteLayers.policyExact }
+      });
       setDeleteTarget(null);
       toast.success(`已删除模型 ${deleteTarget.ref}`);
+      for (const warning of result.warnings ?? []) toast.warning(warning);
       await load();
       onChanged();
     } catch (err) {
@@ -344,16 +354,26 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
         onCancel={() => setDeleteTarget(null)}
         onConfirm={() => void confirmDelete()}
       >
-        {deleteTarget?.isPrimary ? (
-          <div className="grid gap-2">
-            <Label>新主模型</Label>
-            <select aria-label="新主模型" value={newPrimary} onChange={(event) => setNewPrimary(event.target.value)} className={selectClassName}>
-              {models.filter((entry) => entry.ref !== deleteTarget.ref).map((entry) => (
-                <option key={entry.ref} value={entry.ref}>{entry.ref}</option>
-              ))}
-            </select>
-          </div>
-        ) : null}
+        <div className="space-y-4">
+          {deleteTarget ? (
+            <ModelDeleteLayers
+              metadata={deleteLayers.metadata}
+              policyExact={deleteLayers.policyExact}
+              wildcardCovered={inventoryByModelId.get(deleteTarget.modelId)?.referenceSources.includes("policy-wildcard") === true}
+              onChange={setDeleteLayers}
+            />
+          ) : null}
+          {deleteTarget?.isPrimary ? (
+            <div className="grid gap-2">
+              <Label>新主模型</Label>
+              <select aria-label="新主模型" value={newPrimary} onChange={(event) => setNewPrimary(event.target.value)} className={selectClassName}>
+                {models.filter((entry) => entry.ref !== deleteTarget.ref).map((entry) => (
+                  <option key={entry.ref} value={entry.ref}>{entry.ref}</option>
+                ))}
+              </select>
+            </div>
+          ) : null}
+        </div>
       </ConfirmDialog>
 
       <ConfirmDialog

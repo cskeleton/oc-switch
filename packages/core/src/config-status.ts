@@ -217,10 +217,11 @@ function isEnvRefObject(input: unknown): boolean {
   return typeof input === "object" && input !== null && (input as { source?: string }).source === "env";
 }
 
-function buildCompatibilityIssues(config: OpenClawConfig): ConfigStatusIssue[] {
+function buildCompatibilityIssues(config: OpenClawConfig, disabledProviderIds: Set<string>): ConfigStatusIssue[] {
   const issues: ConfigStatusIssue[] = [];
 
   for (const candidate of inspectProviderSecretRefMigrations(config)) {
+    if (disabledProviderIds.has(normalizeProviderId(candidate.providerId))) continue;
     issues.push({
       id: issueId("health", "secret-ref-migration", candidate.providerId),
       severity: "warning",
@@ -261,15 +262,12 @@ function buildCompatibilityIssues(config: OpenClawConfig): ConfigStatusIssue[] {
 }
 
 function buildEnvIssues(
-  envInspection: ReturnType<typeof inspectEnvFile>,
-  orphanEnvKeys: string[]
+  envInspection: ReturnType<typeof inspectEnvFile>
 ): ConfigStatusIssue[] {
   const issues: ConfigStatusIssue[] = [];
-  const missingVars = new Set<string>();
 
   for (const variable of envInspection.variables) {
     if (variable.missing) {
-      missingVars.add(variable.envVar);
       issues.push({
         id: issueId("env", "missing", variable.envVar),
         severity: "warning",
@@ -291,7 +289,7 @@ function buildEnvIssues(
         action: "合并重复行后重试"
       });
     }
-    if (variable.complex) {
+    if (variable.complex && variable.providerRef) {
       issues.push({
         id: issueId("env", "complex", variable.envVar),
         severity: "info",
@@ -303,30 +301,7 @@ function buildEnvIssues(
     }
   }
 
-  for (const envVar of orphanEnvKeys) {
-    if (missingVars.has(envVar)) continue;
-    issues.push({
-      id: issueId("env", "orphan", envVar),
-      severity: "info",
-      source: "env",
-      title: `孤立 env 变量：${envVar}`,
-      detail: "对应 Provider 已删除，密钥仍保留在 .env",
-      action: "在 Settings 清理孤立密钥"
-    });
-  }
-
   return issues;
-}
-
-function buildDisabledProviderIssues(disabledProviders: DisabledProviderStatus[]): ConfigStatusIssue[] {
-  return disabledProviders.map((provider) => ({
-    id: issueId("providers", "disabled", provider.providerId),
-    severity: "info" as const,
-    source: "providers" as const,
-    title: `Provider 已禁用：${provider.providerId}`,
-    detail: `隐藏 ${provider.hiddenModelCount} 个 allowlist 条目`,
-    action: "在 Providers 页恢复 Provider"
-  }));
 }
 
 function emptyModelPolicyStatus(): ConfigStatusModelPolicy {
@@ -463,21 +438,8 @@ function buildModelPolicyIssues(config: OpenClawConfig): ConfigStatusIssue[] {
 
   if (getModelPolicyMode(config) !== "restricted") return issues;
 
-  const allow = readModelPolicyAllow(config) ?? [];
-  const uncovered = Object.keys(config.agents?.defaults?.models ?? {}).filter(
-    (ref) => !isPolicyAllowsRef(allow, ref)
-  );
-  if (uncovered.length === 0) return issues;
+  // 未被选择策略覆盖的 metadata 是合法保留配置，不是启用请求。
 
-  const preview = uncovered.slice(0, 5).join(", ");
-  issues.push({
-    id: issueId("health", "model-policy-not-covered", "modelPolicy.allow"),
-    severity: "warning",
-    source: "health",
-    title: `${uncovered.length} 个 legacy metadata 模型未被 modelPolicy.allow 覆盖`,
-    detail: `restricted mode 下 agents.defaults.models 仅为 metadata，不参与 selection；这些 ref 实际选不到：${preview}${uncovered.length > 5 ? " 等" : ""}`,
-    action: "将缺失 ref 加入或调整 agents.defaults.modelPolicy.allow，或从 metadata 移除不再需要的条目"
-  });
   return issues;
 }
 
@@ -497,7 +459,7 @@ export function inspectConfigStatus(input: InspectConfigStatusInput): ConfigStat
   const health = input.config ? inspectConfigHealth(input.config) : emptyConfigHealthReport();
 
   const providerStates = readProviderStates(input.paths.stateDir);
-  const disabledProviders: DisabledProviderStatus[] = Object.values(providerStates.disabledProviders).map((state) => ({
+  const disabledProviders: DisabledProviderStatus[] = Object.values(providerStates.disabledProviders).filter(state => state.openclawPath === input.paths.openclawPath).map((state) => ({
     providerId: state.providerId,
     disabledAt: state.disabledAt,
     openclawPath: state.openclawPath,
@@ -509,9 +471,10 @@ export function inspectConfigStatus(input: InspectConfigStatusInput): ConfigStat
 
   const orphanEnvKeys = listOrphanEnvKeys(input.paths.stateDir);
 
+  const disabledIds = new Set(disabledProviders.map(provider => normalizeProviderId(provider.providerId)));
   const envInspection = inspectEnvFile({
     content: input.envContent,
-    providerRefs: input.config ? listProviderEnvRefs(input.config) : [],
+    providerRefs: input.config ? listProviderEnvRefs(input.config).filter(ref => !disabledIds.has(normalizeProviderId(ref.providerId))) : [],
     manifest: readManifest(input.paths.stateDir)
   });
 
@@ -519,10 +482,9 @@ export function inspectConfigStatus(input: InspectConfigStatusInput): ConfigStat
   for (const issue of [
     ...buildPathIssues(input.paths, input.configReadError),
     ...buildHealthIssues(health),
-    ...(input.config ? buildCompatibilityIssues(input.config) : []),
+    ...(input.config ? buildCompatibilityIssues(input.config, disabledIds) : []),
     ...(input.config ? buildModelPolicyIssues(input.config) : []),
-    ...buildEnvIssues(envInspection, orphanEnvKeys),
-    ...buildDisabledProviderIssues(disabledProviders)
+    ...buildEnvIssues(envInspection)
   ]) {
     issueMap.set(issue.id, issue);
   }

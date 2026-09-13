@@ -1,6 +1,6 @@
 import "./test-setup";
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { cleanup, render, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   createApiClient,
@@ -111,6 +111,65 @@ function renderProviders(data: ModelInventory, overrides: Partial<ApiClient> = {
   return render(<ToastProvider><ProvidersView client={clientFor(data, overrides)} /></ToastProvider>);
 }
 
+test("插件默认紧凑折叠，已停用标签原位替换结果", async () => {
+  const active = { id: "alpha", enabled: true, origin: "bundled", providerIds: ["one"], nonModelCapabilities: [] };
+  const stopped = { ...active, id: "beta", enabled: false, providerIds: ["two"] };
+  const data = inventory([], { schemaVersion: 2, pickerSource: "gateway", plugins: [active, stopped], providers: [provider("one", { pluginIds: ["alpha"], sources: ["plugin-manifest"], pickerModelCount: 2 }), provider("two", { pluginIds: ["beta"], pluginEnabled: false, sources: ["plugin-manifest"], pickerModelCount: 0 })] });
+  const view = renderProviders(data, { getProviders: async () => ({ providers: [] }), getModelAttention: async () => ({ pending: [], ignored: [] }) });
+  const expand = await view.findByRole("button", { name: "展开插件 alpha" });
+  expect(view.queryByText("one", { exact: true }) === null).toBe(true);
+  await userEvent.click(expand);
+  expect(await view.findByText("one", { exact: true })).toBeTruthy();
+  await userEvent.click(view.getByRole("tab", { name: /已停用/ }));
+  expect(await view.findByRole("button", { name: "展开插件 beta" })).toBeTruthy();
+  expect(view.queryByRole("button", { name: /插件 alpha/ }) === null).toBe(true);
+});
+
+test("插件启用但 Provider 已关闭：状态可见且归入已停用", async () => {
+  const data = inventory([], {
+    schemaVersion: 2,
+    pickerSource: "gateway",
+    plugins: [{ id: "nvidia", origin: "bundled", enabled: true, providerIds: ["nvidia"], nonModelCapabilities: [] }],
+    providers: [provider("nvidia", {
+      sources: ["config", "plugin-manifest", "openclaw-runtime"],
+      pluginIds: ["nvidia"],
+      pluginEnabled: true,
+      disabled: true,
+      pickerModelCount: 0,
+      modelCount: 16,
+      policyAllowedModelCount: 0
+    })]
+  });
+  const view = renderProviders(data, {
+    getProviders: async () => ({ providers: [providerSummary({ id: "nvidia", disabled: true, modelCount: 16, enabledModelCount: 0 })] }),
+    getModelAttention: async () => ({ pending: [], ignored: [] })
+  });
+
+  // 默认「当前使用」不出现：插件启用但 Provider 已关闭不算在用
+  expect(view.queryByRole("button", { name: /插件 nvidia/ }) === null).toBe(true);
+
+  await userEvent.click(view.getByRole("tab", { name: /已停用/ }));
+  const expand = await view.findByRole("button", { name: "展开插件 nvidia" });
+  // 组头同时呈现两个维度：插件「已启用」+「Provider 已关闭」
+  expect(await view.findByText("Provider 已关闭")).toBeTruthy();
+  await userEvent.click(expand);
+  const group = expand.closest("section")!;
+  // Provider 行状态列显示「已关闭」，不再只显示「可用」运行状态
+  expect(within(group).getByText("已关闭")).toBeTruthy();
+  expect(within(group).queryByText("可用") === null).toBe(true);
+});
+
+test("默认模型列表仅显示 IM 可见选项，闲置配置不列待处理", async () => {
+  const data = inventory([
+    model("local/visible", { availability: "available", pickerVisible: true, needsAttention: false }),
+    model("idle/unused", { availability: "unavailable", pickerVisible: false, inactive: true, needsAttention: false })
+  ], { pickerSource: "gateway", providers: [provider("local"), provider("idle")] });
+  const view = renderModels(data);
+  await view.findByText("local/visible");
+  expect(view.queryByText("idle/unused") === null).toBe(true);
+  expect(view.queryByTestId("pending-models-panel") === null).toBe(true);
+});
+
 function removableModel(ref = "local/retired") {
   const entry = model(ref, { referenceSources: ["policy-exact", "legacy-metadata"] });
   entry.capabilities.canRemovePolicyExactRef = true;
@@ -138,6 +197,16 @@ function pluginResult(overrides: Partial<PluginStateMutationResult> = {}): Plugi
     ...overrides
   };
 }
+
+test("已停用插件的残留选择规则可整组移出，无需展开模型目录", async () => {
+  const change = mock(async () => pluginResult());
+  const view = render(<ToastProvider><PluginProviderGroup plugin={{ ...plugin, enabled: false }} providers={[]}
+    models={[model("local/residual", { pickerVisible: true })]} onSetPluginState={change} /></ToastProvider>);
+  expect(view.queryByText("local/residual") === null).toBe(true);
+  await userEvent.click(view.getByRole("button", { name: `移出残留模型选项 ${plugin.id}` }));
+  await userEvent.click(within(view.getByRole("dialog")).getByRole("button", { name: "确认" }));
+  await waitFor(() => expect(change).toHaveBeenCalledWith(plugin.id, false));
+});
 
 describe("runtime Web review regressions", () => {
   test("Provider 导航和目录编辑折叠 Provider 大小写，但不折叠 model ID", async () => {
@@ -211,17 +280,7 @@ describe("runtime Web review regressions", () => {
     expect(view.queryByRole("button", { name: `删除模型 ${row.ref}` }) === null).toBe(true);
   });
 
-  test("unknown exact 只展示探测失败事实，不建议安全移除", async () => {
-    const row = model("local/unknown", { availability: "unknown", availabilityReasons: ["probe-failed"] });
-    const view = renderModels(inventory([row], {
-      diagnostics: [{ command: "list", code: "timeout", message: "Runtime list timed out" }]
-    }));
-    const pending = within(await view.findByTestId("pending-models-panel"));
-    await pending.findByText(row.ref);
-    expect(pending.queryByText(/可安全移除/) === null).toBe(true);
-    expect(pending.queryByRole("button", { name: `处理 ${row.ref}` }) === null).toBe(true);
-    expect(await view.findByText("Runtime list timed out")).toBeTruthy();
-  });
+
 
   test("合法但信息不足的 unknown 不一概描述为 CLI 失败，无原因 unavailable 不伪称 Provider 拒绝", () => {
     const unknown = model("local/nullable", { availability: "unknown", availabilityReasons: ["probe-failed"] });
@@ -236,7 +295,7 @@ describe("runtime Web review regressions", () => {
     const unknown = model("local/unknown", { catalogSources: ["config"], availability: "unknown", availabilityReasons: ["probe-failed"] });
     const known = model("local/known", { catalogSources: ["config"], availability: "available", availabilityReasons: [], referenceSources: [], policyAllowed: false });
     known.capabilities.canEditCatalogEntry = true;
-    const remove = mock(async () => ({ ok: true, removedModelIds: ["known"] }));
+    const remove = mock(async () => ({ ok: true, removedModelIds: ["known"], warnings: [] as string[] }));
     const view = renderProviders(inventory([unknown, known]), {
       getModels: async () => ({ models: [modelSummary({ ref: unknown.ref, enabled: false }), modelSummary({ ref: known.ref, enabled: false })] }),
       batchRemoveProviderModels: remove
@@ -254,12 +313,13 @@ describe("runtime Web review regressions", () => {
     await waitFor(() => expect(remove).toHaveBeenCalledWith("local", { modelIds: ["known"] }));
   });
 
-  test("可编辑目录不等于可删除：保护主模型、fallback、wildcard 和最后 exact", async () => {
+  test("可编辑目录不等于可删除：保护主模型、fallback 和最后 exact；wildcard 覆盖行可删（仅 warning）", async () => {
     const rows = ["primary", "fallback", "policy-wildcard", "policy-exact"].map((source, i) => {
       const row = model(`local/protected-${i}`, {
         catalogSources: ["config"], referenceSources: [source as ModelInventoryEntry["referenceSources"][number]],
         availability: "available", availabilityReasons: []
       });
+      if (source === "policy-wildcard") row.selectionSource = "policy-wildcard";
       row.capabilities.canEditCatalogEntry = true;
       return row;
     });
@@ -267,90 +327,93 @@ describe("runtime Web review regressions", () => {
     await view.findByText(rows[0]!.ref);
     for (const row of rows) {
       expect(view.getByRole("button", { name: `编辑模型 ${row.ref}` })).toBeTruthy();
+    }
+    // primary / fallback / policy-exact（未获 exact 删除许可）仍无删除入口
+    for (const row of [rows[0]!, rows[1]!, rows[3]!]) {
       expect(view.queryByRole("button", { name: `删除模型 ${row.ref}` }) === null).toBe(true);
     }
+    // wildcard 覆盖行服务端已放宽：显示删除入口（删除后 warning 提示）
+    expect(view.getByRole("button", { name: `删除模型 ${rows[2]!.ref}` })).toBeTruthy();
   });
 
-  test("缺 Provider 的最后 exact 仍可打开手动补全向导，但不能删引用", async () => {
-    // missing:true 占位既不是 catalog 来源，也不会产生 Provider 行。
-    const row = model("missing/vendor/model", { availabilityReasons: ["provider-not-found"] });
-    const view = renderModels(inventory([row]));
-    await userEvent.click(await view.findByRole("button", { name: `处理 ${row.ref}` }));
-    expect(view.queryByRole("button", { name: "仅删除 policy 引用" }) === null).toBe(true);
-    await userEvent.click(view.getByRole("button", { name: "创建 Provider 并补全模型" }));
-    expect((await view.findByLabelText("Provider ID") as HTMLInputElement).value).toBe("missing");
-    expect((view.getByLabelText("模型 ID 1") as HTMLInputElement).value).toBe("vendor/model");
-    expect((view.getByLabelText("请求地址") as HTMLInputElement).value).toBe("");
+
+
+
+
+
+
+
+
+
+
+
+
+  test("删除模型对话框默认临时移除（仅目录层），可勾选使用配置与精确放行", async () => {
+    const row = model("local/gone", { catalogSources: ["config"], referenceSources: ["policy-exact"], availability: "available", availabilityReasons: [] });
+    row.capabilities.canEditCatalogEntry = true;
+    row.capabilities.canRemovePolicyExactRef = true;
+    const deleteModel = mock(async () => ({ ok: true as const, ref: row.ref, warnings: [] as string[] }));
+    const view = renderModels(inventory([row]), { deleteModel });
+
+    // 默认「临时移除」：只删目录条目
+    await userEvent.click(await view.findByRole("button", { name: `删除模型 ${row.ref}` }));
+    let dialog = within(view.getByRole("dialog"));
+    expect((dialog.getByRole("checkbox", { name: /连同使用配置/ }) as HTMLInputElement).checked).toBe(false);
+    expect((dialog.getByRole("checkbox", { name: /连同精确放行/ }) as HTMLInputElement).checked).toBe(false);
+    await userEvent.click(dialog.getByRole("button", { name: "确认" }));
+    await waitFor(() => expect(deleteModel).toHaveBeenCalledWith(row.ref, { layers: { metadata: false, policyExact: false } }));
+
+    // 勾选两个层级后：三层全删
+    await userEvent.click(await view.findByRole("button", { name: `删除模型 ${row.ref}` }));
+    dialog = within(view.getByRole("dialog"));
+    await userEvent.click(dialog.getByRole("checkbox", { name: /连同使用配置/ }));
+    await userEvent.click(dialog.getByRole("checkbox", { name: /连同精确放行/ }));
+    await userEvent.click(dialog.getByRole("button", { name: "确认" }));
+    await waitFor(() => expect(deleteModel).toHaveBeenCalledWith(row.ref, { layers: { metadata: true, policyExact: true } }));
   });
 
-  test("缺 Provider 且可删 exact 时同时给出补全、删除和保留选项", async () => {
-    const row = removableModel("missing/retired");
-    row.availabilityReasons = ["provider-not-found"];
-    const remove = mock(async () => ({ ok: true as const, backupId: "fixture-backup" }));
-    const view = renderModels(inventory([row]), { removeModelPolicyExactRef: remove });
-    await userEvent.click(await view.findByRole("button", { name: `处理 ${row.ref}` }));
-    expect(view.getByRole("button", { name: "创建 Provider 并补全模型" })).toBeTruthy();
-    expect(view.getByRole("button", { name: "仅删除 policy 引用" })).toBeTruthy();
-    await userEvent.click(view.getByRole("button", { name: "保留" }));
-    expect(view.queryByRole("dialog") === null).toBe(true);
-    expect(remove).not.toHaveBeenCalled();
-  });
+  test("wildcard 覆盖行可删除：精确放行置灰并附说明，响应 warnings 经 toast 展示", async () => {
+    const row = model("local/w1", { catalogSources: ["config"], referenceSources: ["policy-wildcard"], selectionSource: "policy-wildcard", availability: "available", availabilityReasons: [] });
+    row.capabilities.canEditCatalogEntry = true;
+    const warning = "Model local/w1 is still covered by policy wildcard local/*: re-adding it to the catalog restores pickability.";
+    const deleteModel = mock(async () => ({ ok: true as const, ref: row.ref, warnings: [warning] }));
+    const view = renderModels(inventory([row]), { deleteModel });
 
-  test("下架插件模型不提供伪造 config 快捷入口，仍可保留", async () => {
-    const row = model("retired-plugin/removed", {
-      catalogSources: ["plugin-manifest"], pluginIds: ["retired-plugin"], availabilityReasons: ["model-not-in-catalog"]
-    });
-    const view = renderModels(inventory([row]));
-    await userEvent.click(await view.findByRole("button", { name: `处理 ${row.ref}` }));
+    await userEvent.click(await view.findByRole("button", { name: `删除模型 ${row.ref}` }));
     const dialog = within(view.getByRole("dialog"));
-    expect(dialog.queryByRole("button", { name: /创建 Provider|补全到/ }) === null).toBe(true);
-    expect(dialog.getByText(/插件目录.*不可伪造/)).toBeTruthy();
-    await userEvent.click(dialog.getByRole("button", { name: "保留" }));
-    expect(view.queryByRole("dialog") === null).toBe(true);
+    expect((dialog.getByRole("checkbox", { name: /连同精确放行/ }) as HTMLInputElement).disabled).toBe(true);
+    expect(dialog.getByText(/已被通配规则覆盖/)).toBeTruthy();
+    await userEvent.click(dialog.getByRole("button", { name: "确认" }));
+    await waitFor(() => expect(deleteModel).toHaveBeenCalledWith(row.ref, { layers: { metadata: false, policyExact: false } }));
+    expect(await view.findByText(warning)).toBeTruthy();
   });
 
-  test("metadata 清理是独立未勾选复选项；取消后重新打开恢复默认", async () => {
-    const row = removableModel();
-    const remove = mock(async () => ({ ok: true as const, backupId: "fixture-backup" }));
-    const view = renderModels(inventory([row]), { removeModelPolicyExactRef: remove });
-    await userEvent.click(await view.findByRole("button", { name: `处理 ${row.ref}` }));
-    const checkbox = view.getByRole("checkbox", { name: /同时清理 metadata/ }) as HTMLInputElement;
-    expect(checkbox.checked).toBe(false);
-    await userEvent.click(checkbox);
-    await userEvent.click(view.getByRole("button", { name: "保留" }));
-    await userEvent.click(view.getByRole("button", { name: `处理 ${row.ref}` }));
-    expect((view.getByRole("checkbox", { name: /同时清理 metadata/ }) as HTMLInputElement).checked).toBe(false);
-    await userEvent.click(view.getByRole("button", { name: "仅删除 policy 引用" }));
-    await waitFor(() => expect(remove).toHaveBeenCalledWith(row.ref, false));
-  });
+  test("删除 Provider 对话框默认保留 wildcard 规则，显式勾选才传 removePolicyWildcard", async () => {
+    const warning = "Policy wildcard local/* still references provider local; it is now dangling and can be removed explicitly.";
+    const deleteProvider = mock(async () => ({ ok: true as const, warnings: [warning] }));
+    const data = inventory([model("local/m1", { availability: "available", availabilityReasons: [] })]);
+    const view = renderProviders(data, {
+      deleteProvider,
+      getModelAttention: async () => ({ pending: [], ignored: [] })
+    });
 
-  test("只有显式勾选才提交 removeMetadata=true；提交期间不能再次点击", async () => {
-    const row = removableModel();
-    let resolve!: (value: { ok: true; backupId: string }) => void;
-    const remove = mock(() => new Promise<{ ok: true; backupId: string }>(done => { resolve = done; }));
-    const view = renderModels(inventory([row]), { removeModelPolicyExactRef: remove });
-    await userEvent.click(await view.findByRole("button", { name: `处理 ${row.ref}` }));
-    await userEvent.click(view.getByRole("checkbox", { name: /同时清理 metadata/ }));
-    const submit = view.getByRole("button", { name: "删除引用并清理 metadata" }) as HTMLButtonElement;
-    await userEvent.click(submit);
-    expect(submit.disabled).toBe(true);
-    await userEvent.click(submit);
-    expect(remove).toHaveBeenCalledTimes(1);
-    expect(remove).toHaveBeenCalledWith(row.ref, true);
-    resolve({ ok: true, backupId: "fixture-backup" });
-    await waitFor(() => expect(view.queryByRole("dialog")).toBeNull());
-  });
+    // 默认不勾选：请求体不含 removePolicyWildcard；残留 wildcard warning 经 toast 展示
+    await userEvent.click(await view.findByRole("button", { name: "更多操作 local" }));
+    await userEvent.click(await view.findByLabelText("删除 local"));
+    let dialog = within(await view.findByRole("dialog"));
+    const wildcardCheckbox = dialog.getByRole("checkbox", { name: /同时删除 policy 中该 Provider 的通配规则/ }) as HTMLInputElement;
+    expect(wildcardCheckbox.checked).toBe(false);
+    await userEvent.click(dialog.getByRole("button", { name: "确认" }));
+    await waitFor(() => expect(deleteProvider).toHaveBeenCalledWith("local", {}));
+    expect(await view.findByText(warning)).toBeTruthy();
 
-  test("无 legacy metadata 的引用不显示清理复选项，失败保留向导并显示错误", async () => {
-    const row = removableModel();
-    row.referenceSources = ["policy-exact"];
-    const remove = mock(async () => { throw new Error("Policy changed; refresh required"); });
-    const view = renderModels(inventory([row]), { removeModelPolicyExactRef: remove });
-    await userEvent.click(await view.findByRole("button", { name: `处理 ${row.ref}` }));
-    expect(view.queryByRole("checkbox", { name: /metadata/ }) === null).toBe(true);
-    await userEvent.click(view.getByRole("button", { name: "仅删除 policy 引用" }));
-    expect(await within(view.getByRole("dialog")).findByText("Policy changed; refresh required")).toBeTruthy();
-    expect(view.queryByText(/已删除.*policy/) === null).toBe(true);
+    // 显式勾选：透传 removePolicyWildcard: true
+    await userEvent.click(await view.findByRole("button", { name: "更多操作 local" }));
+    await userEvent.click(await view.findByLabelText("删除 local"));
+    dialog = within(await view.findByRole("dialog"));
+    await userEvent.click(dialog.getByRole("checkbox", { name: /同时删除 policy 中该 Provider 的通配规则/ }));
+    await userEvent.click(dialog.getByRole("button", { name: "确认" }));
+    await waitFor(() => expect(deleteProvider).toHaveBeenCalledWith("local", { removePolicyWildcard: true }));
   });
 
   test("原始 Policy 规则的 Provider 大小写不影响 metadata 复选项，删除提交原始 ref", async () => {
@@ -401,26 +464,7 @@ describe("runtime Web review regressions", () => {
     expect(view.queryAllByRole("button", { name: /^删除规则 / }).length).toBe(0);
   });
 
-  test("不可用主模型可以选择允许的替代模型；fallback 不会被误写为主模型", async () => {
-    const primary = model("local/primary", { referenceSources: ["primary", "policy-exact"] });
-    const fallback = model("local/fallback", { referenceSources: ["fallback"] });
-    const available = model("local/replacement", { catalogSources: ["openclaw-runtime"], availability: "available", availabilityReasons: [] });
-    available.capabilities.canSetPrimary = true;
-    const unavailable = model("local/not-a-replacement");
-    const setPrimary = mock(async (ref: string) => ({ ok: true, ref }));
-    const view = renderModels(inventory([primary, fallback, available, unavailable]), { setPrimary });
-    await userEvent.click(await view.findByRole("button", { name: `替换主模型 ${primary.ref}` }));
-    const select = view.getByRole("combobox", { name: "替代主模型" });
-    expect(within(select).queryByRole("option", { name: unavailable.ref }) === null).toBe(true);
-    await userEvent.selectOptions(select, available.ref);
-    await userEvent.click(view.getByRole("button", { name: "确认替换主模型" }));
-    await waitFor(() => expect(setPrimary).toHaveBeenCalledWith(available.ref));
-    await waitFor(() => expect(view.queryByRole("dialog")).toBeNull());
-    await userEvent.click(view.getByRole("button", { name: `查看替换指引 ${fallback.ref}` }));
-    expect(view.getByRole("dialog").textContent).toContain("回退链只读");
-    expect(view.queryByRole("button", { name: "确认替换主模型" }) === null).toBe(true);
-    expect(setPrimary).toHaveBeenCalledTimes(1);
-  });
+
 
   test("目录详情读取失败必须阻止编辑，不得降级为空参数后保存", async () => {
     const row = model("local/configured", { catalogSources: ["config"], availability: "available", availabilityReasons: [] });
@@ -527,7 +571,8 @@ describe("runtime Web review regressions", () => {
         provider("token-plan", { sources: ["plugin-manifest"], pluginIds: [plugin.id], pluginEnabled: true })
       ]
     });
-    const view = renderProviders(data);
+    const view = renderProviders(data, { getModelAttention: async () => ({ pending: [], ignored: [] }) });
+    await userEvent.click(await screen.findByRole("button", {name:"展开插件 shared-plugin"}));
     const toggle = await view.findByRole("switch", { name: "停用插件 shared-plugin" });
     const group = toggle.closest("section")!;
     expect(within(group).getByText("local", { exact: true })).toBeTruthy();
@@ -541,7 +586,7 @@ describe("runtime Web review regressions", () => {
     expect(dialog.getByText(/工具（tools）/)).toBeTruthy();
     expect(dialog.getByText(/语音（speech）/)).toBeTruthy();
     expect(dialog.getByText(/钩子（hooks）/)).toBeTruthy();
-    expect(dialog.getByText(/policy.*保留/)).toBeTruthy();
+    expect(dialog.getByText(/未勾选清理时.*保留/)).toBeTruthy();
   });
 
   test("config 可用与同名插件停用同时展示，不误称全部模型需先启用插件", async () => {
@@ -560,6 +605,7 @@ describe("runtime Web review regressions", () => {
       providers: [provider("local", { sources: ["config", "plugin-manifest"], pluginIds: [plugin.id], pluginEnabled: false, disabled: true })],
       plugins: [{ ...plugin, enabled: false }]
     }));
+    await userEvent.click(view.getByRole("button", { name: "管理配置目录" }));
     await view.findByRole("heading", { name: "local" });
     const add = view.getByRole("button", { name: "添加模型" }) as HTMLButtonElement;
     expect(add.disabled).toBe(true);
@@ -567,7 +613,7 @@ describe("runtime Web review regressions", () => {
   });
 
   test("Providers 展示 runtime-only Provider，而 inventory 请求错误明确提示", async () => {
-    const data = inventory([], { providers: [provider("local"), provider("runtime-only", { sources: ["openclaw-runtime"] })] });
+    const data = inventory([], { providers: [provider("local"), provider("runtime-only", { sources: ["openclaw-runtime"], pickerModelCount: 1 })] });
     const view = renderProviders(data);
     expect(await view.findByText("runtime-only", { exact: true })).toBeTruthy();
     cleanup();

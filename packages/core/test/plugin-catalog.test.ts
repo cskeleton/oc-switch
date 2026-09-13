@@ -79,6 +79,15 @@ function deps(
 }
 
 describe("discoverPluginCatalog", () => {
+  test("停用插件只保留 descriptor；损坏 manifest 不污染正在使用的目录", () => {
+    const result = discoverPluginCatalog({
+      runCommand: () => ({ status: 0, timedOut: false, stdout: JSON.stringify({ plugins: [{ id: "anthropic", rootDir: "/unused", enabled: false, origin: "bundled", providerIds: ["anthropic"] }] }) }),
+      readTextFile: () => { throw new Error("unavailable manifest"); }
+    });
+    expect(result.providers).toEqual([]);
+    expect(result.diagnostics).toEqual([]);
+    expect(result.plugins[0]?.enabled).toBe(false);
+  });
   test("解析插件 manifest 的 provider 目录与 auth 环境变量", () => {
     const result = discoverPluginCatalog(deps());
     expect(result.diagnostics).toEqual([]);
@@ -284,7 +293,7 @@ describe("discoverPluginCatalog.plugins descriptor", () => {
     });
     expect(result.providers).toEqual([]);
     expect(result.plugins.map((plugin) => plugin.id)).toEqual(["xiaomi"]);
-    expect(result.diagnostics).toEqual(["plugin xiaomi: manifest not readable; skipped"]);
+    expect(result.diagnostics).toEqual([]);
   });
 
   test("非模型插件（providerIds 为空）不出现在 descriptor 列表", () => {

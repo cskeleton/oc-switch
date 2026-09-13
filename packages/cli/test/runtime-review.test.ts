@@ -321,7 +321,7 @@ for (const action of ["exact", "materialize", "plugin"] as const) {
       : ["plugin", "disable", "example", "--yes"];
     const result = await run(context, args);
     expect(result.code).not.toBe(0);
-    expect(calls).toBe(action === "materialize" ? 3 : 2);
+    expect(calls).toBe(action === "exact" ? 2 : 3);
     const saved = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
     expect(saved.models).toEqual(ws.config.models);
     expect(saved.agents.defaults.modelPolicy.allow).toEqual(ws.config.agents!.defaults!.modelPolicy!.allow);

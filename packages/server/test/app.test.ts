@@ -81,17 +81,17 @@ function createTestApp(
     runtimeModelCatalogProvider?: RuntimeModelCatalogProvider;
   }
 ) {
-  let latestPlugins: import("@oc-switch/core").PluginCatalogResult = { providers: [], plugins: [], diagnostics: [] };
-  const pluginCatalogProvider: PluginCatalogProvider = (paths) => {
-    latestPlugins = (extra?.pluginCatalogProvider ?? emptyPluginCatalog)(paths);
+  let latestPlugins = Promise.resolve<import("@oc-switch/core").PluginCatalogResult>({ providers: [], plugins: [], diagnostics: [] });
+  const pluginCatalogProvider: PluginCatalogProvider = async (paths) => {
+    latestPlugins = Promise.resolve((extra?.pluginCatalogProvider ?? emptyPluginCatalog)(paths));
     return latestPlugins;
   };
   // 默认模型事实来自临时配置与上次注入的插件目录，不调用真实 openclaw。
-  const runtimeModelCatalogProvider: RuntimeModelCatalogProvider = () => {
+  const runtimeModelCatalogProvider: RuntimeModelCatalogProvider = async () => {
     const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
     const entries = Object.entries(config.models?.providers ?? {}).flatMap(([providerId, provider]) =>
       (provider.models ?? []).map(model => ({ ref: `${providerId}/${model.id}`, available: true, tags: [] })));
-    for (const plugin of latestPlugins.providers) {
+    for (const plugin of (await latestPlugins).providers) {
       if (plugin.enabled) entries.push(...plugin.models.map(model => ({ ref: `${plugin.providerId}/${model.id}`, available: true, tags: [] })));
     }
     return { ...emptyRuntimeSnapshot(), openClawVersion: "2026.9.3", configuredModels: entries, allModels: entries,
@@ -2117,7 +2117,8 @@ describe("server env APIs", () => {
 
     let config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
     expect(config.models.providers.nvidia.models.map((model: { id: string }) => model.id)).toContain("deepseek-ai/deepseek-v4-flash");
-    expect(config.agents.defaults.models["nvidia/deepseek-ai/deepseek-v4-flash"]).toBeUndefined();
+    expect(config.agents.defaults.models["nvidia/deepseek-ai/deepseek-v4-flash"]).toBeDefined();
+    expect(config.agents.defaults.modelPolicy.allow.some((ref: string) => ref.startsWith("nvidia/"))).toBe(false);
     const states = JSON.parse(readFileSync(join(ws.paths.stateDir, "provider-states.json"), "utf8"));
     expect(states.disabledProviders.nvidia.allowlistEntries["nvidia/deepseek-ai/deepseek-v4-flash"]).toEqual({
       alias: "nv-ds-flash",
@@ -3850,5 +3851,205 @@ describe("server 模型协调写 endpoints", () => {
     expect(Array.isArray(json.diagnostics)).toBe(true);
     const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
     expect(config.models!.providers!.nvidia!.models!.some((model) => model.id === "vendor/runtime-extra")).toBe(true);
+  });
+});
+
+describe("三层写模型：删除分级 / wildcard warning / discover 插件 Key 回退", () => {
+  /** 把样例配置改写为 restricted policy 后落盘 */
+  function writeRestrictedPolicy(ws: Workspace, allow: string[]) {
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    config.agents!.defaults!.modelPolicy = { allow };
+    writeFileSync(ws.paths.openclawPath, `${JSON.stringify(config, null, 2)}\n`);
+  }
+
+  test("DELETE /api/models 默认三层全删，显式 layers 只删目录条目", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+
+    // 临时移除：只删目录，metadata 保留
+    const temp = await jsonRequest(app, "/api/models", {
+      method: "DELETE",
+      body: JSON.stringify({ ref: "nvidia/deepseek-ai/deepseek-v4-flash", layers: { metadata: false, policyExact: false } })
+    });
+    expect(temp.response.status).toBe(200);
+    expect(temp.json.warnings).toEqual([]);
+    let config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(config.models.providers.nvidia.models.map((model: { id: string }) => model.id)).not.toContain("deepseek-ai/deepseek-v4-flash");
+    expect(config.agents.defaults.models["nvidia/deepseek-ai/deepseek-v4-flash"]).toEqual({ alias: "nv-ds-flash", agentRuntime: { id: "codex" } });
+
+    // 缺省 layers：三层全删（旧行为）
+    const full = await jsonRequest(app, "/api/models", {
+      method: "DELETE",
+      body: JSON.stringify({ ref: "nvidia/z-ai/glm5.1" })
+    });
+    expect(full.response.status).toBe(200);
+    config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(config.models.providers.nvidia.models.map((model: { id: string }) => model.id)).not.toContain("z-ai/glm5.1");
+    expect(config.agents.defaults.models["nvidia/z-ai/glm5.1"]).toBeUndefined();
+  });
+
+  test("DELETE /api/models 拒绝非对象 layers", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+    const { response, json } = await jsonRequest(app, "/api/models", {
+      method: "DELETE",
+      body: JSON.stringify({ ref: "nvidia/z-ai/glm5.1", layers: true })
+    });
+    expect(response.status).toBe(400);
+    expect(String(json.error)).toContain("layers must be an object");
+  });
+
+  test("DELETE /api/models 被 wildcard 覆盖的模型删除成功并返回 warning", async () => {
+    const ws = workspace();
+    writeRestrictedPolicy(ws, ["nvidia/*", "minimax-portal/MiniMax-M3"]);
+    const app = createTestApp(ws);
+
+    const { response, json } = await jsonRequest(app, "/api/models", {
+      method: "DELETE",
+      body: JSON.stringify({ ref: "nvidia/z-ai/glm5.1" })
+    });
+    expect(response.status).toBe(200);
+    expect((json.warnings as string[]).some((warning) => warning.includes("nvidia/*"))).toBe(true);
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    // wildcard 字节不变：不被隐式改写
+    expect(config.agents.defaults.modelPolicy.allow).toEqual(["nvidia/*", "minimax-portal/MiniMax-M3"]);
+    expect(config.models.providers.nvidia.models.map((model: { id: string }) => model.id)).not.toContain("z-ai/glm5.1");
+  });
+
+  test("POST batch-remove 透传 layers：metadata 保留且响应带 warnings", async () => {
+    const ws = workspace();
+    writeRestrictedPolicy(ws, ["nvidia/*", "minimax-portal/MiniMax-M3"]);
+    const app = createTestApp(ws);
+
+    const { response, json } = await jsonRequest(app, "/api/providers/nvidia/models/batch-remove", {
+      method: "POST",
+      body: JSON.stringify({ modelIds: ["z-ai/glm5.1"], layers: { metadata: false, policyExact: false } })
+    });
+    expect(response.status).toBe(200);
+    expect(json.removedModelIds).toEqual(["z-ai/glm5.1"]);
+    expect((json.warnings as string[]).some((warning) => warning.includes("nvidia/*"))).toBe(true);
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(config.models.providers.nvidia.models.map((model: { id: string }) => model.id)).not.toContain("z-ai/glm5.1");
+    // layers.metadata=false：alias metadata 保留
+    expect(config.agents.defaults.models["nvidia/z-ai/glm5.1"]).toEqual({ alias: "nv-glm" });
+    expect(config.agents.defaults.modelPolicy.allow).toEqual(["nvidia/*", "minimax-portal/MiniMax-M3"]);
+  });
+
+  test("DELETE /api/providers/:id 残留 wildcard 降级为 warning；显式 removePolicyWildcard 才移除", async () => {
+    const ws = workspace();
+    writeRestrictedPolicy(ws, ["nvidia/*", "minimax-portal/MiniMax-M3"]);
+    const app = createTestApp(ws);
+
+    const kept = await jsonRequest(app, "/api/providers/nvidia", {
+      method: "DELETE",
+      body: JSON.stringify({})
+    });
+    expect(kept.response.status).toBe(200);
+    expect((kept.json.warnings as string[]).some((warning) => warning.includes("nvidia/*") && warning.includes("dangling"))).toBe(true);
+    let config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(config.models.providers.nvidia).toBeUndefined();
+    expect(config.agents.defaults.modelPolicy.allow).toEqual(["nvidia/*", "minimax-portal/MiniMax-M3"]);
+
+    // 显式勾选：移除该 Provider 的 wildcard 条目
+    writeRestrictedPolicy(ws, ["nvidia/*", "minimax-portal/MiniMax-M3"]);
+    config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    config.models!.providers!.nvidia = { baseUrl: "https://integrate.api.nvidia.com/v1", api: "openai-completions", models: [{ id: "z-ai/glm5.1" }] };
+    writeFileSync(ws.paths.openclawPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    const removed = await jsonRequest(app, "/api/providers/nvidia", {
+      method: "DELETE",
+      body: JSON.stringify({ removePolicyWildcard: true })
+    });
+    expect(removed.response.status).toBe(200);
+    expect(removed.json.warnings).toEqual([]);
+    config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(config.agents.defaults.modelPolicy.allow).toEqual(["minimax-portal/MiniMax-M3"]);
+  });
+
+  test("DELETE /api/providers/:id removePolicyWildcard 会清空 restricted policy 时 fail closed", async () => {
+    const ws = workspace();
+    writeRestrictedPolicy(ws, ["nvidia/*"]);
+    const app = createTestApp(ws);
+    const before = readFileSync(ws.paths.openclawPath, "utf8");
+
+    const { response, json } = await jsonRequest(app, "/api/providers/nvidia", {
+      method: "DELETE",
+      body: JSON.stringify({ removePolicyWildcard: true })
+    });
+    expect(response.status).toBe(400);
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+    const { json: backupsJson } = await jsonRequest(app, "/api/backups");
+    expect((backupsJson.backups as unknown[]).length).toBe(0);
+    expect(String(json.error)).toBeTruthy();
+  });
+
+  test("POST /api/providers/:id/discover config 缺 Key 时回退同名插件 manifest 的 env 变量", async () => {
+    const ws = workspace();
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    delete config.models!.providers!.DeepSeek!.apiKey;
+    writeFileSync(ws.paths.openclawPath, `${JSON.stringify(config, null, 2)}\n`);
+    writeFileSync(ws.paths.envPath, "DEEPSEEK_PLUGIN_KEY=sk-plugin-fallback-secret\n");
+    // 插件 providerId 与 config 条目大小写不同（大小写折叠匹配）
+    const pluginCatalogProvider: PluginCatalogProvider = () => ({
+      providers: [{
+        pluginId: "deepseek-plugin",
+        providerId: "deepseek",
+        origin: "bundled",
+        enabled: true,
+        models: [],
+        apiKeyEnvVars: ["DEEPSEEK_PLUGIN_KEY"]
+      }],
+      plugins: [],
+      diagnostics: []
+    });
+    const calls: Array<{ url: string; headers: Headers }> = [];
+    const mockFetch: FetchImpl = async (input, init) => {
+      calls.push({ url: String(input), headers: new Headers(init?.headers) });
+      return new Response(JSON.stringify({ data: [{ id: "remote-deepseek-a" }] }), {
+        headers: { "content-type": "application/json" }
+      });
+    };
+    const app = createTestApp(ws, mockFetch, { pluginCatalogProvider });
+
+    const { response, json } = await jsonRequest(app, "/api/providers/DeepSeek/discover", { method: "POST" });
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.headers.get("authorization")).toBe("Bearer sk-plugin-fallback-secret");
+    // 响应不回显密钥值
+    expect(JSON.stringify(json)).not.toContain("sk-plugin-fallback-secret");
+  });
+
+  test("POST /api/providers/:id/discover 插件声明变量但 .env 缺失时发请求前报错", async () => {
+    const ws = workspace();
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    delete config.models!.providers!.DeepSeek!.apiKey;
+    writeFileSync(ws.paths.openclawPath, `${JSON.stringify(config, null, 2)}\n`);
+    writeFileSync(ws.paths.envPath, "UNRELATED_VAR=1\n");
+    const pluginCatalogProvider: PluginCatalogProvider = () => ({
+      providers: [{
+        pluginId: "deepseek-plugin",
+        providerId: "deepseek",
+        origin: "bundled",
+        enabled: true,
+        models: [],
+        apiKeyEnvVars: ["DEEPSEEK_PLUGIN_KEY"]
+      }],
+      plugins: [],
+      diagnostics: []
+    });
+    let fetchCalls = 0;
+    const mockFetch: FetchImpl = async () => {
+      fetchCalls += 1;
+      return new Response(JSON.stringify({ data: [] }), { headers: { "content-type": "application/json" } });
+    };
+    const app = createTestApp(ws, mockFetch, { pluginCatalogProvider });
+
+    const { response, json } = await jsonRequest(app, "/api/providers/DeepSeek/discover", { method: "POST" });
+    expect(response.status).toBe(400);
+    expect(String(json.error)).toContain("no API key configured");
+    expect(String(json.error)).toContain("DEEPSEEK_PLUGIN_KEY");
+    // 发请求前就失败：不静默吃 401
+    expect(fetchCalls).toBe(0);
   });
 });

@@ -491,6 +491,7 @@ test.describe("Model metadata suggestions (offline fixtures)", () => {
     await page.getByRole("button", { name: "模型" }).click();
     // metadata-e2e Provider：e2e fixture 专供（不被任何 policy wildcard 覆盖——
     // restricted 模式下 wildcard 覆盖的 Provider 删除模型会 fail closed）
+    await page.getByRole("button", { name: "管理配置目录" }).click();
     await page.locator("nav").getByRole("button", { name: /^metadata-e2e/ }).click();
 
     // 1+2. 打开“添加模型”，输入含斜杠的 raw Model ID
@@ -559,7 +560,12 @@ test.describe("Model metadata suggestions (offline fixtures)", () => {
     for (const ref of ["metadata-e2e/manual-model", "metadata-e2e/openai/gpt-5.2"]) {
       await page.getByLabel(`删除模型 ${ref}`).click();
       await expect(page.getByText(`确认删除 ${ref}？此操作将创建备份。`)).toBeVisible();
-      await page.getByRole("button", { name: "确认" }).click();
+      // 删除对话框默认「临时移除」（仅目录层）；测试清理须三层全删，否则残留
+      // metadata / policy exact 会变成悬空引用，污染后续 project 的待处理计数
+      const deleteDialog = page.getByRole("dialog");
+      await deleteDialog.getByRole("checkbox", { name: /连同使用配置/ }).check();
+      await deleteDialog.getByRole("checkbox", { name: /连同精确放行/ }).check();
+      await deleteDialog.getByRole("button", { name: "确认" }).click();
       await expect(page.getByLabel(`编辑模型 ${ref}`)).toHaveCount(0);
     }
   });

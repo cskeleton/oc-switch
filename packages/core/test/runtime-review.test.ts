@@ -62,10 +62,10 @@ describe("runtime review regressions", () => {
   test("runtime descriptor-only models retain plugin ownership even when disabled", () => {
     const inv = buildModelInventory({ config: {}, plugins: [{ id: "plug", origin: "npm", enabled: false, providerIds: ["p"], nonModelCapabilities: [] }], runtime: runtime({ allModels: [{ ref: "p/live", tags: [] }] }) });
     expect(inv.providers[0]).toMatchObject({ providerId: "p", pluginIds: ["plug"], pluginEnabled: false });
-    expect(inv.models[0]).toMatchObject({ pluginIds: ["plug"], availability: "unavailable", availabilityReasons: ["plugin-disabled"] });
+    expect(inv.models).toEqual([]);
   });
   test("runtime rows do not assign a manifest model to unrelated plugins sharing its provider", () => {
-    const inv = buildModelInventory({ config: {}, pluginProviders: [
+    const inv = buildModelInventory({ config: { agents: { defaults: { models: { "p/one": {} } } } }, pluginProviders: [
       { pluginId: "disabled-owner", providerId: "p", origin: "npm", enabled: false, models: [{ id: "one" }], apiKeyEnvVars: [] },
       { pluginId: "other-plugin", providerId: "p", origin: "npm", enabled: true, models: [{ id: "two" }], apiKeyEnvVars: [] }
     ], runtime: runtime({ allModels: [{ ref: "p/one", tags: [] }, available("p/two")] }) });

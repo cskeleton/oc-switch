@@ -284,6 +284,100 @@ describe("syncProviderModels alias", () => {
   });
 });
 
+describe("discoverProviderModels 插件 manifest Key 回退与 401 文案", () => {
+  const deepseekPlugin = {
+    pluginId: "deepseek",
+    providerId: "deepseek",
+    origin: "npm-global",
+    enabled: true,
+    models: [],
+    apiKeyEnvVars: ["DEEPSEEK_API_KEY"]
+  };
+
+  test("config 解析不到 env 变量名时回退同名插件 apiKeyEnvVars 发带鉴权请求", async () => {
+    const config = structuredClone(sampleConfig);
+    delete config.models!.providers!.DeepSeek!.apiKey;
+    const before = JSON.stringify(config);
+    const seen: { authorization?: string | null } = {};
+
+    const result = await discoverProviderModels(config, "DeepSeek", {
+      envContent: "DEEPSEEK_API_KEY=plugin-secret\n",
+      pluginProviders: [deepseekPlugin],
+      fetchImpl: async (_input, init) => {
+        seen.authorization = new Headers(init?.headers).get("authorization");
+        return Response.json({ data: [{ id: "deepseek-v4" }] });
+      }
+    });
+
+    expect(seen.authorization).toBe("Bearer plugin-secret");
+    expect(result.remoteModels).toEqual([{ id: "deepseek-v4" }]);
+    // 回退只用内存副本，绝不写盘
+    expect(JSON.stringify(config)).toBe(before);
+  });
+
+  test("config 变量取不到值时同样回退插件 apiKeyEnvVars", async () => {
+    const config = structuredClone(sampleConfig);
+    config.models!.providers!.DeepSeek!.apiKey = { source: "env", id: "DEEPSEEK_CONFIG_KEY" };
+    const seen: { authorization?: string | null } = {};
+
+    await discoverProviderModels(config, "DeepSeek", {
+      envContent: "DEEPSEEK_API_KEY=plugin-secret\n",
+      pluginProviders: [deepseekPlugin],
+      fetchImpl: async (_input, init) => {
+        seen.authorization = new Headers(init?.headers).get("authorization");
+        return Response.json({ data: [] });
+      }
+    });
+
+    expect(seen.authorization).toBe("Bearer plugin-secret");
+  });
+
+  test("插件声明了变量但 .env 全部缺失/为空时在发请求前抛错", async () => {
+    const config = structuredClone(sampleConfig);
+    let called = 0;
+
+    await expect(
+      discoverProviderModels(config, "DeepSeek", {
+        envContent: "DEEPSEEK_API_KEY=\n",
+        pluginProviders: [deepseekPlugin],
+        fetchImpl: async () => {
+          called += 1;
+          return Response.json({ data: [] });
+        }
+      })
+    ).rejects.toThrow(
+      "Provider deepseek has no API key configured; set one of DEEPSEEK_API_KEY in .env or use the Providers page to set a key."
+    );
+    expect(called).toBe(0);
+  });
+
+  test("无 key 无插件时 401 报错带 missing or invalid API key 提示", async () => {
+    const config = structuredClone(sampleConfig);
+    config.models!.providers!.local = {
+      baseUrl: "http://127.0.0.1:11434",
+      api: "openai-completions",
+      models: []
+    };
+
+    await expect(
+      discoverProviderModels(config, "local", {
+        fetchImpl: async () => new Response("unauthorized", { status: 401 })
+      })
+    ).rejects.toThrow("Model discover failed: HTTP 401 (missing or invalid API key)");
+  });
+
+  test("携带鉴权头时 401 维持原报错文案", async () => {
+    const config = structuredClone(sampleConfig);
+
+    const error = await discoverProviderModels(config, "nvidia", {
+      envContent: "NVIDIA_API_KEY=secret\n",
+      fetchImpl: async () => new Response("unauthorized", { status: 401 })
+    }).catch((caught: unknown) => caught);
+
+    expect((error as Error).message).toBe("Model discover failed: HTTP 401");
+  });
+});
+
 describe("discoverProviderModelsFromCredentials", () => {
   test("uses provided openai credentials and preserves alreadyAddedIds intersection", async () => {
     const seen: { authorization?: string | null; url?: string } = {};

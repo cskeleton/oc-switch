@@ -7,6 +7,8 @@ export interface DisabledProviderState {
   openclawPath: string;
   disabledAt: string;
   allowlistEntries: Record<string, AllowlistEntry>;
+  /** 2026.9 停用时从 OpenClaw 选择器移出的 exact/wildcard 规则。 */
+  policyEntries?: string[];
 }
 
 export interface ProviderStatesFile {

@@ -2,7 +2,7 @@ import "./test-setup.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "./App";
 import { DiffSummary } from "./components/DiffSummary";
@@ -613,7 +613,7 @@ describe("ProvidersView", () => {
   });
 
   test("requires a new primary instead of forcing deletion for provider containing primary", async () => {
-    const deleteProvider = mock(async () => ({ ok: true }));
+    const deleteProvider = mock(async () => ({ ok: true, warnings: [] as string[] }));
     const getProviders = mock(async () => ({
       providers: [
         providerSummary({
@@ -691,7 +691,7 @@ describe("ProvidersView", () => {
   });
 
   test("deleting primary model from provider manager defaults to a different new primary", async () => {
-    const deleteModel = mock(async () => ({ ok: true, ref: "nvidia/deepseek-ai/deepseek-v4-flash" }));
+    const deleteModel = mock(async () => ({ ok: true, ref: "nvidia/deepseek-ai/deepseek-v4-flash", warnings: [] as string[] }));
     const getProviders = mock(async () => ({
       providers: [
         providerSummary({
@@ -724,7 +724,8 @@ describe("ProvidersView", () => {
     await userEvent.click(getByText("确认"));
 
     expect(deleteModel).toHaveBeenCalledWith("nvidia/deepseek-ai/deepseek-v4-flash", {
-      newPrimary: "minimax-portal/MiniMax-M3"
+      newPrimary: "minimax-portal/MiniMax-M3",
+      layers: { metadata: false, policyExact: false }
     });
   });
 
@@ -775,7 +776,8 @@ describe("ProvidersView", () => {
   test("provider model manager batch-removes selected raw modelIds", async () => {
     const batchRemoveProviderModels = mock(async () => ({
       ok: true,
-      removedModelIds: ["vendor/model-b"]
+      removedModelIds: ["vendor/model-b"],
+      warnings: [] as string[]
     }));
     const getProviders = mock(async () => ({
       providers: [
@@ -817,7 +819,8 @@ describe("ProvidersView", () => {
   test("provider model manager keep-enabled-only confirms and calls API", async () => {
     const batchRemoveProviderModels = mock(async () => ({
       ok: true,
-      removedModelIds: ["idle-model"]
+      removedModelIds: ["idle-model"],
+      warnings: [] as string[]
     }));
     const getProviders = mock(async () => ({
       providers: [
@@ -858,7 +861,8 @@ describe("ProvidersView", () => {
   test("disabled provider still allows keep-enabled-only cleanup", async () => {
     const batchRemoveProviderModels = mock(async () => ({
       ok: true,
-      removedModelIds: ["idle-model"]
+      removedModelIds: ["idle-model"],
+      warnings: [] as string[]
     }));
     const getProviders = mock(async () => ({
       providers: [
@@ -884,6 +888,7 @@ describe("ProvidersView", () => {
     }));
 
     const { findByLabelText, getByText } = renderProvidersView(mockClient({ getProviders, getModels, batchRemoveProviderModels }));
+    await userEvent.click(screen.getAllByRole("tab").at(-1)!);
 
     await userEvent.click(await findByLabelText("管理模型 nvidia"));
     const keepEnabled = await findByLabelText("只保留已启用模型");
@@ -1458,6 +1463,7 @@ describe("ProvidersView", () => {
     }));
 
     const { findByLabelText, findByText, getByText } = renderProvidersView(mockClient({ getProviders, patchProviderState }));
+    await userEvent.click(screen.getAllByRole("tab").at(-1)!);
 
     expect(await findByText("已关闭")).toBeTruthy();
     await userEvent.click(await findByLabelText("恢复 Provider nvidia"));
@@ -1489,6 +1495,7 @@ describe("ProvidersView", () => {
       }));
 
       const { findByLabelText } = renderProvidersView(mockClient({ getProviders }));
+      await userEvent.click(screen.getByRole("tab", { name: "全部配置" }));
 
       expect((await findByLabelText(`${scenario.action} Provider cpa`) as HTMLButtonElement).disabled).toBe(false);
     });
@@ -2384,7 +2391,7 @@ describe("App shell", () => {
   test("defaults API address to browser origin and keeps presets after main operating pages", async () => {
     const fetchMock = mock(async () =>
       new Response(JSON.stringify({
-        ok: true,
+        ok: true, protocolVersion: 2,
         primaryModel: "minimax-portal/MiniMax-M3",
         providerCount: 1,
         providerModelCount: 1,
@@ -2511,7 +2518,7 @@ function okStatusFetch() {
   return mock(async () =>
     new Response(
       JSON.stringify({
-        ok: true,
+        ok: true, protocolVersion: 2,
         primaryModel: "minimax-portal/MiniMax-M3",
         providerCount: 1,
         providerModelCount: 1,
@@ -3295,6 +3302,7 @@ describe("插件 Provider 的 Web 呈现", () => {
       providers: [providerSummary({ id: "nvidia" }), pluginRow()]
     }));
     const { findAllByText, getAllByText } = renderProvidersView(pluginClient({ getProviders }));
+    await userEvent.click(await screen.findByRole("button", {name:"展开插件 opencode"}));
 
     expect((await findAllByText("opencode")).length).toBeGreaterThan(0);
     expect(getAllByText("插件")).toHaveLength(1);
@@ -3320,7 +3328,8 @@ describe("插件 Provider 的 Web 呈现", () => {
     const getProviders = mock(async () => ({
       providers: [providerSummary({ id: "opencode", source: "plugin", disabled: true, enabledModelCount: 0 })]
     }));
-    const { findByText, queryByText } = renderProvidersView(pluginClient({ getProviders }));
+    const { findByText, queryByText, getByRole } = renderProvidersView(pluginClient({ getProviders }));
+    await userEvent.click(getByRole("tab", { name: /已停用/ }));
 
     // 行上已有「插件」徽章，状态文案收窄为「已停用」以免挤压表格列宽；完整解释在 title
     expect(await findByText("已停用")).toBeTruthy();
@@ -3353,6 +3362,7 @@ describe("插件 Provider 的 Web 呈现", () => {
       updateEnvVar,
       updateProvider
     }));
+    await userEvent.click(await screen.findByRole("button", {name:"展开插件 opencode"}));
 
     await userEvent.click(await findByLabelText("设置 Key opencode"));
     await userEvent.type(
@@ -3745,6 +3755,7 @@ describe("PluginProviderGroup", () => {
         />
       </ToastProvider>
     );
+    await userEvent.click(await screen.findByRole("button", {name:"展开插件 xiaomi-miot"}));
 
     expect((await findAllByText("xiaomi-speech")).length).toBeGreaterThan(0);
     expect((await findAllByText("xiaomi-contract")).length).toBeGreaterThan(0);
@@ -4021,187 +4032,19 @@ function modelsViewInventoryFixture(): ModelInventory {
 }
 
 describe("ModelsView（统一 inventory）", () => {
-  test("分区展示：可用模型按 Provider 过滤，不可用/未知进入待处理区段并按严重性排序", async () => {
-    const getModelInventory = mock(async () => modelsViewInventoryFixture());
-    const { findAllByText, findByText, getByText, findByLabelText } = renderModelsView(mockClient({ getModelInventory }));
 
-    // 左侧 Provider 导航来自 inventory.providers（cpa 与 pluginhost 都出现）
-    // Provider 徽标计数与 id 同在 nav 按钮内，用正则定位导航按钮
-    await userEvent.click(await findAllByText(/^cpa/).then((nodes) => nodes.find((node) => node.closest("nav"))!));
-    // 正常区段：m2（可启停）在已启用区段；w1 由通配策略启用也在已启用区段
-    expect((await findAllByText("cpa/m2")).length).toBeGreaterThan(0);
-    expect(await findByText("cpa/w1")).toBeTruthy();
-    // 不可用 / 未知模型不进普通区段（只在待处理区段出现一次）
-    const danglingCells = await findAllByText("cpa/dangling");
-    expect(danglingCells.every((node) => node.closest("[data-testid='pending-models-panel']") !== null)).toBe(true);
-    const primaryCells = await findAllByText("cpa/old-primary");
-    expect(primaryCells.every((node) => node.closest("[data-testid='pending-models-panel']") !== null)).toBe(true);
-    // 待处理区段标题与计数
-    expect(await findByText(/不可用与待处理/)).toBeTruthy();
-    expect(getByText(/2 个不可用，1 个未知/)).toBeTruthy();
 
-    // 刷新按钮存在（unknown 行的处理入口）
-    expect(await findByLabelText("刷新探测")).toBeTruthy();
-  });
 
-  test("待处理区段排序：主模型不可用 > 悬空精确引用 > 探测未知", async () => {
-    const getModelInventory = mock(async () => modelsViewInventoryFixture());
-    const { findAllByText } = renderModelsView(mockClient({ getModelInventory }));
 
-    // 等 inventory 加载完
-    await findAllByText(/不可用与待处理/);
-    const section = await findAllByText(/不可用与待处理/);
-    expect(section.length).toBeGreaterThan(0);
-    // 行顺序：old-primary（主模型）→ dangling（policy 悬空）→ mystery（unknown）
-    const rows = document.querySelectorAll("[data-testid='pending-models-panel'] tbody tr");
-    const refs = Array.from(rows).map((row) => row.textContent ?? "");
-    const primaryIndex = refs.findIndex((text) => text.includes("cpa/old-primary"));
-    const danglingIndex = refs.findIndex((text) => text.includes("cpa/dangling"));
-    const unknownIndex = refs.findIndex((text) => text.includes("cpa/mystery"));
-    expect(primaryIndex).toBeGreaterThanOrEqual(0);
-    expect(danglingIndex).toBeGreaterThan(primaryIndex);
-    expect(unknownIndex).toBeGreaterThan(danglingIndex);
-  });
 
-  test("按钮能力门控：通配行开关禁用提示先收窄；插件模型无编辑/删除；待处理行无普通启停开关", async () => {
-    const getModelInventory = mock(async () => modelsViewInventoryFixture());
-    const { findByLabelText, queryByLabelText } = renderModelsView(mockClient({ getModelInventory }));
 
-    await findByLabelText("刷新探测");
-    // 插件模型：无编辑/删除入口（目录只读），开关可用（canTogglePolicy）
-    expect(queryByLabelText("编辑模型 pluginhost/p1")).toBeNull();
-    expect(queryByLabelText("删除模型 pluginhost/p1")).toBeNull();
 
-    // 待处理区段：dangling 行不提供普通「启用」开关，只有「处理」入口
-    expect(queryByLabelText(/启用 cpa\/dangling/)).toBeNull();
-    expect(await findByLabelText("处理 cpa/dangling")).toBeTruthy();
-    // unknown 行：无处理 / 删除建议
-    expect(queryByLabelText(/处理 cpa\/mystery/)).toBeNull();
-    // 主模型不可用行：受保护，无处理按钮
-    expect(queryByLabelText(/处理 cpa\/old-primary/)).toBeNull();
-  });
 
-  test("点击「处理」打开确认框：「仅删除 policy 引用」与「同时清理 metadata」两种提交", async () => {
-    const getModelInventory = mock(async () => modelsViewInventoryFixture());
-    const removeModelPolicyExactRef = mock(async () => ({ ok: true as const, backupId: "backup-1" }));
-    const { findByLabelText } = renderModelsView(
-      mockClient({ getModelInventory, removeModelPolicyExactRef })
-    );
 
-    await userEvent.click(await findByLabelText("处理 cpa/dangling"));
-    expect(await findByLabelText("仅删除 policy 引用")).toBeTruthy();
-    expect(await findByLabelText(/同时清理 metadata/)).toBeTruthy();
 
-    await userEvent.click(await findByLabelText("仅删除 policy 引用"));
-    await waitFor(() => expect(removeModelPolicyExactRef).toHaveBeenCalledWith("cpa/dangling", false));
-  });
 
-  test("「同时清理 metadata」以 removeMetadata=true 提交", async () => {
-    const getModelInventory = mock(async () => modelsViewInventoryFixture());
-    const removeModelPolicyExactRef = mock(async () => ({ ok: true as const, backupId: "backup-1" }));
-    const { findByLabelText } = renderModelsView(
-      mockClient({ getModelInventory, removeModelPolicyExactRef })
-    );
 
-    await userEvent.click(await findByLabelText("处理 cpa/dangling"));
-    await userEvent.click(await findByLabelText(/同时清理 metadata/));
-    await userEvent.click(await findByLabelText("删除引用并清理 metadata"));
-    await waitFor(() => expect(removeModelPolicyExactRef).toHaveBeenCalledWith("cpa/dangling", true));
-  });
 
-  test("补全配置：Provider 已存在时调用 materializeRuntimeModel；Provider 缺失时打开 Custom Provider 流程并预填", async () => {
-    // canMaterializeConfigModel 的行（runtime-only + available + config Provider 存在）：普通区段展示并给「补全」入口
-    const inventory = modelsViewInventoryFixture();
-    inventory.models.push(inventoryModelEntry({
-      ref: "cpa/runtime-new",
-      catalogSources: ["openclaw-runtime"],
-      referenceSources: [],
-      policyAllowed: false,
-      availability: "available",
-      capabilities: {
-        canTogglePolicy: false,
-        canSetPrimary: false,
-        canEditCatalogEntry: false,
-        canMaterializeConfigModel: true,
-        canRemovePolicyExactRef: false
-      }
-    }));
-    // Provider 缺失（provider-not-found）的待处理行：补全走 Custom Provider 流程
-    inventory.models.push(inventoryModelEntry({
-      ref: "ghost/missing-provider",
-      catalogSources: ["openclaw-runtime"],
-      referenceSources: ["policy-exact"],
-      selectionSource: "policy-exact",
-      policyAllowed: true,
-      availability: "unavailable",
-      availabilityReasons: ["provider-not-found"],
-      capabilities: {
-        canTogglePolicy: false,
-        canSetPrimary: false,
-        canEditCatalogEntry: false,
-        canMaterializeConfigModel: false,
-        canRemovePolicyExactRef: true
-      }
-    }));
-    const getModelInventory = mock(async () => inventory);
-    const materializeRuntimeModel = mock(async () => ({ ok: true as const, backupId: "backup-2" }));
-    const previewCustomProvider = mock(async () => ({
-      providersAdded: ["ghost"],
-      providersRemoved: [],
-      providersChanged: [],
-      modelsEnabled: [],
-      modelsDisabled: [],
-      primaryChanged: null,
-      credentialsChanged: [],
-      providerStateChanges: [],
-      providerFieldChanges: []
-    }));
-    const { findByLabelText, findByText, findByRole } = renderModelsView(
-      mockClient({ getModelInventory, materializeRuntimeModel, previewCustomProvider })
-    );
-
-    // Provider 已存在：普通区段提供「补全到目录」，确认后调 materialize
-    await userEvent.click(await findByLabelText("补全到目录 cpa/runtime-new"));
-    await userEvent.click(await findByRole("button", { name: "补全到本 Provider 目录" }));
-    await waitFor(() =>
-      expect(materializeRuntimeModel).toHaveBeenCalledWith("cpa/runtime-new", expect.objectContaining({ id: "runtime-new" }))
-    );
-
-    // Provider 缺失：处理向导提供「创建 Provider」，打开 Custom Provider 表单并预填 providerId/modelId
-    await userEvent.click(await findByLabelText("处理 ghost/missing-provider"));
-    await userEvent.click(await findByLabelText(/创建 Provider/));
-    expect((await findByLabelText("Provider ID") as HTMLInputElement).value).toBe("ghost");
-    expect((await findByLabelText("模型 ID 1") as HTMLInputElement).value).toBe("missing-provider");
-  });
-
-  test("刷新后状态变化：refreshModelInventory 返回新 inventory 并反映到页面", async () => {
-    let refreshed = false;
-    const getModelInventory = mock(async () =>
-      refreshed ? modelsViewInventoryFixture() : modelsViewInventoryFixture()
-    );
-    const refreshModelInventory = mock(async () => {
-      refreshed = true;
-      const next = modelsViewInventoryFixture();
-      // 刷新后 dangling 修复为 available 且进入普通区段
-      next.models = next.models.map((model) =>
-        model.ref === "cpa/dangling"
-          ? { ...model, catalogSources: ["config"], availability: "available" as const, availabilityReasons: [], capabilities: { ...model.capabilities, canRemovePolicyExactRef: false, canTogglePolicy: true } }
-          : model
-      );
-      next.summary = { ...next.summary, unavailableCount: 1, availableCount: 3 };
-      return next;
-    });
-    const { findByLabelText, queryByLabelText, findByText } = renderModelsView(
-      mockClient({ getModelInventory, refreshModelInventory })
-    );
-
-    expect(await findByLabelText("处理 cpa/dangling")).toBeTruthy();
-    await userEvent.click(await findByLabelText("刷新探测"));
-    await waitFor(() => expect(refreshModelInventory).toHaveBeenCalled());
-    // 刷新后 dangling 修复：待处理区的处理按钮消失，普通区段出现该模型
-    await waitFor(() => expect(queryByLabelText("处理 cpa/dangling")).toBeNull());
-    expect(await findByText("cpa/dangling")).toBeTruthy();
-  });
 
   test("Policy 规则区段（spec §11.3）：默认折叠，展开后渲染规则并可删除 exact 引用", async () => {
     const getModelInventory = mock(async () => modelsViewInventoryFixture());
@@ -4351,6 +4194,7 @@ describe("ProvidersView（插件分组）", () => {
 
   test("xiaomi / xiaomi-token-plan 归入同一插件组，整组只有一个开关，config Provider 保留 CRUD", async () => {
     const { findAllByText, findAllByLabelText, findByLabelText } = renderProvidersView(pluginGroupClient());
+    await userEvent.click(await screen.findByRole("button", {name:"展开插件 xiaomi-miot"}));
 
     // 两个 Provider 都出现在插件组内
     expect((await findAllByText("xiaomi")).length).toBeGreaterThan(0);
@@ -4421,9 +4265,10 @@ describe("ProvidersView（插件分组）", () => {
         ? { ...model, availability: "unavailable" as const, availabilityReasons: ["plugin-disabled" as const] }
         : model
     );
-    const { findAllByText, findByLabelText, queryByText } = renderProvidersView(
+    const { findAllByText, findByLabelText, queryByText, getByRole } = renderProvidersView(
       pluginGroupClient({ getModelInventory: async () => inventory })
     );
+    await userEvent.click(getByRole("tab", { name: /已停用/ }));
 
     // 插件组 header 显示已停用，开关 aria-label 变为「启用插件」
     expect(await findByLabelText(/启用插件 xiaomi-miot/)).toBeTruthy();
@@ -4457,9 +4302,10 @@ describe("ProvidersView（插件分组）", () => {
 
   test("非模型能力在插件组头部有警示提示（影响不只模型）", async () => {
     const { findByText } = renderProvidersView(pluginGroupClient());
+    await userEvent.click(await screen.findByRole("button", {name:"展开插件 xiaomi-miot"}));
 
     // 插件组 header 标注插件名与 id
-    expect(await findByText("小米 MiOT")).toBeTruthy();
+    expect(await findByText(/小米 MiOT/)).toBeTruthy();
     expect(await findByText("xiaomi-miot")).toBeTruthy();
   });
 });
@@ -4568,19 +4414,10 @@ describe("布局验证（Step 6）", () => {
     expect(actionCell!.className).toContain("whitespace-nowrap");
   });
 
-  test("待处理区段表格容器声明 overflow-x-auto + minWidthClass（DataTable 可滚动、不挤压）", async () => {
-    const { getByTestId, findByLabelText } = renderModelsView(
-      mockClient({ getModelInventory: async () => longRefInventoryFixture(), getModels: async () => ({ models: [] }) })
-    );
-
+  test("模型问题不再渲染全量待处理表格", async () => {
+    const { queryByTestId, findByLabelText } = renderModelsView(mockClient({ getModelInventory: async () => longRefInventoryFixture() }));
     await findByLabelText("刷新探测");
-    const pendingPanel = getByTestId("pending-models-panel");
-    const tableWrapper = pendingPanel.querySelector(".overflow-x-auto");
-    const table = pendingPanel.querySelector("table");
-    expect(tableWrapper).toBeTruthy();
-    expect(table).toBeTruthy();
-    // DataTable 的滚动容器 + min-w（36rem）保证宽度不足时横向滚动而非压窄列
-    expect((table as HTMLElement).className).toContain("min-w-[36rem]");
+    expect(queryByTestId("pending-models-panel") === null).toBe(true);
   });
 
   test("Providers 页插件组在多 badge（9 项非模型能力）下结构完整不溢出", async () => {
@@ -4600,6 +4437,7 @@ describe("布局验证（Step 6）", () => {
       getModelInventory: async () => inventory
     });
     const { findByLabelText, findAllByText } = renderProvidersView(client);
+    await userEvent.click(await screen.findByRole("button", {name:/展开插件/}));
 
     // 插件组渲染：一个开关 + Provider 行（badge 最多 9 项非模型能力只进确认框，不进 header）
     expect(await findByLabelText(/停用插件 xiaomi-miot/)).toBeTruthy();

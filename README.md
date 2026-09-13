@@ -247,31 +247,33 @@ oc-switch/
 
 ### Model Policy Compatibility / 模型策略兼容
 
-OpenClaw model selection has three distinct states: missing `agents.defaults.modelPolicy.allow` keeps legacy `agents.defaults.models` selection; `allow: []` makes every local catalog model selectable; a non-empty `allow` restricts selection to exact or trailing-wildcard matches. Upgrading oc-switch does not rewrite these states. In restricted mode, `agents.defaults.models` remains alias/per-model metadata only. A wildcard-covered model cannot be disabled individually until the wildcard is narrowed, and an oc-switch-disabled Provider remains unavailable independently of policy.
+OpenClaw 2026.9 separates the provider catalog (`models.providers`), aliases/per-model settings (`agents.defaults.models`), and selection policy (`agents.defaults.modelPolicy.allow`). An omitted policy retains legacy restrictions only before migration; the migration marker or a policy object prevents metadata from becoming an implicit allowlist again. An explicit `[]` permits any model; a non-empty list permits matching exact refs or trailing prefix wildcards.
 
-OpenClaw 模型选择有三种必须区分的状态：缺少 `agents.defaults.modelPolicy.allow` 时沿用 `agents.defaults.models` 的 legacy 选择；`allow: []` 表示本地目录模型均可选；非空 `allow` 仅允许精确项或尾部通配命中的模型。升级 oc-switch 不会改写这些状态。restricted 模式下，`agents.defaults.models` 仅保存 alias/单模型元数据；通配覆盖的单模型需先收窄通配规则才能关闭，oc-switch 的 Provider 关闭状态则独立于 policy 并优先使其不可用。
+OpenClaw 2026.9 将 Provider 目录、模型别名/参数和选择策略分开。oc-switch 默认展示当前 Gateway 的模型选项；“管理配置目录 / 管理全部配置”可查看未选用项。Gateway 不可达或配置尚未应用时明确标注推算视图，不冒充 IM 的在线结果；默认 Agent 以外的独立策略可能产生不同选项。
+
+停用 Provider 或模型插件会移出对应的精确/通配选择规则，保留 `.env` 密钥；插件还会设为 `enabled=false`。恢复时合并保存的规则。可勾选清理 metadata，或另用删除 Provider 清理目录。未启用插件默认折叠，停用状态、闲置 metadata 和备用 Key 不再进入待处理。开放策略下停用需要建立仅保留当前其他可见模型的显式策略；无法安全表达时拒绝，绝不将 restricted 清为 `[]`。主模型、fallback 和其他 Agent 的显式依赖仍会阻止停用。
+
+CLI 示例：`oc-switch provider disable <id> [--cleanup-metadata]`、`oc-switch provider enable <id>`、`oc-switch plugin disable <id> --yes [--cleanup-metadata]`、`oc-switch plugin enable <id> --yes`。模型探测已改为异步并行；Web 同 scope 请求共享缓存，配置变化或手动刷新会重新探测。
+
+详见 [2026.9 选择器与停用规格](docs/superpowers/specs/2026-09-11-model-picker-and-disable-design.md)。
 
 ### Runtime Model Inventory / 运行时模型协调
 
-oc-switch merges three catalog sources — `openclaw.json` (`models.providers`), OpenClaw plugin manifests, and the OpenClaw runtime catalog (`openclaw models list` / `list --all`) — into one inventory. Each model row carries three **independent** dimensions: policy (exact / wildcard selection), plugin state (`plugins.entries.<id>.enabled`), and runtime availability (`available` / `unavailable` / `unknown`). "Policy allows" never implies "callable"; insufficient probe evidence (missing CLI, timeout, invalid JSON) degrades to `unknown` and are never misreported as unavailable, and unknown rows disable all destructive actions.
+oc-switch combines config, plugin manifests and runtime catalog evidence while keeping policy, plugin state and availability separate. The default Web view follows the Gateway picker; catalog management is a separate view. `available: null` means unconfirmed, and `missing: true` is a reference placeholder. Availability is OpenClaw's report, not a paid inference probe performed by oc-switch.
 
-oc-switch 将三个目录来源——`openclaw.json`（`models.providers`）、OpenClaw 插件 manifest、OpenClaw 运行时目录（`openclaw models list` / `list --all`）——合并为统一 inventory。每个模型行携带三个**互相独立**的维度：策略（精确/通配选择）、插件状态（`plugins.entries.<id>.enabled`）与运行可用性（可用 / 不可用 / 无法确认）。「策略允许」绝不代表「可调用」；必要探测证据不足（CLI 缺失、超时、非法 JSON）时降级为「无法确认」，绝不误判为不可用，且无法确认的行禁用一切清理操作。
+oc-switch 合并配置、插件 manifest 和运行时目录证据；策略、插件启停与可用性独立。默认 Web 视图跟随 Gateway 选择器，目录管理为独立视图。`available:null` 表示未确认，`missing:true` 只是引用占位；不会为检查可用性实际发送推理请求。
 
-OpenClaw's `available: null` means that row is unconfirmed, not that the entire catalog failed. Missing placeholders are references, not catalog entries. Availability reflects OpenClaw's report; oc-switch does not send an inference request to prove a model will respond. The current list, full catalog and `status.allowed` can differ (for example image/fallback-only entries); inventory preserves those rows rather than hiding the difference.
+Only selected or protected refs enter the pending list (`models unavailable`). An unused/disabled model is not a task to repair. You can retain metadata while removing an exact policy ref; this remains possible when availability is unknown because it only narrows selection. Primary/fallback, wildcard and last-rule protections still apply. Enabling, setting the primary, and materializing runtime models require positive runtime evidence.
 
-OpenClaw 的 `available:null` 仅表示该行未确认，不让整份目录失效；`missing:true` 占位只算引用，不算目录成员。可用性是 OpenClaw 的报告，不是 oc-switch 实际发送推理请求后的成功承诺。当前列表、完整目录与 `status.allowed` 可能因图像/回退模型等来源不同而不一致；inventory 保留这些条目，不通过删行把差异凑零。
+待处理只包含已选用或受保护引用的问题。闲置/停用模型不要求修复；可停用精确选择规则并保留 metadata。未知可用性时也可主动移除不受保护的精确规则；启用、设主模型和物化目录仍要求明确运行证据。主模型、fallback、单模型 wildcard 与最后一条规则保护保留。
 
-Unavailable refs land in a dedicated "pending" section (`models unavailable` / Models 页「不可用与待处理」), ordered by severity (primary > fallback > dangling policy-exact > others > unknown). You decide per row: materialize into a config provider (`model reconcile --yes`), delete the policy exact ref (`model remove-policy-ref`), open the custom-provider wizard (provider missing), or keep it. Wildcard rules stay read-only.
+Plugin groups have one switch, including plugins contributing multiple providers. Disabling removes that group's selection rules and writes `plugins.entries.<id>.enabled=false`; saved rules can be restored. The dialog explains non-model capabilities affected. Already-disabled plugins remain collapsed, with a group action for residual picker entries. No API keys are deleted.
 
-不可用引用进入专属「待处理」区段（`models unavailable` / Models 页「不可用与待处理」），按严重性排序（主模型 > fallback > 悬空精确引用 > 其余 > 无法确认）。每行由用户决定：补全进已有 config Provider（`model reconcile --yes`）、删除 policy 精确引用（`model remove-policy-ref`）、打开自定义 Provider 向导（Provider 缺失）或保留。通配规则本期只读。
+一个插件一组开关，完整提示语音、工具、钩子等影响。停用移出该组选择规则并写 `enabled=false`，恢复合并保存规则。未启用插件折叠显示；旧停用状态残留的 IM 选项可整组移出。`.env` 密钥始终保留。
 
-Plugin model providers are grouped by plugin with a single plugin-level switch (`plugin enable/disable`): one plugin may contribute several providers (e.g. `xiaomi` → `xiaomi` + `xiaomi-token-plan`), and toggling it writes exactly `plugins.entries.<id>.enabled` while leaving policy untouched. Disabling is blocked when the primary model or a fallback references a contributed provider; the confirmation dialog also lists non-model capabilities (speech, tools, hooks…) affected by the change.
+Writes preserve unrelated configuration. Explicit whole-provider/plugin suspension may remove its own wildcard rules; other rules, including duplicates, remain unchanged. Preflight config/env changes trigger one retry, then a clear failure. Runtime confirmation checks the observed plugin state and picker visibility; unconfirmed writes remain successful writes and are reported separately.
 
-插件 Provider 按插件分组、一组只有一个插件级开关（`plugin enable/disable`）：一个插件可贡献多个 Provider（如 `xiaomi` 同时贡献 `xiaomi` 与 `xiaomi-token-plan`），启停只写 `plugins.entries.<id>.enabled` 一个键、policy 原样保留。主模型或 fallback 引用其贡献的 Provider 时阻断停用；确认框会完整列出受影响的非模型能力（语音、工具、钩子等）。
-
-Reconciliation writes re-check current facts inside the Core transaction. They preserve unrelated configuration instead of running a global normalization pass. Wildcards are never rewritten or deduplicated; an external config/env change during preflight triggers one fresh re-check, then fails explicitly if changes continue. Plugin `runtimeConfirmed` additionally checks the observed enabled state, not merely whether the probe command succeeded.
-
-协调写入在 Core 事务内重检当前事实，不顺带全局归一无关配置。wildcard 的大小写、重复条目都原样保留；预检期间 config/env 被外部修改时重检一次，仍变化则明确拒绝。插件 `runtimeConfirmed` 必须实际观察到请求的启停状态，不再只看探测命令是否成功。
+写入不归一无关配置。明确的整 Provider/插件停用可移出自己的 wildcard，其他规则和重复次数不变。预检文件变化重试一次，持续变化明确拒绝。配置写入与 Gateway 生效确认分开，不能把命令成功等同于 IM 已应用。
 
 ### Backup & Restore / 备份与恢复
 

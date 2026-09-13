@@ -1,5 +1,7 @@
 # oc-switch Provider 关闭/恢复设计规格
 
+> 2026-09-11 修正：选择器、主动停用、metadata 告警和异步探测行为以 [最新规格](2026-09-11-model-picker-and-disable-design.md) 为准；本文保留历史设计背景。
+
 > 日期：2026-06-25  
 > 状态：待评审  
 > 目标：提供一个可以直接关闭整个 Provider 的能力，让该 Provider 的模型不再出现在 OpenClaw 菜单中，同时保留 Provider 配置以便后续无损恢复。

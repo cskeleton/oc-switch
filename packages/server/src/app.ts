@@ -7,6 +7,8 @@ import { registerGatewayRoutes } from "./routes/gateway";
 import { registerHealthRoutes } from "./routes/health";
 import { registerModelMetadataRoutes } from "./routes/model-metadata";
 import { registerModelInventoryRoutes } from "./routes/model-inventory";
+import { registerModelAttentionRoutes } from "./routes/model-attention";
+import { randomUUID } from "node:crypto";
 import { registerModelRoutes } from "./routes/models";
 import { registerPresetRoutes } from "./routes/presets";
 import { registerProviderRoutes } from "./routes/providers";
@@ -18,6 +20,7 @@ export type { AppOptions } from "./context";
 /** 创建带 Bearer 认证的 Hono REST 应用 */
 export function createApp(options: AppOptions) {
   const runtime = createAppRuntime(options);
+  const identity = { protocolVersion: 2, instanceId: randomUUID(), startedAt: new Date().toISOString(), capabilities: ["model-picker", "attention-decisions", "selection-suspension"] };
 
   const app = new Hono();
   app.onError((error, c) => jsonError(c, error));
@@ -46,6 +49,8 @@ export function createApp(options: AppOptions) {
   registerModelRoutes(app, runtime);
   registerModelMetadataRoutes(app, runtime);
   registerModelInventoryRoutes(app, runtime);
+  app.get("/api/meta", c => c.json(identity));
+  registerModelAttentionRoutes(app, runtime);
   registerPluginRoutes(app, runtime);
   registerPresetRoutes(app, runtime);
   registerBackupRoutes(app, runtime);

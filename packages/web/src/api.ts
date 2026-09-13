@@ -1,3 +1,18 @@
+export interface ModelAttentionIssue {
+  id: string;
+  revision: string;
+  kind: "probe" | "unavailable" | "residual" | "dependency";
+  ownerType: "plugin" | "provider" | "model" | "runtime";
+  ownerId: string;
+  providerIds: string[];
+  refs: string[];
+  protectedRefs: string[];
+  title: string;
+  detail: string;
+  canIgnore: boolean;
+  canDisable: boolean;
+}
+export interface ModelAttentionReport { pending: ModelAttentionIssue[]; ignored: ModelAttentionIssue[] }
 /** API 响应类型（与 server 端点对齐，不含密钥值） */
 
 export type ModelPolicyMode = "legacy" | "unrestricted" | "restricted";
@@ -368,15 +383,22 @@ export interface BatchAddProviderModelsResponse {
   backupId?: string;
 }
 
+/** 删除分级（三层写模型）：metadata=使用配置层（别名/参数），policyExact=精确放行条目 */
+export interface RemovalLayers {
+  metadata?: boolean;
+  policyExact?: boolean;
+}
+
 /** POST /api/providers/:id/models/batch-remove 请求体（二选一） */
 export type BatchRemoveProviderModelsInput =
-  | { modelIds: string[]; keepEnabledOnly?: undefined }
-  | { keepEnabledOnly: true; modelIds?: undefined };
+  | { modelIds: string[]; keepEnabledOnly?: undefined; layers?: RemovalLayers }
+  | { keepEnabledOnly: true; modelIds?: undefined; layers?: RemovalLayers };
 
 /** POST /api/providers/:id/models/batch-remove 响应 */
 export interface BatchRemoveProviderModelsResponse {
   ok: boolean;
   removedModelIds: string[];
+  warnings: string[];
   backupId?: string;
 }
 
@@ -546,6 +568,9 @@ export interface ModelInventoryCapabilities {
 
 /** 统一模型行。 */
 export interface ModelInventoryEntry {
+  pickerVisible?: boolean;
+  inactive?: boolean;
+  needsAttention?: boolean;
   ref: string;
   providerId: string;
   modelId: string;
@@ -570,6 +595,8 @@ export interface ProviderInventoryCapabilities {
 
 /** 统一 Provider 行。 */
 export interface ProviderInventoryEntry {
+  pickerModelCount?: number;
+  needsAttention?: boolean;
   providerId: string;
   sources: ModelCatalogSource[];
   pluginIds: string[];
@@ -621,7 +648,7 @@ export interface ModelPluginDescriptor {
 
 /** 运行时目录探测诊断（探测失败不等于写入失败）。 */
 export interface RuntimeModelDiagnostic {
-  command: "version" | "status" | "list" | "list-all";
+  command: "version" | "status" | "list" | "list-all" | "plugins" | "picker";
   code: "missing" | "timeout" | "non-zero-exit" | "invalid-json" | "invalid-shape";
   message: string;
 }
@@ -630,6 +657,8 @@ export interface RuntimeModelDiagnostic {
 export type ModelInventoryResponse = ModelInventory;
 
 export interface ModelInventory {
+  schemaVersion?: 2;
+  pickerSource?: "gateway" | "inferred";
   providers: ProviderInventoryEntry[];
   models: ModelInventoryEntry[];
   plugins: ModelPluginDescriptor[];
@@ -688,10 +717,19 @@ export function createApiClient(options: ApiClientOptions) {
       };
       throw new Error(body.error ?? body.restart?.message ?? `Request failed: ${response.status}`);
     }
-    return response.json() as Promise<T>;
+    const result = await response.json();
+    if (path === "/api/model-inventory" || path === "/api/model-inventory/refresh") {
+      if (result.schemaVersion !== 2 || !Array.isArray(result.models) || result.models.some((row: ModelInventoryEntry) => typeof row.needsAttention !== "boolean" || typeof row.inactive !== "boolean" || typeof row.pickerVisible !== "boolean")) {
+        throw new Error("前后端版本不兼容，请重启 oc-switch 后刷新；尚未根据旧数据生成待处理事项。");
+      }
+    }
+    return result as T;
   }
 
   return {
+    getServiceInfo: () => request<{ protocolVersion: number; instanceId: string; startedAt: string }>("/api/meta"),
+    getModelAttention: () => request<ModelAttentionReport>("/api/model-attention"),
+    setAttentionIgnored: (issue: ModelAttentionIssue, ignored: boolean) => request<ModelAttentionReport>("/api/model-attention/decision", { method: "PATCH", body: JSON.stringify({ issueId: issue.id, revision: issue.revision, ignored }) }),
     getStatus: () => request<StatusResponse>("/api/status"),
     getProviders: () => request<{ providers: ProviderSummary[] }>("/api/providers"),
     getProviderSecretRefMigrations: () =>
@@ -725,8 +763,8 @@ export function createApiClient(options: ApiClientOptions) {
         method: "PUT",
         body: JSON.stringify({ ref, model })
       }),
-    deleteModel: (ref: string, body: { force?: boolean; newPrimary?: string } = {}) =>
-      request<{ ok: boolean; ref: string; backupId?: string }>("/api/models", {
+    deleteModel: (ref: string, body: { force?: boolean; newPrimary?: string; layers?: RemovalLayers } = {}) =>
+      request<{ ok: boolean; ref: string; warnings: string[]; backupId?: string }>("/api/models", {
         method: "DELETE",
         body: JSON.stringify({ ref, ...body })
       }),
@@ -785,17 +823,17 @@ export function createApiClient(options: ApiClientOptions) {
         method: "PUT",
         body: JSON.stringify(changes)
       }),
-    deleteProvider: (id: string, body: { force?: boolean; newPrimary?: string } = {}) =>
-      request<{ ok: boolean }>(`/api/providers/${id}`, {
+    deleteProvider: (id: string, body: { force?: boolean; newPrimary?: string; removePolicyWildcard?: boolean } = {}) =>
+      request<{ ok: boolean; warnings: string[] }>(`/api/providers/${id}`, {
         method: "DELETE",
         body: JSON.stringify(body)
       }),
-    patchProviderState: (id: string, enabled: boolean) =>
-      request<{ ok: boolean; providerId: string; enabled: boolean; disabledModelCount?: number; restoredModelCount?: number; backupId?: string }>(
+    patchProviderState: (id: string, enabled: boolean, cleanupMetadata = false) =>
+      request<{ ok: boolean; providerId: string; enabled: boolean; runtimeConfirmed?: boolean; disabledModelCount?: number; restoredModelCount?: number; backupId?: string }>(
         `/api/providers/${id}/state`,
         {
           method: "PATCH",
-          body: JSON.stringify({ enabled })
+          body: JSON.stringify({ enabled, ...(cleanupMetadata ? { cleanupMetadata } : {}) })
         }
       ),
     /** 发现远端模型目录（只读，不写盘） */
@@ -855,10 +893,10 @@ export function createApiClient(options: ApiClientOptions) {
         body: JSON.stringify({ ref, input })
       }),
     /** PATCH /api/plugins/:pluginId/state：插件级启停（confirm 恒为 true；runtimeConfirmed:false 不是失败） */
-    setPluginState: (pluginId: string, enabled: boolean) =>
+    setPluginState: (pluginId: string, enabled: boolean, cleanupMetadata = false) =>
       request<PluginStateMutationResult>(`/api/plugins/${encodeURIComponent(pluginId)}/state`, {
         method: "PATCH",
-        body: JSON.stringify({ enabled, confirm: true })
+        body: JSON.stringify({ enabled, confirm: true, ...(cleanupMetadata ? { cleanupMetadata } : {}) })
       }),
     getBackups: () => request<{ backups: BackupEntry[] }>("/api/backups"),
     restoreBackup: (id: string, target?: "backup" | "current") =>

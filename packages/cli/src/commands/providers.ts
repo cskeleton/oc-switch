@@ -9,6 +9,7 @@ import {
   discoverProviderModels,
   editProvider,
   mergeProviderCaseDuplicates,
+  mergeModelSelectionEntries,
   normalizeModelRefForStorage,
   normalizeProviderId,
   loadPreset,
@@ -53,7 +54,7 @@ async function resolveQueueActions(
     ...paths,
     runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
     reason: "resolve model metadata sync queue",
-    mutate(config) {
+    async mutate(config) {
       resolved = resolveModelMetadataQueue(config, readModelMetadataQueue(paths.stateDir), actions);
       return resolved.config;
     },
@@ -66,10 +67,10 @@ async function resolveQueueActions(
 
 export function registerProviderCommands(program: Command, context: CommandContext): void {
   const providers = program.command("providers");
-  providers.command("list").action(() => {
+  providers.command("list").action(async () => {
     const paths = context.activePaths();
     const rows = createConfigAdapter(context.readConfig(), {
-      pluginProviders: context.pluginCatalog(paths).providers
+      pluginProviders: (await context.pluginCatalog(paths)).providers
     }).listProviders();
     for (const row of rows) {
       const status = row.source === "plugin"
@@ -99,7 +100,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
         ...context.activePaths(),
         runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `merge case duplicate ${input.groupKey} -> ${input.canonicalId}`,
-        mutate(config) {
+        async mutate(config) {
           return mergeProviderCaseDuplicates(config, input).config;
         },
         afterWrite() {
@@ -134,7 +135,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
         manifestUpdates: [
           { type: "upsert-provider-env", providerId: presetId, envVar: preset.provider.apiKeyEnv }
         ],
-        mutate(config) {
+        async mutate(config) {
           return addProviderFromPreset(config, preset, enabledModels).config;
         }
       });
@@ -211,7 +212,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
             }
           }
         ],
-        mutate(config) {
+        async mutate(config) {
           return addCustomProvider(config, input).config;
         }
       });
@@ -252,7 +253,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
               }))
             }
           : {}),
-        mutate(config) {
+        async mutate(config) {
           const changes: { baseUrl?: string; api?: ApiType } = {};
           if (options.baseUrl !== undefined) changes.baseUrl = options.baseUrl;
           if (options.api !== undefined) changes.api = options.api;
@@ -279,7 +280,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
         ...(envVar
           ? { manifestUpdates: [{ type: "mark-provider-orphan" as const, providerId: name, envVar }] }
           : {}),
-        mutate(config) {
+        async mutate(config) {
           return removeProvider(config, name, removeOptions).config;
         },
         afterWrite() {
@@ -291,16 +292,28 @@ export function registerProviderCommands(program: Command, context: CommandConte
 
   provider.command("disable")
     .argument("<name>")
-    .action(async (name: string) => {
+    .option("--cleanup-metadata", "同时清理别名和模型参数，保留 .env 密钥")
+    .action(async (name: string, options: { cleanupMetadata?: boolean }) => {
       const paths = context.activePaths();
-      let disabledState: { allowlistEntries: Record<string, unknown> } | undefined;
+      let disabledState: { allowlistEntries: Record<string, unknown>; policyEntries: string[] } | undefined;
       await writeOpenClawTransaction({
         ...paths,
         runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `disable provider ${name}`,
-        mutate(config) {
-          const result = disableProvider(config, name);
-          disabledState = result.disabledState;
+        normalizeConfig: false,
+        async mutate(config) {
+          const previous = getDisabledProviderState(paths.stateDir, name);
+          if (previous && previous.openclawPath !== paths.openclawPath) throw new Error("Disabled snapshot belongs to another OpenClaw config");
+          const inventory = await context.buildInventory({ refresh: true, config, paths });
+          const result = disableProvider(config, name, {
+            cleanupMetadata: options.cleanupMetadata === true,
+            ...(inventory.pickerSource === "gateway" ? { visibleRefs: inventory.models.filter(model => model.pickerVisible).map(model => model.ref) } : {})
+          });
+          disabledState = {
+            ...result.disabledState,
+            allowlistEntries: { ...previous?.allowlistEntries, ...result.disabledState.allowlistEntries },
+            policyEntries: mergeModelSelectionEntries(previous?.policyEntries ?? Object.keys(previous?.allowlistEntries ?? {}), result.disabledState.policyEntries)
+          };
           return result.config;
         },
         afterWrite() {
@@ -309,6 +322,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
             providerId: name,
             openclawPath: paths.openclawPath,
             disabledAt: new Date().toISOString(),
+            policyEntries: disabledState.policyEntries,
             allowlistEntries: disabledState.allowlistEntries as never
           });
         }
@@ -329,8 +343,8 @@ export function registerProviderCommands(program: Command, context: CommandConte
         ...paths,
         runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `enable provider ${name}`,
-        mutate(config) {
-          return restoreDisabledProvider(config, name, snapshot.allowlistEntries).config;
+        async mutate(config) {
+          return restoreDisabledProvider(config, name, snapshot.allowlistEntries, snapshot.policyEntries).config;
         },
         afterWrite() {
           removeDisabledProviderState(paths.stateDir, name);
@@ -354,7 +368,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
           ...context.activePaths(),
           runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
           reason: `batch-add models for provider ${name}`,
-          mutate(config) {
+          async mutate(config) {
             const batch = batchAddProviderModels(config, name, {
               models: ids.map((id) => ({ id })),
               enable: Boolean(options.enable)
@@ -415,7 +429,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
           ...paths,
           runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
           reason: `sync model metadata for provider ${name}`,
-          mutate(config) {
+          async mutate(config) {
             const applied = applyModelMetadataSyncPlan(config, plan);
             updatedCount = applied.updated.length;
             return applied.config;
@@ -436,7 +450,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
 
   metadataQueue.command("list")
     .option("--provider <id>", "只看指定 provider")
-    .action((options: { provider?: string }) => {
+    .action(async (options: { provider?: string }) => {
       const queue = readModelMetadataQueue(context.activePaths().stateDir);
       // --provider 过滤大小写折叠：队列项可能存着归一化前的大写 key
       const items = options.provider
@@ -497,8 +511,8 @@ export function registerProviderCommands(program: Command, context: CommandConte
         ...paths,
         runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `batch-remove models for provider ${providerId}`,
-        mutate(config) {
-          const inventory = context.buildInventory({ refresh: true, config, paths });
+        async mutate(config) {
+          const inventory = await context.buildInventory({ refresh: true, config, paths });
           const batch = batchRemoveProviderModels(config, providerId, input);
           for (const modelId of batch.removedModelIds) {
             const ref = normalizeModelRefForStorage(`${providerId}/${modelId}`);
