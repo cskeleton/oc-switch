@@ -2411,7 +2411,7 @@ describe("App shell", () => {
       const navLabels = Array.from(connected.container.querySelectorAll("aside nav button")).map((button) =>
         button.textContent?.trim()
       );
-      expect(navLabels).toEqual(["仪表盘", "Providers", "模型", "备份", "设置", "预设"]);
+      expect(navLabels).toEqual(["仪表盘", "服务商", "模型", "备份", "设置", "预设"]);
     } finally {
       // 恢复全局 fetch，避免污染同进程后续包测试（如 cli waitForHttp）
       globalThis.fetch = originalFetch;

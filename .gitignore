@@ -23,3 +23,6 @@ AGENTS.local.md
 
 # 仓库内 builtin 预设数据 — 运行时从 ~/.oc-switch/presets/builtin/ 读取
 presets/builtin/
+
+# 本地视觉验证截图等评审产物
+output/

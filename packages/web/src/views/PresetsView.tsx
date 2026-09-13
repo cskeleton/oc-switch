@@ -4,6 +4,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DataTable } from "../components/DataTable";
 import { DiffSummary } from "../components/DiffSummary";
 import { EnvMigrationConfirmDialog } from "../components/EnvMigrationConfirmDialog";
+import { PageHeader } from "../components/PageHeader";
 import { useToast } from "../components/Toast";
 import { Button } from "../components/ui/button";
 import { Pill } from "../components/ui/pill";
@@ -110,39 +111,41 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
 
   return (
     <section data-testid="presets-view">
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <h1 className="text-xl font-semibold">预设</h1>
-        <Pill
-          variant="warning"
-          title="预设流程计划重构：迁移与共享优先使用导入/导出与备份"
-        >
-          待改进
-        </Pill>
-      </div>
-      <p className="mb-4 text-sm text-muted-foreground">
-        列表来自内置/自定义模板文件，不是当前 openclaw.json 的实时镜像。日常管理请用 Providers 与模型页；迁移与共享请优先使用「导入当前配置」或备份恢复。
-      </p>
-      <div className="mb-4 flex flex-wrap items-center justify-end gap-2">
-          <Button variant="outline" size="sm" onClick={() => void handleImport()}>
-            <Upload className="h-4 w-4" />
-            导入当前配置
-          </Button>
-          <Button variant="outline" size="icon" aria-label="刷新" onClick={() => void load()}>
-            <RefreshCw className="h-4 w-4" />
-          </Button>
-      </div>
+      <PageHeader
+        title="预设"
+        badge={
+          <Pill
+            variant="warning"
+            title="预设流程计划重构：迁移与共享优先使用导入/导出与备份"
+          >
+            待改进
+          </Pill>
+        }
+        description="列表来自内置/自定义模板文件，不是当前 openclaw.json 的实时镜像。日常管理请用 Providers 与模型页；迁移与共享请优先使用「导入当前配置」或备份恢复。"
+        actions={
+          <>
+            <Button variant="outline" size="sm" onClick={() => void handleImport()}>
+              <Upload className="h-4 w-4" />
+              导入当前配置
+            </Button>
+            <Button variant="outline" size="icon" aria-label="刷新" onClick={() => void load()}>
+              <RefreshCw className="h-4 w-4" />
+            </Button>
+          </>
+        }
+      />
 
       {error ? <p className="mb-3 text-sm text-destructive">{error}</p> : null}
 
-      <div className="mb-6 rounded-lg border border-border bg-muted/40 p-4">
-        <h2 className="mb-3 text-sm font-medium text-foreground">从预设添加 Provider</h2>
+      <div className="mb-6 rounded-xl border border-border bg-card p-5 shadow-sm">
+        <h2 className="mb-3 text-sm font-semibold text-foreground">从预设添加 Provider</h2>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
           <label className="flex-1 text-sm">
-            <span className="mb-1 block text-muted-foreground">预设</span>
+            <span className="mb-1 block text-xs text-muted-foreground">预设</span>
             <select
               value={selectedPreset}
               onChange={(e) => setSelectedPreset(e.target.value)}
-              className="w-full rounded border border-input bg-background px-3 py-2 text-foreground"
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-foreground"
             >
               {presets.map((p) => (
                 <option key={p.id} value={p.id}>
@@ -152,12 +155,12 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
             </select>
           </label>
           <label className="flex-1 text-sm">
-            <span className="mb-1 block text-muted-foreground">API Key（仅提交，不展示）</span>
+            <span className="mb-1 block text-xs text-muted-foreground">API Key（仅提交，不展示）</span>
             <input
               type="password"
               value={apiKeyInput}
               onChange={(e) => setApiKeyInput(e.target.value)}
-              className="w-full rounded border border-input bg-background px-3 py-2 text-foreground"
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-foreground"
               autoComplete="off"
               aria-label="API Key"
             />

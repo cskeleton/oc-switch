@@ -116,7 +116,7 @@ test.describe("Runtime model inventory（统一 inventory 浏览器实测）", (
       const report = await (await page.request.get(`${BASE_URL}/api/model-attention`, { headers: fixtureHeaders })).json();
       savedIssue = report.ignored.find((issue: { ownerId: string }) => issue.ownerId === "ghost-provider/policy-only-model");
       expect(savedIssue).toBeTruthy();
-      await page.getByRole("button", { name: "Providers", exact: true }).click();
+      await page.getByRole("button", { name: "服务商", exact: true }).click();
       await expect(page.getByRole("button", { name: "已忽略 1", exact: true })).toBeVisible();
       await page.reload();
       await expect(page.getByRole("button", { name: "已忽略 1", exact: true })).toBeVisible();
@@ -236,7 +236,7 @@ test.describe("Runtime model inventory（统一 inventory 浏览器实测）", (
 
   test("Providers 页：插件多 Provider 分组 + 一个插件级开关", async ({ page }, testInfo) => {
     await connect(page);
-    await page.getByRole("button", { name: "Providers" }).click();
+    await page.getByRole("button", { name: "服务商" }).click();
     await expect(page.getByTestId("providers-view")).toBeVisible({ timeout: 15_000 });
 
     // 1. 插件分组区段：xiaomi 组头（id + 启用中 Pill + 插件标记）
@@ -334,7 +334,7 @@ test.describe("Runtime model inventory（统一 inventory 浏览器实测）", (
     let backupId: string | undefined;
     try {
       await connect(page);
-      await page.getByRole("button", { name: "Providers" }).click();
+      await page.getByRole("button", { name: "服务商" }).click();
       const groups = page.getByRole("region", { name: "插件 Provider", exact: true });
       await page.getByRole("switch", { name: "停用插件 xiaomi", exact: true }).click();
       const disabledResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/plugins/xiaomi/state" && response.request().method() === "PATCH");

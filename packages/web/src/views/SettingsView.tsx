@@ -13,6 +13,7 @@ import { formatEnvWriteSuccess, formatGatewayServiceEnvLabel, nextStepHintForGat
 import { DataTable } from "../components/DataTable";
 import { EnvMigrationConfirmDialog } from "../components/EnvMigrationConfirmDialog";
 import { GatewayApplyBanner } from "../components/GatewayApplyBanner";
+import { PageHeader } from "../components/PageHeader";
 import { useToast } from "../components/Toast";
 import { Button } from "../components/ui/button";
 import { Pill } from "../components/ui/pill";
@@ -416,10 +417,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
 
   return (
     <section data-testid="settings-view" className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">设置</h1>
-        <p className="mt-1 text-sm text-muted-foreground">管理 OpenClaw 配置、路径与环境变量。</p>
-      </div>
+      <PageHeader title="设置" description="管理 OpenClaw 配置、路径与环境变量。" />
 
       {error ? <p className="text-sm font-medium text-destructive">{error}</p> : null}
       {gatewayApply ? (

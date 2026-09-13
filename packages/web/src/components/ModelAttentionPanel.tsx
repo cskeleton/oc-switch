@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ApiClient, ModelAttentionIssue, ModelAttentionReport, ModelInventory } from "../api";
+import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 import { Pill } from "./ui/pill";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "./ui/dialog";
@@ -61,9 +62,28 @@ export function ModelAttentionPanel({ client, inventory, onChanged, onConfigure 
   }
 
   return <section aria-label="模型使用问题" className="space-y-2" data-testid="attention-panel">
-    <div className="flex flex-wrap items-center gap-2">
-      <Button variant="outline" size="sm" aria-expanded={expanded && !showIgnored} onClick={() => { setShowIgnored(false); setExpanded(showIgnored || !expanded); }}>需处理 {report.pending.length}</Button>
-      <Button variant="ghost" size="sm" aria-expanded={expanded && showIgnored} onClick={() => { setShowIgnored(true); setExpanded(!showIgnored || !expanded); }}>已忽略 {report.ignored.length}</Button>
+    <div className="flex flex-wrap items-center gap-3">
+      {/* 分段切换：需处理 / 已忽略 */}
+      <div className="inline-flex items-center gap-1 rounded-lg bg-muted p-1">
+        <button
+          type="button"
+          aria-expanded={expanded && !showIgnored}
+          onClick={() => { setShowIgnored(false); setExpanded(showIgnored || !expanded); }}
+          className={cn(
+            "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+            expanded && !showIgnored ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+          )}
+        >需处理 {report.pending.length}</button>
+        <button
+          type="button"
+          aria-expanded={expanded && showIgnored}
+          onClick={() => { setShowIgnored(true); setExpanded(!showIgnored || !expanded); }}
+          className={cn(
+            "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+            expanded && showIgnored ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+          )}
+        >已忽略 {report.ignored.length}</button>
+      </div>
       {report.pending.length === 0 && !error ? <span className="text-xs text-muted-foreground">没有需要处理的模型问题</span> : null}
     </div>
     {notice ? <p role="status" className="text-sm text-warning">{notice}</p> : null}

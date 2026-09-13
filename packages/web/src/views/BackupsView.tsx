@@ -2,6 +2,7 @@ import { RefreshCw, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DataTable } from "../components/DataTable";
+import { PageHeader } from "../components/PageHeader";
 import { useToast } from "../components/Toast";
 import { Button } from "../components/ui/button";
 import type { ApiClient, BackupEntry } from "../api";
@@ -52,12 +53,15 @@ export function BackupsView({ client, onRefresh }: BackupsViewProps) {
 
   return (
     <section data-testid="backups-view">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-xl font-semibold">备份</h1>
-        <Button variant="outline" size="icon" aria-label="刷新" onClick={() => void load()}>
-          <RefreshCw className="h-4 w-4" />
-        </Button>
-      </div>
+      <PageHeader
+        title="备份"
+        description="每次写入自动备份，可随时恢复。"
+        actions={
+          <Button variant="outline" size="icon" aria-label="刷新" onClick={() => void load()}>
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+        }
+      />
 
       {error ? <p className="mb-3 text-sm text-destructive">{error}</p> : null}
 

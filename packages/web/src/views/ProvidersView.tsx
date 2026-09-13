@@ -9,6 +9,7 @@ import { EnvMigrationConfirmDialog } from "../components/EnvMigrationConfirmDial
 import { MergeCaseDuplicateDialog } from "../components/MergeCaseDuplicateDialog";
 import { ModelMetadataQueueDialog } from "../components/ModelMetadataQueueDialog";
 import { PluginProviderGroup } from "../components/PluginProviderGroup";
+import { PageHeader } from "../components/PageHeader";
 import { CATALOG_SOURCE_LABELS, AVAILABILITY_REASON_LABELS } from "../components/ModelStateBadges";
 import { ProviderDiscoverDialog } from "../components/ProviderDiscoverDialog";
 import { ProviderModelsDialog } from "../components/ProviderModelsDialog";
@@ -32,6 +33,7 @@ import {
 import { Input } from "../components/ui/input";
 import { Pill } from "../components/ui/pill";
 import { formatEnvWriteSuccess } from "../env-feedback";
+import { cn } from "../lib/utils";
 import type {
   ApiClient,
   ApiType,
@@ -615,37 +617,53 @@ export function ProvidersView({ client, onRefresh, onOpenSettings, onOpenModels,
 
   return (
     <section data-testid="providers-view">
-      {/* 页头：标题 + 描述，右侧操作 */}
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-xl font-semibold">Providers</h1>
-          <p className="mt-0.5 text-sm text-muted-foreground">管理 OpenClaw Provider 连接与 API 密钥</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              aria-label="搜索 Provider"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索 ID / Base URL"
-              className="h-8 w-44 pl-8 text-xs sm:w-52"
-            />
-          </div>
-          <Button size="sm" onClick={() => { setRepairProviderId(undefined); setRepairModelId(undefined); setAddingProvider(true); }}>
-            <Plus className="h-4 w-4" />
-            添加 Provider
-          </Button>
-          <Button variant="outline" size="icon" aria-label="刷新" onClick={() => void load()}>
-            <RefreshCw className="h-4 w-4" />
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        title="服务商"
+        description="管理模型服务商（Provider）的连接与 API 密钥"
+        actions={
+          <>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                aria-label="搜索 Provider"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="搜索 ID / Base URL"
+                className="h-8 w-44 pl-8 text-xs sm:w-52"
+              />
+            </div>
+            <Button size="sm" onClick={() => { setRepairProviderId(undefined); setRepairModelId(undefined); setAddingProvider(true); }}>
+              <Plus className="h-4 w-4" />
+              添加 Provider
+            </Button>
+            <Button variant="outline" size="icon" aria-label="刷新" onClick={() => void load()}>
+              <RefreshCw className="h-4 w-4" />
+            </Button>
+          </>
+        }
+      />
 
       {error ? <p role="alert" className="mb-3 text-sm text-destructive">{error}</p> : null}
       {stateNotice ? <p role="status" className="mb-3 text-sm text-warning">{stateNotice}</p> : null}
-      <div role="tablist" aria-label="Provider 范围" className="mb-3 flex flex-wrap gap-2">
-        {([['active', '当前使用'], ['disabled', `已停用 (${disabledCount})`], ['all', '全部配置']] as const).map(([value, label]) => <Button role="tab" aria-selected={scope === value} variant={scope === value ? "primary" : "outline"} size="sm" key={value} onClick={() => { setScope(value); setFocusedPlugin(null); }}>{label}</Button>)}
+      {/* 范围分段控件：当前使用 / 已停用 / 全部配置 */}
+      <div role="tablist" aria-label="Provider 范围" className="mb-4 inline-flex w-full items-center gap-1 rounded-lg bg-muted p-1 sm:w-auto">
+        {([['active', '当前使用'], ['disabled', `已停用 (${disabledCount})`], ['all', '全部配置']] as const).map(([value, label]) => (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={scope === value}
+            key={value}
+            onClick={() => { setScope(value); setFocusedPlugin(null); }}
+            className={cn(
+              "flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors sm:flex-none",
+              scope === value
+                ? "bg-card text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            {label}
+          </button>
+        ))}
       </div>
       <div className="mb-3"><ModelAttentionPanel client={client} inventory={inventory} onChanged={() => load()} onConfigure={configureProvider} /></div>
       {gatewayApply ? (
@@ -657,7 +675,7 @@ export function ProvidersView({ client, onRefresh, onOpenSettings, onOpenModels,
         />
       ) : null}
       {secretRefMigrations && secretRefMigrations.summary.candidateCount > 0 ? (
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-card px-4 py-3 text-sm">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-warning/30 bg-warning/[0.06] px-4 py-3 text-sm">
           <div>
             <p className="font-medium text-foreground">
               发现 {secretRefMigrations.summary.candidateCount} 个旧环境变量引用
@@ -672,6 +690,9 @@ export function ProvidersView({ client, onRefresh, onOpenSettings, onOpenModels,
         </div>
       ) : null}
 
+      {/* 自定义 Provider（config 来源）：连接信息 CRUD + 模型目录管理 */}
+      <section aria-label="自定义 Provider">
+        <h2 className="mb-2 text-xs font-semibold tracking-wider text-muted-foreground">自定义 Provider</h2>
       <DataTable
         rows={filteredProviders}
         rowKey={(row) => row.id}
@@ -776,12 +797,13 @@ export function ProvidersView({ client, onRefresh, onOpenSettings, onOpenModels,
           }
         ]}
       />
+      </section>
 
       {/* 插件 Provider 分组（spec §11.1 / §9.1）：pluginId 为 key，一组一个总开关。
           插件 enabled 语义（plugins.entries）与 oc-switch 可逆关闭互不混用 */}
       {pluginGroups.length > 0 ? (
-        <section aria-label="插件 Provider" className="space-y-1">
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">插件 Provider</h2>
+        <section aria-label="插件 Provider" className="mt-6 space-y-2">
+          <h2 className="text-xs font-semibold tracking-wider text-muted-foreground">插件 Provider</h2>
           {pluginGroups.map(({ plugin, providers: groupProviders, models: groupModels }) => (
             <PluginProviderGroup
               key={plugin.id}
@@ -834,8 +856,8 @@ export function ProvidersView({ client, onRefresh, onOpenSettings, onOpenModels,
       ) : null}
 
       {runtimeProviders.length > 0 ? (
-        <section aria-label="运行时 Provider" className="space-y-2">
-          <h2 className="text-sm font-semibold">运行时 Provider</h2>
+        <section aria-label="运行时 Provider" className="mt-6 space-y-2">
+          <h2 className="text-xs font-semibold tracking-wider text-muted-foreground">运行时 Provider</h2>
           <p className="text-xs text-muted-foreground">运行时目录只读；不会自动生成本地 Provider 配置。</p>
           <DataTable rows={runtimeProviders} rowKey={row => row.providerId} minWidthClass="min-w-[20rem]" columns={[
             { key: "id", header: "Provider / 来源", wrap: "anywhere", render: row => <div className="space-y-1"><span>{row.providerId}</span><div className="flex flex-wrap gap-1">{row.sources.map(source => <Pill key={source} variant="muted">{CATALOG_SOURCE_LABELS[source]}</Pill>)}</div></div> },

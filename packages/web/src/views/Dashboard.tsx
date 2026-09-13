@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { ApiClient, CaseDuplicateGroup, ConfigDiffSummary, ConfigHealthReport, StatusResponse, ModelInventory } from "../api";
 import { countDiffChangelogEntries, DiffChangelog } from "../components/DiffChangelog";
 import { MergeCaseDuplicateDialog } from "../components/MergeCaseDuplicateDialog";
+import { PageHeader } from "../components/PageHeader";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
@@ -69,28 +70,32 @@ export function Dashboard({ client, onConfigureProvider }: DashboardProps) {
 
   return (
     <section data-testid="dashboard-view">
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-2xl font-bold tracking-tight">仪表盘</h1>
-        <Button variant="outline" size="icon" aria-label="刷新" onClick={() => void load()}>
-          <RefreshCw className="h-4 w-4" />
-        </Button>
-      </div>
+      <PageHeader
+        title="仪表盘"
+        actions={
+          <Button variant="outline" size="icon" aria-label="刷新" onClick={() => void load()}>
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+        }
+      />
 
       {loading ? (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5" aria-label="加载中">
-          <Skeleton className="h-28 lg:col-span-2" />
-          <Skeleton className="h-28" />
-          <Skeleton className="h-28" />
-          <Skeleton className="h-28" />
-          <Skeleton className="h-32 md:col-span-2 lg:col-span-5" />
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4" aria-label="加载中">
+          <Skeleton className="h-24 sm:col-span-2 lg:col-span-4" />
+          <Skeleton className="h-24" />
+          <Skeleton className="h-24" />
+          <Skeleton className="h-24" />
+          <Skeleton className="h-24" />
+          <Skeleton className="h-32 sm:col-span-2 lg:col-span-4" />
         </div>
       ) : null}
       {error ? <p className="text-sm font-medium text-destructive">{error}</p> : null}
 
       <div className="mb-4"><ModelAttentionPanel client={client} inventory={inventory} onChanged={load} onConfigure={onConfigureProvider} /></div>
       {status ? (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
-          <StatCard label="主模型" value={status.primaryModel ?? "未设置"} icon={Star} className="lg:col-span-2" />
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {/* 主模型独占首行，四个统计卡在第二行 */}
+          <StatCard label="主模型" value={status.primaryModel ?? "未设置"} icon={Star} featured className="sm:col-span-2 lg:col-span-4" />
           <StatCard label="Provider 数量" value={String(status.providerCount)} icon={Box} />
           <StatCard label="Provider 模型" value={String(status.providerModelCount)} icon={Cpu} />
           <StatCard
@@ -99,11 +104,11 @@ export function Dashboard({ client, onConfigureProvider }: DashboardProps) {
             icon={ListChecks}
           />
           <StatCard label="传统元数据条目" value={String(status.allowlistModelCount)} icon={ListChecks} />
-          <HealthCard diff={diff} unavailable={diffUnavailable} className="md:col-span-2 lg:col-span-5" />
+          <HealthCard diff={diff} unavailable={diffUnavailable} className="sm:col-span-2 lg:col-span-4" />
           <CaseDuplicateCard
             groups={health?.caseDuplicateGroups ?? []}
             onMerge={setMergeTarget}
-            className="md:col-span-2 lg:col-span-5"
+            className="sm:col-span-2 lg:col-span-4"
           />
         </div>
       ) : null}
@@ -119,15 +124,41 @@ export function Dashboard({ client, onConfigureProvider }: DashboardProps) {
   );
 }
 
-function StatCard({ label, value, icon: Icon, className }: { label: string; value: string; icon: typeof Star; className?: string }) {
+function StatCard({
+  label,
+  value,
+  icon: Icon,
+  featured = false,
+  className
+}: {
+  label: string;
+  value: string;
+  icon: typeof Star;
+  /** 主模型等重点卡：brand 着色图标底 */
+  featured?: boolean;
+  className?: string;
+}) {
   return (
-    <Card className={cn("transition hover:-translate-y-0.5 hover:shadow-md", className)}>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">{label}</CardTitle>
-        <Icon className="h-4 w-4 text-muted-foreground" />
-      </CardHeader>
-      <CardContent>
-        <div className="break-all text-2xl font-semibold tabular-nums">{value}</div>
+    <Card
+      className={cn(
+        "transition-[transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-md",
+        featured && "border-brand/30 bg-gradient-to-br from-brand/[0.06] to-transparent",
+        className
+      )}
+    >
+      <CardContent className="flex items-center gap-4 p-5">
+        <span
+          className={cn(
+            "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg",
+            featured ? "bg-brand/15 text-brand" : "bg-muted text-muted-foreground"
+          )}
+        >
+          <Icon className="h-5 w-5" />
+        </span>
+        <div className="min-w-0">
+          <p className="truncate text-xs font-medium text-muted-foreground" title={label}>{label}</p>
+          <p className={cn("truncate font-semibold tabular-nums text-foreground", featured ? "text-2xl" : "text-xl")} title={value}>{value}</p>
+        </div>
       </CardContent>
     </Card>
   );

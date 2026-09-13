@@ -8,6 +8,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { CustomProviderDialog } from "../components/CustomProviderDialog";
 import { ModelDeleteLayers } from "../components/ModelDeleteLayers";
 import { ModelPolicyPanel } from "../components/ModelPolicyPanel";
+import { PageHeader } from "../components/PageHeader";
 import { AVAILABILITY_REASON_LABELS, ModelStateBadges } from "../components/ModelStateBadges";
 import { UnavailableModelsPanel } from "../components/UnavailableModelsPanel";
 import { useToast } from "../components/Toast";
@@ -386,7 +387,7 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
 
   function renderModelTable(list: ModelInventoryEntry[], opacityClass: string = "") {
     return (
-      <div className={`${opacityClass} border border-border rounded-md overflow-hidden bg-card text-card-foreground shadow-sm`}>
+      <div className={opacityClass}>
         <DataTable
           rows={list}
           rowKey={(row) => row.ref}
@@ -512,18 +513,23 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
 
   return (
     <section data-testid="models-view" className="flex flex-col gap-6 min-h-[calc(100vh-4rem)]">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-muted-foreground">{manageCatalog ? "配置目录：保留参数不代表启用。" : inventory?.pickerSource === "gateway" ? "当前 Gateway 模型选项（默认 Agent）；独立策略的 Agent 可能不同。" : "本地推算的模型选项；尚未确认与运行中的 IM 一致。"}</p>
-        <Button variant="outline" onClick={() => setManageCatalog(value => !value)}>{manageCatalog ? "返回 IM 模型选项" : "管理配置目录"}</Button>
-      </div>
+      <PageHeader
+        title="模型"
+        description={manageCatalog ? "配置目录：保留参数不代表启用。" : inventory?.pickerSource === "gateway" ? "当前 Gateway 模型选项（默认 Agent）；独立策略的 Agent 可能不同。" : "本地推算的模型选项；尚未确认与运行中的 IM 一致。"}
+        actions={
+          <>
+            <Button variant="outline" size="sm" aria-label="刷新探测" disabled={refreshing || busy !== null} onClick={() => void refreshProbe()}>刷新探测</Button>
+            <Button variant="outline" onClick={() => setManageCatalog(value => !value)}>{manageCatalog ? "返回 IM 模型选项" : "管理配置目录"}</Button>
+          </>
+        }
+      />
       <ModelAttentionPanel client={client} inventory={inventory} onChanged={load} onConfigure={onOpenProviders ? id => onOpenProviders(id) : undefined} />
-      <div className="flex justify-end"><Button variant="outline" size="sm" aria-label="刷新探测" disabled={refreshing || busy !== null} onClick={() => void refreshProbe()}>刷新探测</Button></div>
       {/* 主体：左 Provider 导航 + 右模型区段 */}
       <div className="flex flex-col md:flex-row gap-6">
         {/* Left Column: Provider List */}
         <div className="w-full md:w-[260px] shrink-0 border-b md:border-b-0 md:border-r border-border pb-4 md:pb-0 md:pr-4">
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Providers</h2>
+            <h2 className="text-xs font-semibold tracking-wider text-muted-foreground">服务商</h2>
             <Button
               variant="outline"
               size="icon"

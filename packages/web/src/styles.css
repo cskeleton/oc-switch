@@ -110,7 +110,8 @@
     color: var(--foreground);
     min-height: 100vh;
     margin: 0;
-    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
@@ -121,6 +122,29 @@
       color-mix(in srgb, var(--brand) 8%, transparent),
       transparent
     );
+  }
+}
+
+@layer utilities {
+  /* 路由切换进入动效：仅 transform/opacity，硬件加速；减弱动效偏好下关闭 */
+  .animate-view-enter {
+    animation: view-enter 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .animate-view-enter {
+      animation: none;
+    }
+  }
+}
+
+@keyframes view-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 

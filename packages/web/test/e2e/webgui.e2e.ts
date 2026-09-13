@@ -273,7 +273,7 @@ test.describe("WebGUI smoke", () => {
 
   test("providers table visible", async ({ page }, testInfo) => {
     await connect(page);
-    await page.getByRole("button", { name: "Providers" }).click();
+    await page.getByRole("button", { name: "服务商" }).click();
     await expect(page.getByTestId("providers-view")).toBeVisible();
     await expect(page.getByTestId("providers-view").getByText("nvidia", { exact: true })).toBeVisible();
     // API 类型列在窄屏（sm 以下）按设计隐藏（低价值列让位给 ID/操作），
@@ -325,7 +325,7 @@ test.describe("WebGUI smoke", () => {
 
   test("custom provider dialog opens and accepts slash model ids", async ({ page }) => {
     await connect(page);
-    await page.getByRole("button", { name: "Providers" }).click();
+    await page.getByRole("button", { name: "服务商" }).click();
     await page.getByRole("button", { name: "添加 Provider" }).click();
     await expect(page.getByRole("dialog")).toBeVisible();
     await page.getByLabel("供应商名称").fill("Custom OpenAI");
@@ -348,7 +348,7 @@ test.describe("WebGUI smoke", () => {
 
   test("model editing entry points are reachable", async ({ page }) => {
     await connect(page);
-    await page.getByRole("button", { name: "Providers" }).click();
+    await page.getByRole("button", { name: "服务商" }).click();
     await expect(page.getByLabel("管理模型 nvidia")).toBeVisible();
     await page.getByLabel("管理模型 nvidia").click();
     await expect(page.getByText("nvidia 模型")).toBeVisible();
