@@ -1779,6 +1779,155 @@ describe("cli 运行时模型管理（inventory / reconcile / plugin）", () => 
     });
   });
 
+  describe("model add-policy-rule", () => {
+    test("exact 成功并落盘；wildcard 成功", async () => {
+      const { dir, configPath } = writePolicyFixture();
+      const env = {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, completeRuntimeCommands())
+      };
+
+      // exact：归一存储（Provider 折叠小写），其它条目原样保留
+      const exact = await runCli(["model", "add-policy-rule", "DeepSeek/deepseek-reasoner"], env);
+      expect(exact.code).toBe(0);
+      expect(exact.stdout).toContain("Added policy exact rule deepseek/deepseek-reasoner");
+      let config = JSON.parse(readFileSync(configPath, "utf8"));
+      expect(config.agents.defaults.modelPolicy.allow).toEqual([
+        "nvidia/*",
+        "minimax-portal/MiniMax-M3",
+        "DeepSeek/deepseek-chat",
+        "ghost-provider/policy-only-model",
+        "deepseek/deepseek-reasoner"
+      ]);
+
+      // wildcard：按用户输入原样存储
+      const wildcard = await runCli(["model", "add-policy-rule", "DeepSeek/*"], env);
+      expect(wildcard.code).toBe(0);
+      expect(wildcard.stdout).toContain("Added policy wildcard rule DeepSeek/*");
+      config = JSON.parse(readFileSync(configPath, "utf8"));
+      expect(config.agents.defaults.modelPolicy.allow.at(-1)).toBe("DeepSeek/*");
+    });
+
+    test("--json 输出契约：ok / rule / kind / backupId / warnings", async () => {
+      const { dir, configPath } = writePolicyFixture();
+      const result = await runCli(["model", "add-policy-rule", "DeepSeek/deepseek-reasoner", "--json"], {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, completeRuntimeCommands())
+      });
+      expect(result.code).toBe(0);
+      const json = JSON.parse(result.stdout) as Record<string, unknown>;
+      expect(json).toMatchObject({
+        ok: true,
+        rule: "deepseek/deepseek-reasoner",
+        kind: "exact",
+        warnings: []
+      });
+      expect(typeof json.backupId).toBe("string");
+      expect(JSON.stringify(json)).not.toContain("sk-");
+    });
+
+    test("legacy 模式拒绝：非零退出且不写盘", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-policy-legacy-"));
+      tempDirs.push(dir);
+      const configPath = join(dir, "openclaw.json");
+      // sample 无 modelPolicy → legacy 模式
+      writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+      const before = readFileSync(configPath, "utf8");
+
+      const result = await runCli(["model", "add-policy-rule", "nvidia/new-model"], {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir
+      });
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain("restricted");
+      expect(readFileSync(configPath, "utf8")).toBe(before);
+    });
+  });
+
+  describe("model remove-policy-wildcard", () => {
+    test("非 TTY 无 --yes fail closed（无写入）；--yes 删除成功并落盘", async () => {
+      const { dir, configPath } = writePolicyFixture();
+      const env = {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, completeRuntimeCommands())
+      };
+
+      const blocked = await runCli(["model", "remove-policy-wildcard", "nvidia/*"], env);
+      expect(blocked.code).not.toBe(0);
+      expect(blocked.stderr).toContain("--yes");
+      // fail closed：配置不变
+      expect(JSON.parse(readFileSync(configPath, "utf8")).agents.defaults.modelPolicy.allow).toContain("nvidia/*");
+
+      const removed = await runCli(["model", "remove-policy-wildcard", "nvidia/*", "--yes"], env);
+      expect(removed.code).toBe(0);
+      expect(removed.stdout).toContain("Removed policy wildcard nvidia/*");
+      // 失去放行 warning：nvidia 目录模型 + 运行时 nvidia 模型仅由该 wildcard 放行
+      expect(removed.stderr).toContain("lose policy allowance");
+      const config = JSON.parse(readFileSync(configPath, "utf8"));
+      expect(config.agents.defaults.modelPolicy.allow).toEqual([
+        "minimax-portal/MiniMax-M3",
+        "DeepSeek/deepseek-chat",
+        "ghost-provider/policy-only-model"
+      ]);
+    });
+
+    test("--json 输出契约：ok / value / removedCount / backupId / warnings", async () => {
+      const { dir, configPath } = writePolicyFixture();
+      const result = await runCli(["model", "remove-policy-wildcard", "nvidia/*", "--yes", "--json"], {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, completeRuntimeCommands())
+      });
+      expect(result.code).toBe(0);
+      const json = JSON.parse(result.stdout) as {
+        ok: boolean;
+        value: string;
+        removedCount: number;
+        backupId: string;
+        warnings: string[];
+      };
+      expect(json.ok).toBe(true);
+      expect(json.value).toBe("nvidia/*");
+      expect(json.removedCount).toBe(1);
+      expect(typeof json.backupId).toBe("string");
+      expect(json.warnings.some((warning) => warning.includes("lose policy allowance"))).toBe(true);
+    });
+
+    test("防清空与 primary 覆盖保护 fail closed，配置不变", async () => {
+      const { dir, configPath } = writePolicyFixture();
+
+      // 防清空：删除唯一规则会变 [] unrestricted
+      const lastConfig = structuredClone(sample) as OpenClawConfig;
+      lastConfig.agents!.defaults!.modelPolicy = { allow: ["nvidia/*"] };
+      writeFileSync(configPath, `${JSON.stringify(lastConfig, null, 2)}\n`);
+      const lastBefore = readFileSync(configPath, "utf8");
+      const last = await runCli(["model", "remove-policy-wildcard", "nvidia/*", "--yes"], {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir
+      });
+      expect(last.code).not.toBe(0);
+      expect(last.stderr).toMatch(/unrestricted/);
+      expect(readFileSync(configPath, "utf8")).toBe(lastBefore);
+
+      // primary 被该 wildcard 覆盖且剩余规则不再覆盖：fail closed
+      const primaryConfig = structuredClone(sample) as OpenClawConfig;
+      primaryConfig.agents!.defaults!.model = "nvidia/z-ai/glm5.1";
+      primaryConfig.agents!.defaults!.modelPolicy = { allow: ["nvidia/*", "DeepSeek/deepseek-chat"] };
+      writeFileSync(configPath, `${JSON.stringify(primaryConfig, null, 2)}\n`);
+      const primaryBefore = readFileSync(configPath, "utf8");
+      const primary = await runCli(["model", "remove-policy-wildcard", "nvidia/*", "--yes"], {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir
+      });
+      expect(primary.code).not.toBe(0);
+      expect(primary.stderr).toContain("primary");
+      expect(readFileSync(configPath, "utf8")).toBe(primaryBefore);
+    });
+  });
+
   describe("model reconcile", () => {
     test("runtime available 且 Provider 存在：预览 + --yes 写入；--json 不含密钥", async () => {
       const { dir, configPath } = writePolicyFixture();

@@ -1,4 +1,5 @@
 import {
+  addModelPolicyRule,
   addProviderModel,
   createConfigAdapter,
   disableModel,
@@ -7,6 +8,7 @@ import {
   normalizeModelRefForStorage,
   parseModelRef,
   removeModelPolicyExactRef,
+  removeModelPolicyWildcard,
   removeProviderModel,
   readProviderStates,
   setPrimaryModel,
@@ -236,6 +238,91 @@ export function registerModelCommands(program: Command, context: CommandContext)
           return;
         }
         console.log(`Removed policy exact ref ${ref} (backup: ${result.backupDir.split("/").pop()})`);
+        for (const warning of warnings) console.warn(warning);
+      } catch (error) {
+        console.error(commandErrorMessage(error));
+        process.exitCode = 1;
+      }
+    });
+
+  model.command("add-policy-rule")
+    .description("向 agents.defaults.modelPolicy.allow 添加一条规则（exact provider/model 或 wildcard provider/*；仅 restricted 模式）")
+    .argument("<rule>")
+    .option("--json", "输出 JSON 结果")
+    .action(async (rule: string, options: { json?: boolean }) => {
+      try {
+        // 添加规则只扩大选择范围（与 model enable 同级），不要求 --yes；守卫全在 Core operation 内
+        const paths = context.activePaths();
+        let warnings: string[] = [];
+        let stored: { rule: string; kind: "exact" | "wildcard" } | undefined;
+        const result = await writeOpenClawTransaction({
+          ...paths,
+          runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
+          reason: `add model policy rule ${rule}`,
+          normalizeConfig: false,
+          async mutate(config) {
+            const inventory = await context.buildInventory({ refresh: true, config, paths });
+            const operation = addModelPolicyRule(config, rule, {
+              knownProviderIds: inventory.providers.map((provider) => provider.providerId)
+            });
+            warnings = operation.warnings;
+            stored = { rule: operation.rule, kind: operation.kind };
+            return operation.config;
+          }
+        });
+        if (options.json) {
+          console.log(JSON.stringify({
+            ok: true,
+            rule: stored!.rule,
+            kind: stored!.kind,
+            backupId: result.backupDir.split("/").pop(),
+            warnings
+          }));
+          return;
+        }
+        console.log(`Added policy ${stored!.kind} rule ${stored!.rule} (backup: ${result.backupDir.split("/").pop()})`);
+        for (const warning of warnings) console.warn(warning);
+      } catch (error) {
+        console.error(commandErrorMessage(error));
+        process.exitCode = 1;
+      }
+    });
+
+  model.command("remove-policy-wildcard")
+    .description("按完全相同字符串删除 agents.defaults.modelPolicy.allow 的一条 wildcard 规则（含全部重复副本；exact 走 remove-policy-ref）")
+    .argument("<value>")
+    .option("--yes", "非交互环境显式确认删除（destructive action fail closed）")
+    .option("--json", "输出 JSON 结果")
+    .action(async (value: string, options: { yes?: boolean; json?: boolean }) => {
+      try {
+        requireNonInteractiveYes("model remove-policy-wildcard", options.yes);
+        const paths = context.activePaths();
+        let warnings: string[] = [];
+        let removedCount = 0;
+        const result = await writeOpenClawTransaction({
+          ...paths,
+          runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
+          reason: `remove model policy wildcard ${value}`,
+          normalizeConfig: false,
+          async mutate(config) {
+            const inventory = await context.buildInventory({ refresh: true, config, paths });
+            const operation = removeModelPolicyWildcard(config, value, { inventory });
+            warnings = operation.warnings;
+            removedCount = operation.removedCount;
+            return operation.config;
+          }
+        });
+        if (options.json) {
+          console.log(JSON.stringify({
+            ok: true,
+            value,
+            removedCount,
+            backupId: result.backupDir.split("/").pop(),
+            warnings
+          }));
+          return;
+        }
+        console.log(`Removed policy wildcard ${value} (${removedCount} entries, backup: ${result.backupDir.split("/").pop()})`);
         for (const warning of warnings) console.warn(warning);
       } catch (error) {
         console.error(commandErrorMessage(error));
