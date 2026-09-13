@@ -1,7 +1,9 @@
 import {
+  addModelPolicyRule,
   materializeRuntimeModel,
   normalizeModelRefForStorage,
   removeModelPolicyExactRef,
+  removeModelPolicyWildcard,
   writeOpenClawTransaction,
   type OcSwitchPaths
 } from "@oc-switch/core";
@@ -9,8 +11,10 @@ import type { Hono } from "hono";
 import { assertProviderCanEnable, type AppRuntime } from "../context";
 import { jsonError } from "../errors";
 import {
+  requireAddModelPolicyRuleInput,
   requireJsonObject,
   requireMaterializeModelInput,
+  requireRemoveModelPolicyWildcardInput,
   requireRemovePolicyExactRefInput
 } from "../schemas";
 
@@ -95,6 +99,80 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
       return c.json({
         ok: true,
         ref: parsed.ref,
+        backupId: result.backupDir.split("/").pop(),
+        warnings: capturedWarnings,
+        ...confirmation
+      });
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  // 添加 policy 规则（exact 或 wildcard，spec §4）；守卫全在 Core operation 内
+  app.post("/api/model-policy/rules", async (c) => {
+    try {
+      const body = await requireJsonObject(c.req);
+      const parsed = requireAddModelPolicyRuleInput(body);
+      // warnings 在 mutate 内捕获后经闭包透出（事务只落盘 config）
+      const paths = runtime.currentPaths();
+      let capturedWarnings: string[] = [];
+      let stored: { rule: string; kind: "exact" | "wildcard" } | undefined;
+      const result = await writeOpenClawTransaction({
+        ...paths,
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
+        reason: `add model policy rule ${parsed.rule}`,
+        normalizeConfig: false,
+        async mutate(config) {
+          const inventory = await runtime.buildCurrentInventory({ refresh: true, config, paths });
+          const operation = addModelPolicyRule(config, parsed.rule, {
+            knownProviderIds: inventory.providers.map((provider) => provider.providerId)
+          });
+          capturedWarnings = operation.warnings;
+          stored = { rule: operation.rule, kind: operation.kind };
+          return operation.config;
+        }
+      });
+      const confirmation = await postWriteConfirmation(paths);
+      return c.json({
+        ok: true,
+        rule: stored!.rule,
+        kind: stored!.kind,
+        backupId: result.backupDir.split("/").pop(),
+        warnings: capturedWarnings,
+        ...confirmation
+      });
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  // 删除 policy wildcard 规则（按完全相同字符串，含全部重复副本，spec §4）
+  app.delete("/api/model-policy/wildcard", async (c) => {
+    try {
+      const body = await requireJsonObject(c.req);
+      const parsed = requireRemoveModelPolicyWildcardInput(body);
+      // warnings 在 mutate 内捕获后经闭包透出（事务只落盘 config）
+      const paths = runtime.currentPaths();
+      let capturedWarnings: string[] = [];
+      let removedCount = 0;
+      const result = await writeOpenClawTransaction({
+        ...paths,
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
+        reason: `remove model policy wildcard ${parsed.value}`,
+        normalizeConfig: false,
+        async mutate(config) {
+          const inventory = await runtime.buildCurrentInventory({ refresh: true, config, paths });
+          const operation = removeModelPolicyWildcard(config, parsed.value, { inventory });
+          capturedWarnings = operation.warnings;
+          removedCount = operation.removedCount;
+          return operation.config;
+        }
+      });
+      const confirmation = await postWriteConfirmation(paths);
+      return c.json({
+        ok: true,
+        value: parsed.value,
+        removedCount,
         backupId: result.backupDir.split("/").pop(),
         warnings: capturedWarnings,
         ...confirmation

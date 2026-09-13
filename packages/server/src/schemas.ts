@@ -399,6 +399,16 @@ export function requireRemovePolicyExactRefInput(body: Record<string, unknown>):
   };
 }
 
+/** POST /api/model-policy/rules 请求体：非空字符串 rule（exact 或 wildcard，格式由 Core 校验） */
+export function requireAddModelPolicyRuleInput(body: Record<string, unknown>): { rule: string } {
+  return { rule: requireString(body.rule, "rule") };
+}
+
+/** DELETE /api/model-policy/wildcard 请求体：非空字符串 value（完全相同字符串匹配） */
+export function requireRemoveModelPolicyWildcardInput(body: Record<string, unknown>): { value: string } {
+  return { value: requireString(body.value, "value") };
+}
+
 /** POST /api/models/materialize 请求体：ref + input（ProviderModelInput 字段 + enabled） */
 export function requireMaterializeModelInput(body: Record<string, unknown>): {
   ref: string;

@@ -3854,6 +3854,254 @@ describe("server 模型协调写 endpoints", () => {
   });
 });
 
+describe("server policy 规则编辑 endpoints", () => {
+  /**
+   * restricted policy fixture：主模型默认字符串形态（被 exact 覆盖），
+   * 用例可按需覆盖 allow 列表与主模型/fallback 形态。
+   */
+  function policyEditWorkspace(options: {
+    allow?: string[];
+    model?: string | { primary?: string; fallbacks?: string[] };
+  } = {}) {
+    const ws = workspace();
+    const config = structuredClone(sample) as OpenClawConfig;
+    config.agents!.defaults!.modelPolicy = {
+      allow: options.allow ?? ["nvidia/*", "minimax-portal/MiniMax-M3", "DeepSeek/deepseek-chat"]
+    };
+    config.agents!.defaults!.model = options.model ?? "minimax-portal/MiniMax-M3";
+    writeFileSync(ws.paths.openclawPath, `${JSON.stringify(config, null, 2)}\n`);
+    return ws;
+  }
+
+  /** 注入式运行时目录：探测完整、无诊断（runtimeConfirmed 应为 true），不 shell-out 真实 openclaw */
+  function policyEditRuntimeProvider(): RuntimeModelCatalogProvider {
+    return () => ({
+      defaultModel: "minimax-portal/MiniMax-M3",
+      fallbackRefs: [],
+      allowedRefs: ["minimax-portal/MiniMax-M3"],
+      configuredModels: [{ ref: "minimax-portal/MiniMax-M3", available: true, tags: [] }],
+      allModels: [{ ref: "minimax-portal/MiniMax-M3", available: true, tags: [] }],
+      completeness: { status: true, configuredList: true, allList: true },
+      diagnostics: [],
+      capturedAt: "2026-09-13T00:00:00.000Z"
+    });
+  }
+
+  function policyEditApp(ws: Workspace) {
+    return createTestApp(ws, undefined, { runtimeModelCatalogProvider: policyEditRuntimeProvider() });
+  }
+
+  test("POST /api/model-policy/rules 添加 exact 规则成功并落盘", async () => {
+    const ws = policyEditWorkspace();
+    const app = policyEditApp(ws);
+
+    const { response, json } = await jsonRequest(app, "/api/model-policy/rules", {
+      method: "POST",
+      body: JSON.stringify({ rule: "DeepSeek/deepseek-reasoner" })
+    });
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    // exact 规则按 normalizeModelRefForStorage 归一存储（Provider 折叠小写，model 保留大小写）
+    expect(json.rule).toBe("deepseek/deepseek-reasoner");
+    expect(json.kind).toBe("exact");
+    expect(json.backupId).toBeTruthy();
+    expect(existsSync(join(ws.paths.stateDir, "backups", String(json.backupId)))).toBe(true);
+    expect(Array.isArray(json.warnings)).toBe(true);
+    expect(json.runtimeConfirmed).toBe(true);
+    expect(Array.isArray(json.diagnostics)).toBe(true);
+
+    // 落盘生效：新规则追加在末尾，其它条目原样保留
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    expect(config.agents!.defaults!.modelPolicy!.allow).toEqual([
+      "nvidia/*",
+      "minimax-portal/MiniMax-M3",
+      "DeepSeek/deepseek-chat",
+      "deepseek/deepseek-reasoner"
+    ]);
+    // 刷新后的 inventory 含新规则
+    const refreshed = json.inventory as { policyRules: Array<{ value: string; kind: string }> };
+    expect(refreshed.policyRules.some((rule) => rule.value === "deepseek/deepseek-reasoner" && rule.kind === "exact")).toBe(true);
+  });
+
+  test("POST /api/model-policy/rules 添加 wildcard 规则成功", async () => {
+    const ws = policyEditWorkspace();
+    const app = policyEditApp(ws);
+
+    const { response, json } = await jsonRequest(app, "/api/model-policy/rules", {
+      method: "POST",
+      body: JSON.stringify({ rule: "DeepSeek/*" })
+    });
+
+    expect(response.status).toBe(200);
+    expect(json).toMatchObject({ ok: true, rule: "DeepSeek/*", kind: "wildcard" });
+    expect(json.warnings).toEqual([]);
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    expect(config.agents!.defaults!.modelPolicy!.allow!.at(-1)).toBe("DeepSeek/*");
+  });
+
+  test("POST /api/model-policy/rules 未知 Provider 只追加 warning 不阻断写入", async () => {
+    const ws = policyEditWorkspace();
+    const app = policyEditApp(ws);
+
+    const { response, json } = await jsonRequest(app, "/api/model-policy/rules", {
+      method: "POST",
+      body: JSON.stringify({ rule: "unknown-provider/model-x" })
+    });
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    const warnings = json.warnings as string[];
+    expect(warnings.some((warning) => warning.includes("unknown-provider") && warning.includes("not in the known catalog"))).toBe(true);
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    expect(config.agents!.defaults!.modelPolicy!.allow).toContain("unknown-provider/model-x");
+  });
+
+  test("POST /api/model-policy/rules legacy 模式 400 policy-not-restricted 且不写盘", async () => {
+    // sample 无 modelPolicy → legacy 模式
+    const ws = workspace();
+    const app = policyEditApp(ws);
+    const before = readFileSync(ws.paths.openclawPath, "utf8");
+
+    const { response, json } = await jsonRequest(app, "/api/model-policy/rules", {
+      method: "POST",
+      body: JSON.stringify({ rule: "nvidia/new-model" })
+    });
+
+    expect(response.status).toBe(400);
+    expect(json.code).toBe("policy-not-restricted");
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+    const { json: backupsJson } = await jsonRequest(app, "/api/backups");
+    expect((backupsJson.backups as unknown[]).length).toBe(0);
+  });
+
+  test("POST /api/model-policy/rules duplicate / 非法格式 / 缺字段均 400 且不写盘", async () => {
+    const ws = policyEditWorkspace();
+    const app = policyEditApp(ws);
+    const before = readFileSync(ws.paths.openclawPath, "utf8");
+
+    const cases: Array<{ body: Record<string, unknown>; code?: string }> = [
+      // 已被现有 exact 条目覆盖
+      { body: { rule: "minimax-portal/MiniMax-M3" }, code: "duplicate-rule" },
+      // 完全相同 wildcard 已存在
+      { body: { rule: "nvidia/*" }, code: "duplicate-rule" },
+      // 非法 exact（无 /）与非法 wildcard（空 body）
+      { body: { rule: "not-a-ref" }, code: "invalid-rule-format" },
+      { body: { rule: "/*" }, code: "invalid-rule-format" },
+      // 缺 rule 字段：schema 层拒绝（无结构化 code）
+      { body: {} }
+    ];
+    for (const item of cases) {
+      const { response, json } = await jsonRequest(app, "/api/model-policy/rules", {
+        method: "POST",
+        body: JSON.stringify(item.body)
+      });
+      expect(response.status).toBe(400);
+      if (item.code !== undefined) expect(json.code).toBe(item.code);
+      else expect(String(json.error)).toContain("rule must be a non-empty string");
+    }
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+    const { json: backupsJson } = await jsonRequest(app, "/api/backups");
+    expect((backupsJson.backups as unknown[]).length).toBe(0);
+  });
+
+  test("DELETE /api/model-policy/wildcard 删除成功并提示失去放行的模型", async () => {
+    const ws = policyEditWorkspace();
+    const app = policyEditApp(ws);
+
+    const { response, json } = await jsonRequest(app, "/api/model-policy/wildcard", {
+      method: "DELETE",
+      body: JSON.stringify({ value: "nvidia/*" })
+    });
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.value).toBe("nvidia/*");
+    expect(json.removedCount).toBe(1);
+    expect(json.backupId).toBeTruthy();
+    expect(existsSync(join(ws.paths.stateDir, "backups", String(json.backupId)))).toBe(true);
+    expect(json.runtimeConfirmed).toBe(true);
+    // 失去放行 warning：nvidia 的两个目录模型仅由该 wildcard 放行
+    const warnings = json.warnings as string[];
+    expect(warnings.some((warning) => warning.includes("2 model(s) will lose policy allowance"))).toBe(true);
+    expect(JSON.stringify(warnings)).toContain("nvidia/z-ai/glm5.1");
+
+    // 落盘生效：wildcard 移除，其它条目顺序原样保留
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    expect(config.agents!.defaults!.modelPolicy!.allow).toEqual(["minimax-portal/MiniMax-M3", "DeepSeek/deepseek-chat"]);
+    const refreshed = json.inventory as { policyRules: Array<{ value: string }> };
+    expect(refreshed.policyRules.map((rule) => rule.value)).not.toContain("nvidia/*");
+  });
+
+  test("DELETE /api/model-policy/wildcard 不存在的规则 400 policy-rule-not-found 且不写盘", async () => {
+    const ws = policyEditWorkspace();
+    const app = policyEditApp(ws);
+    const before = readFileSync(ws.paths.openclawPath, "utf8");
+
+    const { response, json } = await jsonRequest(app, "/api/model-policy/wildcard", {
+      method: "DELETE",
+      body: JSON.stringify({ value: "openai/*" })
+    });
+
+    expect(response.status).toBe(400);
+    expect(json.code).toBe("policy-rule-not-found");
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+  });
+
+  test("DELETE /api/model-policy/wildcard 防清空 400 last-rule-removal 且不写盘", async () => {
+    const ws = policyEditWorkspace({ allow: ["nvidia/*"] });
+    const app = policyEditApp(ws);
+    const before = readFileSync(ws.paths.openclawPath, "utf8");
+
+    const { response, json } = await jsonRequest(app, "/api/model-policy/wildcard", {
+      method: "DELETE",
+      body: JSON.stringify({ value: "nvidia/*" })
+    });
+
+    expect(response.status).toBe(400);
+    expect(json.code).toBe("last-rule-removal");
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+  });
+
+  test("DELETE /api/model-policy/wildcard primary 覆盖保护 400 primary-model-referenced 且不写盘", async () => {
+    const ws = policyEditWorkspace({
+      allow: ["nvidia/*", "DeepSeek/deepseek-chat"],
+      model: "nvidia/z-ai/glm5.1"
+    });
+    const app = policyEditApp(ws);
+    const before = readFileSync(ws.paths.openclawPath, "utf8");
+
+    const { response, json } = await jsonRequest(app, "/api/model-policy/wildcard", {
+      method: "DELETE",
+      body: JSON.stringify({ value: "nvidia/*" })
+    });
+
+    expect(response.status).toBe(400);
+    expect(json.code).toBe("primary-model-referenced");
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+  });
+
+  test("DELETE /api/model-policy/wildcard fallback 覆盖保护 400 fallback-referenced 且不写盘", async () => {
+    const ws = policyEditWorkspace({
+      allow: ["nvidia/*", "minimax-portal/MiniMax-M3"],
+      model: { primary: "minimax-portal/MiniMax-M3", fallbacks: ["nvidia/z-ai/glm5.1"] }
+    });
+    const app = policyEditApp(ws);
+    const before = readFileSync(ws.paths.openclawPath, "utf8");
+
+    const { response, json } = await jsonRequest(app, "/api/model-policy/wildcard", {
+      method: "DELETE",
+      body: JSON.stringify({ value: "nvidia/*" })
+    });
+
+    expect(response.status).toBe(400);
+    expect(json.code).toBe("fallback-referenced");
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+    const { json: backupsJson } = await jsonRequest(app, "/api/backups");
+    expect((backupsJson.backups as unknown[]).length).toBe(0);
+  });
+});
+
 describe("三层写模型：删除分级 / wildcard warning / discover 插件 Key 回退", () => {
   /** 把样例配置改写为 restricted policy 后落盘 */
   function writeRestrictedPolicy(ws: Workspace, allow: string[]) {
