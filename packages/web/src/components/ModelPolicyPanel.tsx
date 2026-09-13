@@ -1,21 +1,28 @@
-import type { ModelPolicyRuleEntry } from "../api";
+import type { ModelPolicyMode, ModelPolicyRuleEntry } from "../api";
 import { DataTable, type Column } from "./DataTable";
 import { EmptyState } from "./EmptyState";
 import { Button } from "./ui/button";
 import { Pill } from "./ui/pill";
 
 /**
- * modelPolicy.allow 规则面板（spec §11.3）。
+ * modelPolicy.allow 规则面板（spec §11.3 + 规则编辑 spec §6）。
  *
  * - exact 规则：仅按 Core 的 removable 提供删除入口，保护性/最后一条/unknown 等只读；
- * - wildcard 规则：本期只读，显示命中/不可用计数；
- * - invalid 条目：值不回显（secret-free 纪律），仅显示原始下标。
+ * - wildcard 规则：removable 时可显式删除；不可删时显示「受保护」；
+ * - invalid 条目：值不回显（secret-free 纪律），仅显示原始下标；
+ * - 规则编辑仅适用于 restricted 模式；其它模式（或旧后端缺 policyMode）只显示提示。
  */
 
 interface ModelPolicyPanelProps {
   rules: ModelPolicyRuleEntry[];
-  /** 删除 exact 规则（上层负责确认框与 API 调用） */
-  onRemoveRule: (value: string) => void | Promise<void>;
+  /** 当前策略模式；缺失（旧后端）时隐藏添加入口，安全回退为提示 */
+  policyMode?: ModelPolicyMode | undefined;
+  /** 有写操作进行中时禁用添加入口 */
+  busy?: boolean;
+  /** 打开添加规则对话框（仅 restricted 模式渲染入口） */
+  onAddRule: () => void;
+  /** 删除规则入口；由调用方按 rule.kind 分发到 exact / wildcard 流程 */
+  onRemoveRule: (rule: ModelPolicyRuleEntry) => void | Promise<void>;
 }
 
 function kindPill(rule: ModelPolicyRuleEntry): { label: string; tone: "brand" | "muted" | "destructive" } {
@@ -40,7 +47,7 @@ function RuleCounts({ rule }: { rule: ModelPolicyRuleEntry }) {
   );
 }
 
-export function ModelPolicyPanel({ rules, onRemoveRule }: ModelPolicyPanelProps) {
+export function ModelPolicyPanel({ rules, policyMode, busy, onAddRule, onRemoveRule }: ModelPolicyPanelProps) {
   const columns: Column<ModelPolicyRuleEntry>[] = [
     {
       key: "value",
@@ -83,18 +90,27 @@ export function ModelPolicyPanel({ rules, onRemoveRule }: ModelPolicyPanelProps)
       wrap: "nowrap",
       className: "w-20 md:w-auto",
       render: (row) => {
-        // 只读规则（wildcard 本期 / 保护性 exact / invalid）不提供删除入口
-        if (row.kind !== "exact" || !row.removable) return <Pill variant="muted">只读</Pill>;
-        return (
-          <Button
-            variant="ghost"
-            size="sm"
-            aria-label={`删除规则 ${row.value}`}
-            onClick={() => void onRemoveRule(row.value)}
-          >
-            删除
-          </Button>
-        );
+        // invalid 条目永远只读（不回显值）
+        if (row.kind === "invalid") return <Pill variant="muted">只读</Pill>;
+        // gating 一律读 Core 投影的 removable，前端不重新实现 policy 守卫
+        if (row.removable) {
+          return (
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label={`删除规则 ${row.value}`}
+              onClick={() => void onRemoveRule(row)}
+            >
+              删除
+            </Button>
+          );
+        }
+        // 不可删的 wildcard：受主模型/fallback 覆盖保护或为避免清空策略
+        if (row.kind === "wildcard") {
+          return <Pill variant="muted" title="被主模型/fallback 依赖，或为避免清空策略">受保护</Pill>;
+        }
+        // 保护性 exact 等只读
+        return <Pill variant="muted">只读</Pill>;
       }
     }
   ];
@@ -105,13 +121,25 @@ export function ModelPolicyPanel({ rules, onRemoveRule }: ModelPolicyPanelProps)
 
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs text-muted-foreground">
+          {policyMode === "restricted"
+            ? "添加或删除规则只改 modelPolicy.allow；目录、metadata 与 API Key 不变。"
+            : `当前为 ${policyMode ?? "legacy / unrestricted"} 模式，规则编辑仅适用于 restricted 模式。`}
+        </p>
+        {policyMode === "restricted" ? (
+          <Button variant="outline" size="sm" disabled={busy === true} onClick={onAddRule}>
+            添加规则
+          </Button>
+        ) : null}
+      </div>
       {([["exact", "精确规则"], ["wildcard", "通配规则"], ["invalid", "无效规则"]] as const).map(([kind, label]) => {
         const group = rules.filter(rule => rule.kind === kind);
         if (group.length === 0) return null;
         return (
           <section key={kind} aria-label={label} className="space-y-2">
             <h3 className="text-sm font-medium">{label}</h3>
-            {kind === "wildcard" ? <p className="text-xs text-muted-foreground">通配规则只读；若要单独禁用模型，请先在 OpenClaw 配置中收窄规则。</p> : null}
+            {kind === "wildcard" ? <p className="text-xs text-muted-foreground">通配规则可显式删除；oc-switch 绝不自动改写。</p> : null}
             <DataTable
               columns={columns}
               rows={group}

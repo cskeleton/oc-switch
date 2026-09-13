@@ -1,6 +1,6 @@
 import "./test-setup";
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   createApiClient,
@@ -455,13 +455,150 @@ describe("runtime Web review regressions", () => {
     expect(view.queryByRole("button", { name: `补全 Provider 配置 ${row.ref}` }) === null).toBe(true);
   });
 
-  test("readonly Policy 不开放删除：primary、fallback、最后 exact、unknown 与 wildcard", async () => {
+  test("readonly Policy 不开放删除：primary、fallback、最后 exact、unknown 与受保护 wildcard", async () => {
     const refs = ["local/primary", "local/fallback", "local/last", "local/unknown"];
     const view = render(<ModelPolicyPanel rules={[
       ...refs.map(value => ({ value, kind: "exact" as const, matchedModelCount: 1, unavailableModelCount: 0, removable: false })),
       { value: "local/*", kind: "wildcard", matchedModelCount: 4, unavailableModelCount: 0, removable: false }
-    ]} onRemoveRule={async () => { throw new Error("Must not remove readonly rules"); }} />);
+    ]} onAddRule={() => {}} onRemoveRule={async () => { throw new Error("Must not remove readonly rules"); }} />);
     expect(view.queryAllByRole("button", { name: /^删除规则 / }).length).toBe(0);
+    // 不可删的 wildcard 显示「受保护」而非删除入口
+    expect(view.getByText("受保护").getAttribute("title")).toContain("主模型/fallback");
+  });
+
+  describe("Policy 规则编辑", () => {
+    const editableRules = [
+      { value: "local/safe", kind: "exact" as const, matchedModelCount: 1, unavailableModelCount: 0, removable: true },
+      { value: "local/*", kind: "wildcard" as const, matchedModelCount: 2, unavailableModelCount: 1, removable: true }
+    ];
+
+    test("policyMode=restricted 显示「添加规则」入口（busy 时禁用）；legacy/unrestricted/缺失只显示提示", async () => {
+      const onAddRule = mock(() => {});
+      const restricted = render(<ModelPolicyPanel rules={editableRules} policyMode="restricted" onAddRule={onAddRule} onRemoveRule={async () => {}} />);
+      await userEvent.click(restricted.getByRole("button", { name: "添加规则" }));
+      expect(onAddRule).toHaveBeenCalledTimes(1);
+      restricted.unmount();
+
+      const busyView = render(<ModelPolicyPanel rules={editableRules} policyMode="restricted" busy onAddRule={onAddRule} onRemoveRule={async () => {}} />);
+      expect((busyView.getByRole("button", { name: "添加规则" }) as HTMLButtonElement).disabled).toBe(true);
+      busyView.unmount();
+
+      // 其它模式与旧后端（缺 policyMode）都不渲染添加入口，只显示 muted 提示
+      for (const mode of ["legacy", "unrestricted", undefined] as const) {
+        const view = render(<ModelPolicyPanel rules={editableRules} {...(mode ? { policyMode: mode } : {})} onAddRule={onAddRule} onRemoveRule={async () => {}} />);
+        expect(view.queryByRole("button", { name: "添加规则" }) === null).toBe(true);
+        expect(view.getByText(/规则编辑仅适用于 restricted 模式/)).toBeTruthy();
+        view.unmount();
+      }
+    });
+
+    test("wildcard 行 removable=true 显示删除按钮，false 显示「受保护」；区段提示已更新", async () => {
+      const onRemoveRule = mock(async () => {});
+      const view = render(<ModelPolicyPanel rules={[
+        { value: "local/*", kind: "wildcard", matchedModelCount: 2, unavailableModelCount: 0, removable: true },
+        { value: "prim/*", kind: "wildcard", matchedModelCount: 1, unavailableModelCount: 0, removable: false }
+      ]} onAddRule={() => {}} onRemoveRule={onRemoveRule} />);
+      expect(view.getByText(/通配规则可显式删除；oc-switch 绝不自动改写/)).toBeTruthy();
+      await userEvent.click(view.getByRole("button", { name: "删除规则 local/*" }));
+      expect(onRemoveRule).toHaveBeenCalledWith(expect.objectContaining({ value: "local/*", kind: "wildcard" }));
+      expect(view.queryByRole("button", { name: "删除规则 prim/*" }) === null).toBe(true);
+      expect(view.getByText("受保护").getAttribute("title")).toContain("主模型/fallback");
+    });
+
+    test("添加规则对话框：提交 exact 成功后 toast 展示 warnings 并重新加载", async () => {
+      const data = inventory([], { policyMode: "restricted", policyRules: editableRules });
+      const warning = "已被通配 local/* 覆盖，该精确规则当前冗余";
+      const addRule = mock(async (rule: string) => ({
+        ok: true as const, rule, kind: "exact" as const, backupId: "fixture-backup",
+        warnings: [warning], runtimeConfirmed: true
+      }));
+      const loadInventory = mock(async () => data);
+      const view = renderModels(data, { addModelPolicyRule: addRule, getModelInventory: loadInventory });
+
+      await userEvent.click(await view.findByRole("button", { name: "展开 Policy 规则" }));
+      await userEvent.click(view.getByRole("button", { name: "添加规则" }));
+      const dialog = within(view.getByRole("dialog"));
+      expect(dialog.getByText(/只改 modelPolicy.allow/)).toBeTruthy();
+      expect(dialog.getByText(/服务端为权威校验/)).toBeTruthy();
+      await userEvent.type(dialog.getByLabelText("规则"), "local/new-model");
+      await userEvent.click(dialog.getByRole("button", { name: "添加规则" }));
+      await waitFor(() => expect(addRule).toHaveBeenCalledWith("local/new-model"));
+      expect(await view.findByText(/已添加精确规则 local\/new-model/)).toBeTruthy();
+      expect(await view.findByText(warning)).toBeTruthy();
+      await waitFor(() => expect(loadInventory.mock.calls.length).toBeGreaterThanOrEqual(2));
+    });
+
+    test("添加规则被服务端拒绝时错误内联展示，对话框保持打开", async () => {
+      const data = inventory([], { policyMode: "restricted", policyRules: editableRules });
+      const addRule = mock(async () => { throw new Error("Rule already exists in modelPolicy.allow (duplicate-rule)."); });
+      const view = renderModels(data, { addModelPolicyRule: addRule });
+
+      await userEvent.click(await view.findByRole("button", { name: "展开 Policy 规则" }));
+      await userEvent.click(view.getByRole("button", { name: "添加规则" }));
+      const dialog = within(view.getByRole("dialog"));
+      await userEvent.type(dialog.getByLabelText("规则"), "local/safe");
+      await userEvent.click(dialog.getByRole("button", { name: "添加规则" }));
+      expect(await dialog.findByText(/duplicate-rule/)).toBeTruthy();
+      // 失败不关对话框，可修正后重试
+      expect(view.getByRole("dialog")).toBeTruthy();
+      expect(addRule).toHaveBeenCalledTimes(1);
+    });
+
+    test("删除 wildcard：确认框展示命中计数与影响文案，确认后调用 API、toast warnings 并重新加载", async () => {
+      const data = inventory([], {
+        policyMode: "restricted",
+        policyRules: [{ value: "local/*", kind: "wildcard", matchedModelCount: 3, unavailableModelCount: 1, removable: true }]
+      });
+      const warning = "删除后 2 个模型将失去策略放行";
+      const remove = mock(async (value: string) => ({
+        ok: true as const, value, removedCount: 1, backupId: "fixture-backup", warnings: [warning], runtimeConfirmed: true
+      }));
+      const loadInventory = mock(async () => data);
+      const view = renderModels(data, { removeModelPolicyWildcard: remove, getModelInventory: loadInventory });
+
+      await userEvent.click(await view.findByRole("button", { name: "展开 Policy 规则" }));
+      await userEvent.click(view.getByRole("button", { name: "删除规则 local/*" }));
+      const dialog = within(view.getByRole("dialog"));
+      expect(dialog.getByText(/只改 modelPolicy.allow/)).toBeTruthy();
+      expect(dialog.getByText(/命中 3 个模型，其中 1 个不可用/)).toBeTruthy();
+      expect(dialog.getByText(/将从选择器消失；目录、metadata 与 API Key 不变/)).toBeTruthy();
+      await userEvent.click(dialog.getByRole("button", { name: "删除通配规则" }));
+      await waitFor(() => expect(remove).toHaveBeenCalledWith("local/*"));
+      expect(await view.findByText(/已删除通配规则 local\/\*/)).toBeTruthy();
+      expect(await view.findByText(warning)).toBeTruthy();
+      await waitFor(() => expect(loadInventory.mock.calls.length).toBeGreaterThanOrEqual(2));
+    });
+
+    test("删除 wildcard 确认前重查 removable：规则变为不可删时禁用确认按钮", async () => {
+      let removable = true;
+      const data = () => inventory([], {
+        policyMode: "restricted",
+        policyRules: [{ value: "local/*", kind: "wildcard" as const, matchedModelCount: 1, unavailableModelCount: 0, removable }]
+      });
+      const remove = mock(async () => ({
+        ok: true as const, value: "local/*", removedCount: 1, backupId: "fixture-backup", warnings: [] as string[], runtimeConfirmed: true
+      }));
+      const view = renderModels(data(), {
+        getModelInventory: async () => data(),
+        refreshModelInventory: async () => data(),
+        removeModelPolicyWildcard: remove
+      });
+
+      await userEvent.click(await view.findByRole("button", { name: "展开 Policy 规则" }));
+      await userEvent.click(view.getByRole("button", { name: "删除规则 local/*" }));
+      expect((within(view.getByRole("dialog")).getByRole("button", { name: "删除通配规则" }) as HTMLButtonElement).disabled).toBe(false);
+
+      // 确认前 inventory 变化（如另一处写入后的 load 把最新守卫结果带回来）：
+      // modal 对话框使背景按钮不可及，这里用 fireEvent 触发刷新作为测试扳手
+      removable = false;
+      fireEvent.click(view.getByText("刷新探测").closest("button")!);
+      await waitFor(() => {
+        const dialog = within(view.getByRole("dialog"));
+        expect((dialog.getByRole("button", { name: "删除通配规则" }) as HTMLButtonElement).disabled).toBe(true);
+      });
+      expect(within(view.getByRole("dialog")).getByText(/该规则当前不可删除/)).toBeTruthy();
+      expect(remove).not.toHaveBeenCalled();
+    });
   });
 
 
@@ -519,7 +656,7 @@ describe("runtime Web review regressions", () => {
       { value: "local/safe", kind: "exact", matchedModelCount: 1, unavailableModelCount: 1, removable: true },
       { value: "missing/*", kind: "wildcard", matchedModelCount: 0, unavailableModelCount: 0, removable: false },
       { value: "fixture-secret-do-not-display", kind: "invalid", invalidIndex: 2, matchedModelCount: 0, unavailableModelCount: 0, removable: false }
-    ]} onRemoveRule={onRemove} />);
+    ]} onAddRule={() => {}} onRemoveRule={onRemove} />);
     expect(view.getByRole("region", { name: "精确规则" })).toBeTruthy();
     expect(view.getByRole("region", { name: "通配规则" })).toBeTruthy();
     expect(within(view.getByText("missing/*").closest("td")!).getByText("零命中")).toBeTruthy();
@@ -530,9 +667,8 @@ describe("runtime Web review regressions", () => {
   test("Policy 手机表保留完整规则和操作，重复类型隐藏，计数移至规则下方；桌面仍为四列", async () => {
     const ref = "long-provider/namespace/model-with-a-long-id";
     const remove = mock(async () => {});
-    const view = render(<ModelPolicyPanel rules={[
-      { value: ref, kind: "exact", matchedModelCount: 17, unavailableModelCount: 2, removable: true }
-    ]} onRemoveRule={remove} />);
+    const exactRule = { value: ref, kind: "exact" as const, matchedModelCount: 17, unavailableModelCount: 2, removable: true };
+    const view = render(<ModelPolicyPanel rules={[exactRule]} onAddRule={() => {}} onRemoveRule={remove} />);
     const table = within(view.getByRole("region", { name: "精确规则" })).getByRole("table");
     const headers = within(table).getAllByRole("columnheader");
     expect(headers.length).toBe(4);
@@ -557,7 +693,7 @@ describe("runtime Web review regressions", () => {
     expect(desktopCounts.textContent).toBe(mobileCounts.textContent);
 
     await userEvent.click(within(rule.closest("tr")!).getByRole("button", { name: `删除规则 ${ref}` }));
-    expect(remove).toHaveBeenCalledWith(ref);
+    expect(remove).toHaveBeenCalledWith(exactRule);
   });
 
   test("插件分组不遗漏与 config 同名的 Provider，并列出全部受影响模型", async () => {

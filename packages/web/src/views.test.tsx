@@ -3672,7 +3672,7 @@ describe("UnavailableModelsPanel", () => {
 });
 
 describe("ModelPolicyPanel", () => {
-  test("exact 规则显示删除操作；wildcard 只读并显示命中/不可用计数", async () => {
+  test("exact 规则显示删除操作；不可删 wildcard 显示受保护并显示命中/不可用计数", async () => {
     const onRemoveRule = mock(async () => {});
     const { findByText, findAllByText, findByLabelText, queryByLabelText } = render(
       <ToastProvider>
@@ -3682,6 +3682,7 @@ describe("ModelPolicyPanel", () => {
             { value: "cpa/*", kind: "wildcard", matchedModelCount: 3, unavailableModelCount: 1, removable: false },
             { value: "prim/protected", kind: "exact", matchedModelCount: 1, unavailableModelCount: 0, removable: false }
           ]}
+          onAddRule={() => {}}
           onRemoveRule={onRemoveRule}
         />
       </ToastProvider>
@@ -3689,13 +3690,15 @@ describe("ModelPolicyPanel", () => {
 
     // 桌面计数列保持原值；手机副本放在规则值单元格内，布局断言另有覆盖。
     expect((await findAllByText(/命中 3 个模型，其中 1 个不可用/)).filter(node => node.closest("td")?.cellIndex === 2)).toHaveLength(1);
-    // 两条 exact 规则均显示「命中 1 个模型」；只读的 wildcard 与保护性 exact 无删除（只读）
+    // 两条 exact 规则均显示「命中 1 个模型」；受保护的 wildcard 与保护性 exact 无删除入口
     expect((await findAllByText(/命中 1 个模型/)).filter(node => node.closest("td")?.cellIndex === 2)).toHaveLength(2);
 
     await userEvent.click(await findByLabelText("删除规则 cpa/m2"));
-    await waitFor(() => expect(onRemoveRule).toHaveBeenCalledWith("cpa/m2"));
+    await waitFor(() => expect(onRemoveRule).toHaveBeenCalledWith(expect.objectContaining({ value: "cpa/m2", kind: "exact" })));
     expect(queryByLabelText("删除规则 cpa/*")).toBeNull();
     expect(queryByLabelText("删除规则 prim/protected")).toBeNull();
+    // 不可删 wildcard 显示「受保护」（含保护原因 title），不再一律「只读」
+    expect((await findByText("受保护")).getAttribute("title")).toContain("主模型/fallback");
   });
 });
 

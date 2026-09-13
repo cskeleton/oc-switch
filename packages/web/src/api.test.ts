@@ -512,6 +512,88 @@ describe("runtime model inventory API client", () => {
     expect(result.backupId).toBe("2026-09-09T00-00-00");
   });
 
+  test("addModelPolicyRule POST /api/model-policy/rules 携带 rule 与 Bearer", async () => {
+    const calls: Request[] = [];
+    const client = createApiClient({
+      baseUrl: "http://localhost:7420",
+      token: "policy-token",
+      fetchImpl: async (input, init) => {
+        calls.push(new Request(input, init));
+        return new Response(JSON.stringify({
+          ok: true,
+          rule: "cpa/m4",
+          kind: "exact",
+          backupId: "2026-09-13T00-00-00",
+          warnings: ["已被通配 cpa/* 覆盖，该精确规则当前冗余"],
+          runtimeConfirmed: true,
+          diagnostics: [],
+          inventory: {}
+        }), { status: 200 });
+      }
+    });
+
+    const result = await client.addModelPolicyRule("cpa/m4");
+
+    expect(calls[0]?.url).toBe("http://localhost:7420/api/model-policy/rules");
+    expect(calls[0]?.method).toBe("POST");
+    expect(calls[0]?.headers.get("Authorization")).toBe("Bearer policy-token");
+    expect(JSON.parse(await calls[0]!.clone().text())).toEqual({ rule: "cpa/m4" });
+    expect(result.ok).toBe(true);
+    expect(result.kind).toBe("exact");
+    expect(result.backupId).toBe("2026-09-13T00-00-00");
+    expect(result.warnings).toEqual(["已被通配 cpa/* 覆盖，该精确规则当前冗余"]);
+    expect(result.runtimeConfirmed).toBe(true);
+  });
+
+  test("removeModelPolicyWildcard DELETE /api/model-policy/wildcard 携带 value", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const client = createApiClient({
+      baseUrl: "http://localhost:7420",
+      token: "token",
+      fetchImpl: async (url, init = {}) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({
+          ok: true,
+          value: "cpa/*",
+          removedCount: 2,
+          backupId: "2026-09-13T00-00-01",
+          warnings: ["已移除 2 条相同规则"],
+          runtimeConfirmed: false,
+          diagnostics: [{ command: "list", code: "timeout", message: "openclaw models list timed out" }],
+          inventory: {}
+        }), { status: 200 });
+      }
+    });
+
+    const result = await client.removeModelPolicyWildcard("cpa/*");
+
+    expect(calls[0]!.url).toBe("http://localhost:7420/api/model-policy/wildcard");
+    expect(calls[0]!.init.method).toBe("DELETE");
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ value: "cpa/*" });
+    expect(result.ok).toBe(true);
+    expect(result.removedCount).toBe(2);
+    // runtimeConfirmed:false 不是 HTTP 失败：200 + ok:true 正常返回
+    expect(result.runtimeConfirmed).toBe(false);
+    expect(result.diagnostics?.[0]?.code).toBe("timeout");
+  });
+
+  test("policy 规则编辑端点的 400 透传 error 信息", async () => {
+    const errors = [
+      "Rule must be a non-empty string in provider/model or provider/* form (invalid-rule-format).",
+      "Removing cpa/* would leave policy empty and switch it to unrestricted (last-rule-removal)."
+    ];
+    let call = 0;
+    const client = createApiClient({
+      baseUrl: "http://localhost:7420",
+      token: "token",
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ error: errors[call], code: ["invalid-rule-format", "last-rule-removal"][call++] }), { status: 400 })
+    });
+
+    await expect(client.addModelPolicyRule("")).rejects.toThrow(errors[0]);
+    await expect(client.removeModelPolicyWildcard("cpa/*")).rejects.toThrow(errors[1]);
+  });
+
   test("materializeRuntimeModel POST /api/models/materialize 携带 ref 与 input", async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const client = createApiClient({

@@ -41,7 +41,7 @@ interface ModelsViewProps {
 
 /** 处理向导只记录目标；权限始终读取当前 inventory，不复制策略算法。 */
 interface PendingModelAction {
-  kind: "handle" | "remove-policy-ref" | "materialize" | "replace";
+  kind: "handle" | "remove-policy-ref" | "materialize" | "replace" | "add-policy-rule" | "remove-policy-wildcard";
   ref: string;
 }
 
@@ -97,6 +97,8 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
   const [showPolicyRules, setShowPolicyRules] = useState(false);
   const [removeMetadata, setRemoveMetadata] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  /** 添加 policy 规则对话框的受控输入（格式由服务端权威校验） */
+  const [policyRuleInput, setPolicyRuleInput] = useState("");
 
   const load = useCallback(async () => {
     setError(null);
@@ -224,6 +226,7 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
     if (busy) return;
     setRemoveMetadata(false);
     setActionError(null);
+    setPolicyRuleInput("");
     setPendingAction(action);
   }
 
@@ -250,6 +253,11 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
     ? inventory?.policyRules.some(rule => rule.kind === "exact" && rule.value === pendingAction.ref && rule.removable) === true
     : pendingEntry?.capabilities.canRemovePolicyExactRef === true;
 
+  /** 删除 wildcard 的 gating 在确认前从当前 inventory 重查（find 不到或不可删则禁用确认） */
+  const pendingWildcardRule = pendingAction?.kind === "remove-policy-wildcard"
+    ? inventory?.policyRules.find(rule => rule.kind === "wildcard" && rule.value === pendingAction.ref)
+    : undefined;
+
   /** 仅决定是否打开人工填写表单，不声明模型可运行或可写；创建仍走 Core 预检。 */
   function needsProviderForm(entry: ModelInventoryEntry): boolean {
     return entry.availability !== "unknown" && entry.pluginIds.length === 0 &&
@@ -270,6 +278,45 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
       await load();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "删除引用失败");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /** 添加 policy 规则：exact/wildcard 由服务端权威识别；错误内联，成功 toast 并刷新 */
+  async function confirmAddPolicyRule() {
+    if (pendingAction?.kind !== "add-policy-rule" || busy) return;
+    const rule = policyRuleInput.trim();
+    if (!rule) return;
+    setBusy(rule);
+    setActionError(null);
+    try {
+      const result = await client.addModelPolicyRule(rule);
+      setPendingAction(null);
+      toast.success(`已添加${result.kind === "wildcard" ? "通配" : "精确"}规则 ${result.rule}（只改 modelPolicy.allow）`);
+      for (const warning of result.warnings ?? []) toast.warning(warning);
+      await load();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "添加规则失败");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /** 删除 wildcard 规则：确认前重查 removable；守卫失败（400）内联展示 */
+  async function confirmRemovePolicyWildcard() {
+    if (pendingAction?.kind !== "remove-policy-wildcard" || busy || pendingWildcardRule?.removable !== true) return;
+    const value = pendingAction.ref;
+    setBusy(value);
+    setActionError(null);
+    try {
+      const result = await client.removeModelPolicyWildcard(value);
+      setPendingAction(null);
+      toast.success(`已删除通配规则 ${value}（只改 modelPolicy.allow）`);
+      for (const warning of result.warnings ?? []) toast.warning(warning);
+      await load();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "删除通配规则失败");
     } finally {
       setBusy(null);
     }
@@ -677,8 +724,9 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
         </div>
       </div>
 
-      {/* Policy 规则视图（spec §11.3）：modelPolicy.allow 原始规则投影，默认折叠的次级区段。
-          exact removable 可删（经确认框走 removeModelPolicyExactRef）；wildcard 本期只读 */}
+      {/* Policy 规则视图（spec §11.3 + 规则编辑 spec §6）：modelPolicy.allow 原始规则投影，默认折叠的次级区段。
+          exact removable 可删（经确认框走 removeModelPolicyExactRef）；wildcard removable 可显式删除（ConfirmDialog 确认）；
+          restricted 模式提供「添加规则」入口 */}
       <section aria-label="Policy 规则">
         <button
           type="button"
@@ -696,7 +744,12 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
           <div className="mt-3">
             <ModelPolicyPanel
               rules={inventory?.policyRules ?? []}
-              onRemoveRule={(ref) => openAction({ kind: "remove-policy-ref", ref })}
+              policyMode={inventory?.policyMode}
+              busy={busy !== null}
+              onAddRule={() => openAction({ kind: "add-policy-rule", ref: "" })}
+              onRemoveRule={(rule) => openAction(rule.kind === "wildcard"
+                ? { kind: "remove-policy-wildcard", ref: rule.value }
+                : { kind: "remove-policy-ref", ref: rule.value })}
             />
           </div>
         ) : null}
@@ -750,6 +803,58 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
           <DialogFooter><Button variant="outline" disabled={busy !== null} onClick={closeAction}>暂不处理</Button></DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 添加 policy 规则（restricted 模式）：单输入框，格式与守卫均由服务端权威校验 */}
+      <Dialog open={pendingAction?.kind === "add-policy-rule"} onOpenChange={open => { if (!open) closeAction(); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>添加 Policy 规则</DialogTitle>
+            <DialogDescription>只改 modelPolicy.allow；目录、metadata 与 API Key 不变。此操作将创建备份。</DialogDescription>
+          </DialogHeader>
+          <form className="space-y-3" onSubmit={event => { event.preventDefault(); void confirmAddPolicyRule(); }}>
+            <label className="grid gap-2 text-sm">
+              规则
+              <input
+                aria-label="规则"
+                name="rule"
+                value={policyRuleInput}
+                disabled={busy !== null}
+                onChange={event => setPolicyRuleInput(event.target.value)}
+                placeholder="provider/model 或 provider/*"
+                className="w-full min-w-0 rounded-md border border-input bg-background p-2"
+              />
+            </label>
+            <p className="text-xs text-muted-foreground">provider/model 精确规则或 provider/* 通配规则；服务端为权威校验。</p>
+            {actionError ? <p role="alert" className="text-sm text-destructive">{actionError}</p> : null}
+            <DialogFooter>
+              <Button variant="outline" disabled={busy !== null} onClick={closeAction}>取消</Button>
+              <Button type="submit" disabled={busy !== null || policyRuleInput.trim() === ""}>添加规则</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* 删除 wildcard 规则：收窄选择范围，必须确认；确认前从当前 inventory 重查 removable */}
+      <ConfirmDialog
+        open={pendingAction?.kind === "remove-policy-wildcard"}
+        title="删除通配规则"
+        message={`确认删除通配规则 ${pendingAction?.kind === "remove-policy-wildcard" ? pendingAction.ref : ""}？只改 modelPolicy.allow。此操作将创建备份。`}
+        danger
+        confirmLabel="删除通配规则"
+        confirmDisabled={busy !== null || pendingWildcardRule?.removable !== true}
+        onCancel={closeAction}
+        onConfirm={() => void confirmRemovePolicyWildcard()}
+      >
+        <p className="text-sm text-muted-foreground">
+          命中 {pendingWildcardRule?.matchedModelCount ?? 0} 个模型
+          {(pendingWildcardRule?.unavailableModelCount ?? 0) > 0 ? `，其中 ${pendingWildcardRule?.unavailableModelCount} 个不可用` : ""}
+        </p>
+        <p className="mt-2 text-sm text-muted-foreground">删除后仅由该规则放行的模型将从选择器消失；目录、metadata 与 API Key 不变。</p>
+        {pendingWildcardRule?.removable !== true ? (
+          <p className="mt-2 text-sm text-muted-foreground">该规则当前不可删除：被主模型/fallback 依赖，或为避免清空策略。</p>
+        ) : null}
+        {actionError ? <p role="alert" className="mt-3 text-sm text-destructive">{actionError}</p> : null}
+      </ConfirmDialog>
 
       <ConfirmDialog
         open={pendingAction?.kind === "materialize"}

@@ -659,6 +659,8 @@ export type ModelInventoryResponse = ModelInventory;
 export interface ModelInventory {
   schemaVersion?: 2;
   pickerSource?: "gateway" | "inferred";
+  /** 顶层策略模式；旧后端缺字段时前端隐藏规则添加入口（安全回退）。 */
+  policyMode?: ModelPolicyMode;
   providers: ProviderInventoryEntry[];
   models: ModelInventoryEntry[];
   plugins: ModelPluginDescriptor[];
@@ -685,6 +687,22 @@ export interface PluginStateMutationResult extends MutationResult {
   pluginId: string;
   enabled: boolean;
   affectedProviderIds: string[];
+  warnings: string[];
+  runtimeConfirmed: boolean;
+}
+
+/** POST /api/model-policy/rules 的响应：rule 为实际存储值（exact 归一、wildcard 按输入原样 trim）。 */
+export interface AddModelPolicyRuleResult extends MutationResult {
+  rule: string;
+  kind: "exact" | "wildcard";
+  warnings: string[];
+  runtimeConfirmed: boolean;
+}
+
+/** DELETE /api/model-policy/wildcard 的响应：removedCount 含全部相同副本。 */
+export interface RemoveModelPolicyWildcardResult extends MutationResult {
+  value: string;
+  removedCount: number;
   warnings: string[];
   runtimeConfirmed: boolean;
 }
@@ -885,6 +903,18 @@ export function createApiClient(options: ApiClientOptions) {
       request<MutationResult>("/api/model-policy/exact-ref", {
         method: "DELETE",
         body: JSON.stringify({ ref, removeMetadata })
+      }),
+    /** POST /api/model-policy/rules：添加 policy 规则（exact 或 wildcard 由服务端权威识别） */
+    addModelPolicyRule: (rule: string) =>
+      request<AddModelPolicyRuleResult>("/api/model-policy/rules", {
+        method: "POST",
+        body: JSON.stringify({ rule })
+      }),
+    /** DELETE /api/model-policy/wildcard：按完全相同字符串删除 wildcard 规则（含全部重复副本） */
+    removeModelPolicyWildcard: (value: string) =>
+      request<RemoveModelPolicyWildcardResult>("/api/model-policy/wildcard", {
+        method: "DELETE",
+        body: JSON.stringify({ value })
       }),
     /** POST /api/models/materialize：把运行时可用模型补全为 config Provider 目录项 */
     materializeRuntimeModel: (ref: string, input: ProviderModelInput & { enabled: boolean }) =>

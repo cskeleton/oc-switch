@@ -142,7 +142,7 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 
 - 统一 inventory：`GET /api/model-inventory`（+ `POST …/refresh`）与 CLI `models inventory [--json]` / `models unavailable [--json]`；合并 config / 插件 manifest / OpenClaw 运行时目录三来源 + 引用来源；模型行三维状态（策略 / 插件 / 可用性）与 capability 从事实推导
 - 不可用与待处理：Models 页汇总区段（严重性排序：主模型 > fallback > 悬空精确引用 > 其余 > unknown）；处理向导按行事实分发——补全到已有目录（`POST /api/models/materialize`、CLI `model reconcile <ref> --yes`）、删除 policy 精确引用（`DELETE /api/model-policy/exact-ref`、CLI `model remove-policy-ref`，metadata 独立复选）、Provider 缺配置时打开 Custom Provider 向导预填 providerId/modelId、或保留；primary/fallback fail closed
-- Policy 规则视图（Models 页折叠区段）：exact 可删、wildcard 本期只读（显示命中/不可用计数）、非字符串条目只显示下标不回显值
+- Policy 规则视图（Models 页折叠区段）：exact 可删、wildcard 按 Core 投影的 `removable` 显式删除（显示命中/不可用计数）、非字符串条目只显示下标不回显值；restricted 模式下可添加规则（`POST /api/model-policy/rules`，CLI `model add-policy-rule`），删除 wildcard 走 `DELETE /api/model-policy/wildcard` / `model remove-policy-wildcard`；守卫（模式门禁、防清空、primary/fallback 覆盖保护）fail closed
 - 插件级启停：`PATCH /api/plugins/:pluginId/state`（confirm 必填）与 CLI `plugin enable/disable`；一组一个开关（一个插件多 Provider）、只写 `enabled` 一个键、主模型/fallback 阻断、非模型能力影响完整提示、写后重探测 `runtimeConfirmed` 分离报告
 
 ### 配置健康
