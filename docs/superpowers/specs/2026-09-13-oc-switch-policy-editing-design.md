@@ -1,7 +1,7 @@
 # oc-switch Policy（modelPolicy.allow）规则编辑设计
 
 - 日期：2026-09-13
-- 状态：草稿（实现后更新为已实施 + Sync Audit）
+- 状态：已实施（2026-09-14；Sync Audit 见 §9）
 - 关联规格：`2026-09-13-oc-switch-three-layer-write-model-design.md`（三层写模型与写入纪律）、`2026-09-09-oc-switch-runtime-model-management-design.md`（§11.3 Policy 规则视图——本文**取代**其「wildcard 本期只读」结论）、`2026-09-11-model-picker-and-disable-design.md`（wildcard 写入纪律的停用限定例外）
 
 ## 1. 背景与问题
@@ -141,3 +141,19 @@ export function removeModelPolicyWildcard(
 - **acceptance**（`scripts/acceptance-smoke.ts`）：fake openclaw fixture 下 add exact → add wildcard → remove wildcard 全链路 + 守卫场景；断言 policy 之外字节不变。
 - **E2E**（`test/e2e/runtime-models.e2e.ts`）：Policy 区段添加 / 删除流程；桌面 + 手机断言表不横滚（沿用 §11.3 既有断言模式）。
 - 验证：`bun run check`、`bun run acceptance`、`bun run test:e2e` 全绿。
+
+## 9. Sync Audit（2026-09-14）
+
+| 章节 | 结果 | 证据 |
+|------|------|------|
+| §2 范围与明确不做 | 完成 | 仅 restricted 模式规则编辑落地；模式切换、已有规则改写、invalid 编辑、实时预览均未做 |
+| §3.1/§3.2 Core 契约 | 完成 | `packages/core/src/model-policy-edit.ts`；校验顺序、7 个错误码、warning 语义逐条由 `test/model-policy-edit.test.ts` 锁定（24 用例） |
+| §3.3 归一层新增 | 完成 | `findPolicyExactEntryForRef`（`model-policy.ts`），无新增匹配器 |
+| §3.4 inventory 投影 | 完成 | 顶层 `policyMode` 透出；wildcard `removable` 守卫事实投影（`model-inventory.test.ts` 扩展矩阵） |
+| §4 Server API | 完成 | `routes/model-inventory.ts` 两端点复用 exact-ref 事务模板；`errors.ts` 400+code；`app.test.ts` 10 用例 |
+| §5 CLI | 完成 | `model add-policy-rule` / `model remove-policy-wildcard`（`cli.test.ts` 6 用例；非 TTY 无 `--yes` fail closed） |
+| §6 Web | 完成 | `api.ts` 两方法 + `policyMode?`；面板 restricted 门控添加入口、wildcard 删除/受保护；ModelsView 两对话框（`runtime-models.test.tsx`、`api.test.ts`） |
+| §7 写入纪律 | 完成 | 全程 `normalizeConfig:false`；diff-guard 未扩大；备份/文件锁不变；acceptance 断言 policy 之外字节不变、输出与备份无密钥 |
+| §8 测试与验收 | 完成 | `bun run check`（单测+typecheck+build）绿；`bun run acceptance` 绿（含 add exact→add wildcard→remove wildcard 全链路与守卫场景）；`bun run test:e2e` 42/42 绿（桌面+手机，含 Policy 表横滚断言） |
+
+已知限制（合并前均非阻断，见 SDD ledger deferred 清单）：inventory 投影的 exact 匹配不含 OpenRouter free 别名（方向保守，仅可能隐藏一个实际会成功的删除）；新端点未单独覆盖 `runtimeConfirmed:false` 形态（由 materialize 同型用例覆盖）。
