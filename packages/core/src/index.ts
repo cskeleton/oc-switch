@@ -23,6 +23,10 @@ export * from "./plugin-catalog";
 export * from "./runtime-model-catalog";
 export * from "./model-inventory";
 export * from "./model-reconciliation";
+export * from "./model-policy-edit";
+export {
+  findPolicyExactEntryForRef
+} from "./model-policy";
 export * from "./plugin-state";
 export * from "./model-suspension";
 export * from "./model-attention";

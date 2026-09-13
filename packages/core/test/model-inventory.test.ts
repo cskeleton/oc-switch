@@ -9,7 +9,7 @@ import type {
 } from "../src/model-inventory";
 import type { PluginProvider } from "../src/plugin-catalog";
 import type { RuntimeModelEntry, RuntimeModelSnapshot } from "../src/runtime-model-catalog";
-import type { OpenClawConfig } from "../src/types";
+import type { OpenClawConfig, OpenClawPrimaryModel } from "../src/types";
 
 /** 构造完整探测的 runtime snapshot；用例按需覆写。 */
 function makeSnapshot(overrides: Partial<RuntimeModelSnapshot> = {}): RuntimeModelSnapshot {
@@ -256,7 +256,7 @@ describe("buildModelInventory：来源并集与状态分离", () => {
     });
   });
 
-  test("policyRules 投影：exact 可删、wildcard 只读、非字符串条目不回显值", () => {
+  test("policyRules 投影：exact 可删、wildcard 按守卫事实计算 removable、非字符串条目不回显值", () => {
     const inventory = buildModelInventory({ config, pluginProviders, runtime });
     const rules = inventory.policyRules;
     const exact = rules.find((rule) => rule.kind === "exact") as ModelPolicyRuleEntry;
@@ -266,13 +266,15 @@ describe("buildModelInventory：来源并集与状态分离", () => {
       unavailableModelCount: 1,
       removable: true
     });
+    // cpa/* 删除后主模型 cpa/main 与 fallback cpa/fallback 失去全部剩余覆盖 → 不可删
     const cpaWildcard = rules.find((rule) => rule.value === "cpa/*") as ModelPolicyRuleEntry;
     expect(cpaWildcard).toMatchObject({ kind: "wildcard", matchedModelCount: 2, unavailableModelCount: 1, removable: false });
+    // plugin/* 删除后 raw 仍有剩余条目且不涉及 protected identity → 可删（spec §3.4）
     expect(rules.find((rule) => rule.value === "plugin/*")).toMatchObject({
       kind: "wildcard",
       matchedModelCount: 1,
       unavailableModelCount: 0,
-      removable: false
+      removable: true
     });
     // 两个非字符串条目只以 index + invalid 呈现，值不回显
     const invalids = rules.filter((rule) => rule.kind === "invalid");
@@ -748,6 +750,66 @@ describe("buildModelInventory：policy 三态既有语义回归", () => {
     });
     expect(models.get("up/dangle")?.selectionSource).toBeUndefined();
     expect(inventory.policyRules).toEqual([]);
+  });
+});
+
+describe("buildModelInventory：policyMode 透出与 wildcard removable 投影（spec §3.4）", () => {
+  test("顶层 policyMode 透出三态（restricted / legacy / unrestricted）", () => {
+    const restricted: OpenClawConfig = {
+      agents: { defaults: { modelPolicy: { allow: ["cpa/*"] } } }
+    };
+    const legacy: OpenClawConfig = {
+      agents: { defaults: { models: { "lp/one": {} } } }
+    };
+    const unrestricted: OpenClawConfig = {
+      agents: { defaults: { modelPolicy: { allow: [] } } }
+    };
+    expect(buildModelInventory({ config: restricted, runtime: makeSnapshot() }).policyMode).toBe("restricted");
+    expect(buildModelInventory({ config: legacy, runtime: makeSnapshot() }).policyMode).toBe("legacy");
+    expect(buildModelInventory({ config: unrestricted, runtime: makeSnapshot() }).policyMode).toBe("unrestricted");
+  });
+
+  function wildcardRemovable(config: OpenClawConfig, value: string): boolean | undefined {
+    const inventory = buildModelInventory({ config, runtime: makeSnapshot() });
+    return inventory.policyRules.find((rule) => rule.value === value)?.removable;
+  }
+
+  function wildcardConfig(allow: unknown[], model?: OpenClawPrimaryModel): OpenClawConfig {
+    return {
+      models: { providers: { cpa: { models: [{ id: "m1" }, { id: "m2" }] }, other: { models: [{ id: "model" }] } } },
+      agents: {
+        defaults: {
+          ...(model !== undefined ? { model } : {}),
+          modelPolicy: { allow }
+        }
+      }
+    };
+  }
+
+  test("无 protected identity 且删后 raw 仍有剩余 → 可删", () => {
+    expect(wildcardRemovable(wildcardConfig(["cpa/*", "other/model"]), "cpa/*")).toBe(true);
+  });
+
+  test("删后 raw 变 []（会变 unrestricted）→ 不可删", () => {
+    expect(wildcardRemovable(wildcardConfig(["cpa/*"]), "cpa/*")).toBe(false);
+  });
+
+  test("删后仅剩非字符串条目仍计入剩余 → 可删（与防清空守卫语义一致）", () => {
+    expect(wildcardRemovable(wildcardConfig(["cpa/*", 42]), "cpa/*")).toBe(true);
+  });
+
+  test("primary 依赖该 wildcard（删除后失去全部覆盖）→ 不可删", () => {
+    expect(wildcardRemovable(wildcardConfig(["cpa/*", "other/model"], "cpa/m1"), "cpa/*")).toBe(false);
+  });
+
+  test("fallback 依赖该 wildcard（删除后失去全部覆盖）→ 不可删", () => {
+    expect(
+      wildcardRemovable(wildcardConfig(["cpa/*", "other/model"], { primary: "other/model", fallbacks: ["cpa/m2"] }), "cpa/*")
+    ).toBe(false);
+  });
+
+  test("primary 被剩余 exact 兜底 → 可删；其余规则原样参与判定", () => {
+    expect(wildcardRemovable(wildcardConfig(["cpa/*", "cpa/m1"], "cpa/m1"), "cpa/*")).toBe(true);
   });
 });
 

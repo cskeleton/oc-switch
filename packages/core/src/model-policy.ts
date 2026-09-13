@@ -105,6 +105,12 @@ export function findPolicyWildcardForRef(config: OpenClawConfig, ref: string): s
   return (readModelPolicyAllow(config) ?? []).find((entry) => wildcardEntryMatches(entry, ref));
 }
 
+/** 返回受限 policy 中覆盖指定模型的首个精确条目（duplicate 检测用）；非 restricted 或无命中返回 undefined。 */
+export function findPolicyExactEntryForRef(config: OpenClawConfig, ref: string): string | undefined {
+  if (getModelPolicyMode(config) !== "restricted") return undefined;
+  return (readModelPolicyAllow(config) ?? []).find((entry) => exactEntryMatches(entry, ref));
+}
+
 /** 返回受限 policy 中属于指定 Provider 的首个通配条目。 */
 export function findPolicyWildcardForProvider(config: OpenClawConfig, providerId: string): string | undefined {
   if (!policyRestricts(config)) return undefined;

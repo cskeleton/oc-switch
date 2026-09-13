@@ -157,6 +157,8 @@ export interface ModelInventory {
   models: ModelInventoryEntry[];
   plugins: ModelPluginDescriptor[];
   policyRules: ModelPolicyRuleEntry[];
+  /** 全局 policy 模式（spec §3.4 顶层透出；前端据此显隐规则编辑入口）。 */
+  policyMode: ModelPolicyMode;
   diagnostics: RuntimeModelDiagnostic[];
   summary: {
     modelCount: number;
@@ -647,6 +649,7 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
     models,
     plugins: derivePlugins(plugins, pluginProviders),
     policyRules,
+    policyMode,
     // 防御性拷贝：消费方修改输出不得污染缓存的 runtime snapshot
     diagnostics: [
       ...runtime.diagnostics.map((diagnostic) => ({ ...diagnostic })),
@@ -720,7 +723,9 @@ function exactEntryCovers(entry: string, ref: string): boolean {
  *
  * - exact 条目回显值；仅当不命中主模型/fallback 引用时 removable=true（保护性引用
  *   即使可删除也会被 operation 预检阻断，规则行不应诱导注定失败的删除）；
- * - wildcard 本期 removable=false（spec §11.3 只读）；
+ * - wildcard 的 removable 与 removeModelPolicyWildcard 的守卫事实严格对齐（spec §3.4）：
+ *   移除该值的所有完全相同字符串条目后，raw 仍剩 ≥1 条（含非字符串条目），且无
+ *   protected identity（primary/fallback）失去全部剩余规则覆盖，才可删；
  * - 非字符串条目不回显值，仅返回 index/invalid 诊断（secret-free 纪律）。
  */
 function projectPolicyRules(
@@ -731,6 +736,20 @@ function projectPolicyRules(
 ): ModelPolicyRuleEntry[] {
   // legacy / unrestricted 模式下 allow 不产生有效规则，不投影（保持三态语义）
   if (policyMode === "legacy" || policyMode === "unrestricted") return [];
+
+  /** wildcard 可删性：与 removeModelPolicyWildcard 的防清空 + primary/fallback 覆盖守卫一致。 */
+  const wildcardRemovable = (entry: string): boolean => {
+    const remainingRaw = policyAllowRaw.filter((candidate) => candidate !== entry);
+    if (remainingRaw.length === 0) return false;
+    const remainingStrings = remainingRaw.filter((candidate): candidate is string => typeof candidate === "string");
+    for (const identity of protectedIdentities) {
+      const stillCovered = remainingStrings.some(
+        (candidate) => exactEntryCovers(candidate, identity) || wildcardEntryCovers(candidate, identity)
+      );
+      if (wildcardEntryCovers(entry, identity) && !stillCovered) return false;
+    }
+    return true;
+  };
 
   const rules: ModelPolicyRuleEntry[] = [];
   policyAllowRaw.forEach((entry, index) => {
@@ -759,7 +778,10 @@ function projectPolicyRules(
       kind,
       matchedModelCount: matched.length,
       unavailableModelCount: matched.filter((model) => model.availability === "unavailable").length,
-      removable: kind === "exact" && !protectedExact && matched.some(model => model.capabilities.canRemovePolicyExactRef)
+      removable:
+        kind === "wildcard"
+          ? wildcardRemovable(entry)
+          : !protectedExact && matched.some(model => model.capabilities.canRemovePolicyExactRef)
     });
   });
 
