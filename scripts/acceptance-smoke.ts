@@ -1272,6 +1272,157 @@ async function assertRuntimeModelAcceptance(rootDir: string, outputs: string[]):
   }
 }
 
+/**
+ * Policy 规则编辑验收（policy-editing spec §8 acceptance 条）。
+ *
+ * CLI 全链路：restricted fixture 下 add exact → add wildcard → remove wildcard，
+ * 守卫（防清空 / primary 覆盖 / legacy 模式门禁）fail closed。
+ * 回读 openclaw.json 断言：新规则追加在 allow 末尾（exact 按归一存储、wildcard 原样）、
+ * 删除只移目标规则，且每次写入 policy.allow 之外的内容逐字节等价。
+ */
+async function assertPolicyEditingAcceptance(rootDir: string, outputs: string[]): Promise<void> {
+  const scenarioDir = join(rootDir, "policy-editing");
+  const stateDir = join(scenarioDir, ".oc-switch");
+  const openclawPath = join(scenarioDir, "openclaw.json");
+  const envPath = join(scenarioDir, ".env");
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(envPath, "");
+
+  const cliEnv = {
+    OPENCLAW_CONFIG_PATH: openclawPath,
+    HOME: scenarioDir
+  };
+
+  /** restricted fixture：primary（sample 默认 minimax-portal/MiniMax-M3）由各场景 allow 自行决定是否覆盖 */
+  function writePolicyConfig(allow: string[]): void {
+    const config = JSON.parse(JSON.stringify(sample)) as OpenClawConfig;
+    config.agents!.defaults!.modelPolicy = { allow };
+    writeFileSync(openclawPath, `${JSON.stringify(config, null, 2)}\n`);
+  }
+
+  function readRawAllow(): unknown[] {
+    const config = JSON.parse(readFileSync(openclawPath, "utf8"));
+    return config.agents?.defaults?.modelPolicy?.allow ?? [];
+  }
+
+  /** 除 agents.defaults.modelPolicy.allow 子树外，前后配置必须完全等价（格式化无关的逐字节语义） */
+  function assertOnlyPolicyAllowChanged(beforeText: string, label: string): void {
+    const before = JSON.parse(beforeText);
+    const after = JSON.parse(readFileSync(openclawPath, "utf8"));
+    before.agents.defaults.modelPolicy.allow = "__policy_allow_masked__";
+    after.agents.defaults.modelPolicy.allow = "__policy_allow_masked__";
+    assert(
+      JSON.stringify(before) === JSON.stringify(after),
+      `${label}: modelPolicy.allow 之外的配置内容不得变化`
+    );
+  }
+
+  // ---------- 1. add exact：成功，按归一（Provider 折叠、model 保大小写）追加到 allow 末尾 ----------
+  writePolicyConfig(["nvidia/*", "minimax-portal/MiniMax-M3"]);
+  let before = readFileSync(openclawPath, "utf8");
+  const addExact = await runCli(["model", "add-policy-rule", "DeepSeek/deepseek-chat", "--json"], cliEnv);
+  outputs.push(addExact.combined);
+  assert(addExact.code === 0, `add-policy-rule exact 应成功，实际退出码 ${addExact.code}：${addExact.combined}`);
+  assertNoSecrets(addExact.combined, "add-policy-rule exact 输出");
+  const addExactJson = JSON.parse(addExact.stdout) as { ok: boolean; rule: string; kind: string; warnings: string[] };
+  assert(addExactJson.ok === true && addExactJson.kind === "exact", "add exact 的 JSON 契约应报告 ok + kind=exact");
+  assert(addExactJson.rule === "deepseek/deepseek-chat", `exact 规则应按归一存储（Provider 折叠），实际 ${addExactJson.rule}`);
+  assert(
+    JSON.stringify(readRawAllow()) === JSON.stringify(["nvidia/*", "minimax-portal/MiniMax-M3", "deepseek/deepseek-chat"]),
+    "exact 规则应追加到 allow 末尾且不动既有条目"
+  );
+  assertOnlyPolicyAllowChanged(before, "add exact");
+
+  // ---------- 2. add wildcard：原样存储；未知 Provider 只产生 warning 不阻断 ----------
+  before = readFileSync(openclawPath, "utf8");
+  const addWildcard = await runCli(["model", "add-policy-rule", "fake2/*"], cliEnv);
+  outputs.push(addWildcard.combined);
+  assert(addWildcard.code === 0, `add-policy-rule wildcard 应成功，实际退出码 ${addWildcard.code}：${addWildcard.combined}`);
+  assert(
+    addWildcard.combined.includes("fake2") && addWildcard.combined.includes("not in the known catalog"),
+    "未知 Provider 的 wildcard 应产生 warning 提示"
+  );
+  assertNoSecrets(addWildcard.combined, "add-policy-rule wildcard 输出");
+  const allowAfterWildcard = readRawAllow();
+  assert(
+    allowAfterWildcard[allowAfterWildcard.length - 1] === "fake2/*",
+    "wildcard 规则应按用户输入原样追加存储"
+  );
+  assertOnlyPolicyAllowChanged(before, "add wildcard");
+
+  // ---------- 3. remove wildcard：非 TTY 无 --yes fail closed；--yes 成功且只移目标规则 ----------
+  const blockedNoYes = await runCli(["model", "remove-policy-wildcard", "fake2/*"], cliEnv);
+  outputs.push(blockedNoYes.combined);
+  assert(blockedNoYes.code !== 0, "非 TTY 无 --yes 的 remove-policy-wildcard 必须 fail closed");
+  assert(readRawAllow().includes("fake2/*"), "fail closed 拒绝后 policy 不得变化");
+
+  before = readFileSync(openclawPath, "utf8");
+  const removed = await runCli(["model", "remove-policy-wildcard", "fake2/*", "--yes", "--json"], cliEnv);
+  outputs.push(removed.combined);
+  assert(removed.code === 0, `remove-policy-wildcard --yes 应成功，实际退出码 ${removed.code}：${removed.combined}`);
+  assertNoSecrets(removed.combined, "remove-policy-wildcard 输出");
+  const removedJson = JSON.parse(removed.stdout) as { ok: boolean; value: string; removedCount: number };
+  assert(removedJson.ok === true && removedJson.removedCount === 1, "remove wildcard 的 JSON 契约应报告 removedCount=1");
+  assert(
+    JSON.stringify(readRawAllow()) === JSON.stringify(["nvidia/*", "minimax-portal/MiniMax-M3", "deepseek/deepseek-chat"]),
+    "删除 wildcard 不得影响其余规则的顺序与内容"
+  );
+  assertOnlyPolicyAllowChanged(before, "remove wildcard");
+
+  // 三次成功写入应各产生一个备份
+  assert(listBackups(stateDir).length === 3, "add exact / add wildcard / remove wildcard 应各产生一个备份");
+
+  // ---------- 4a. 守卫：删除最后一条规则被拒（防清空 fail closed，不产生备份）----------
+  writePolicyConfig(["solo/*"]);
+  before = readFileSync(openclawPath, "utf8");
+  let backupsBefore = listBackups(stateDir).length;
+  const lastRule = await runCli(["model", "remove-policy-wildcard", "solo/*", "--yes"], cliEnv);
+  outputs.push(lastRule.combined);
+  assert(lastRule.code !== 0, "删除最后一条规则必须非零退出（防清空）");
+  assert(lastRule.combined.includes("unrestricted"), "防清空报错应说明拒绝原因（会变成 unrestricted）");
+  assert(readFileSync(openclawPath, "utf8") === before, "防清空拒绝后配置字节不得变化");
+  assert(listBackups(stateDir).length === backupsBefore, "守卫拒绝不得产生备份");
+
+  // ---------- 4b. 守卫：删除覆盖 primary 的 wildcard 被拒（fail closed）----------
+  writePolicyConfig(["minimax-portal/*", "nvidia/deepseek-ai/deepseek-v4-flash"]);
+  before = readFileSync(openclawPath, "utf8");
+  backupsBefore = listBackups(stateDir).length;
+  const primaryHit = await runCli(["model", "remove-policy-wildcard", "minimax-portal/*", "--yes"], cliEnv);
+  outputs.push(primaryHit.combined);
+  assert(primaryHit.code !== 0, "删除覆盖 primary 的 wildcard 必须非零退出");
+  assert(
+    primaryHit.combined.includes("minimax-portal/MiniMax-M3"),
+    "primary 覆盖保护报错应指出受保护的 primary 引用"
+  );
+  assert(readFileSync(openclawPath, "utf8") === before, "primary 覆盖保护拒绝后配置字节不得变化");
+  assert(listBackups(stateDir).length === backupsBefore, "守卫拒绝不得产生备份");
+
+  // ---------- 5. legacy fixture（sample 无 modelPolicy）：模式门禁拒绝 add，不创建 policy ----------
+  writeFileSync(openclawPath, `${JSON.stringify(sample, null, 2)}\n`);
+  before = readFileSync(openclawPath, "utf8");
+  backupsBefore = listBackups(stateDir).length;
+  const legacyAdd = await runCli(["model", "add-policy-rule", "nvidia/deepseek-ai/deepseek-v4-flash"], cliEnv);
+  outputs.push(legacyAdd.combined);
+  assert(legacyAdd.code !== 0, "legacy 模式 add-policy-rule 必须非零退出（policy-not-restricted）");
+  assert(legacyAdd.combined.includes("legacy"), "模式门禁报错应说明当前为 legacy 模式");
+  assert(readFileSync(openclawPath, "utf8") === before, "模式门禁拒绝后配置字节不得变化");
+  assert(
+    JSON.parse(readFileSync(openclawPath, "utf8")).agents.defaults.modelPolicy === undefined,
+    "模式门禁拒绝不得创建 modelPolicy"
+  );
+  assert(listBackups(stateDir).length === backupsBefore, "模式门禁拒绝不得产生备份");
+
+  // ---------- 6. 备份密钥纪律：本段产生的所有备份不得含疑似密钥 ----------
+  for (const backup of listBackups(stateDir)) {
+    const backupDir = join(stateDir, "backups", backup.id);
+    assertNoSecrets(readFileSync(join(backupDir, "openclaw.json"), "utf8"), `policy 编辑备份 ${backup.id} openclaw.json`);
+    const backupEnvPath = join(backupDir, ".env");
+    if (existsSync(backupEnvPath)) {
+      assertNoSecrets(readFileSync(backupEnvPath, "utf8"), `policy 编辑备份 ${backup.id} .env`);
+    }
+  }
+}
+
 async function main(): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), "oc-switch-acceptance-"));
   const outputs: string[] = [];
@@ -1439,6 +1590,9 @@ async function main(): Promise<void> {
 
     // 运行时模型协调（spec §13.4 七步：fake openclaw + 失败模式切换）
     await assertRuntimeModelAcceptance(dir, outputs);
+
+    // Policy 规则编辑 CLI 全链路（add exact/wildcard、remove wildcard、守卫 fail closed）
+    await assertPolicyEditingAcceptance(dir, outputs);
 
     // 汇总扫描所有输出
     for (const text of outputs) {

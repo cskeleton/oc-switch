@@ -415,4 +415,101 @@ test.describe("Runtime model inventory（统一 inventory 浏览器实测）", (
     }
   });
 
+  test("Policy 区段：添加规则流程，成功后规则出现在规则表", async ({ page }, testInfo) => {
+    const mobile = Boolean(testInfo.project.use.isMobile);
+    const newRule = "metadata-e2e/seed-model";
+    const before = await readInventory(page);
+    expect(before.policyMode).toBe("restricted");
+    expect(before.policyRules.some(rule => rule.value === newRule)).toBe(false);
+    let backupId: string | undefined;
+    try {
+      await connect(page);
+      await page.getByRole("button", { name: "模型", exact: true }).click();
+      await expect(page.getByTestId("models-view")).toBeVisible({ timeout: 15_000 });
+      await page.getByRole("button", { name: "展开 Policy 规则" }).click();
+      const policy = page.getByRole("region", { name: "Policy 规则", exact: true });
+
+      // restricted 模式提供「添加规则」入口；提交后规则出现在规则表（等待刷新）
+      await policy.getByRole("button", { name: "添加规则", exact: true }).click();
+      const dialog = page.getByRole("dialog");
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByText("只改 modelPolicy.allow；目录、metadata 与 API Key 不变。此操作将创建备份。", { exact: true })).toBeVisible();
+      await dialog.getByLabel("规则", { exact: true }).fill(newRule);
+      const addResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/model-policy/rules" && response.request().method() === "POST");
+      await dialog.getByRole("button", { name: "添加规则", exact: true }).click();
+      const added = await addResponse;
+      expect(added.ok()).toBe(true);
+      const addedBody = await added.json() as { backupId: string; kind: string; rule: string; warnings: string[] };
+      backupId = addedBody.backupId;
+      expect(addedBody.kind).toBe("exact");
+      expect(addedBody.rule).toBe(newRule);
+      await expect(dialog).toHaveCount(0);
+      await expect(page.getByText(`已添加精确规则 ${newRule}（只改 modelPolicy.allow）`, { exact: true })).toBeVisible();
+      await expect(policy.getByText(newRule, { exact: true })).toBeVisible();
+
+      // 服务端 inventory 回读：新规则追加，既有规则原样保留
+      const after = await readInventory(page);
+      expect(after.policyRules.length).toBe(before.policyRules.length + 1);
+      expect(after.policyRules.some(rule => rule.kind === "exact" && rule.value === newRule)).toBe(true);
+      for (const rule of before.policyRules) {
+        expect(after.policyRules.some(candidate => candidate.value === rule.value && candidate.kind === rule.kind)).toBe(true);
+      }
+
+      // 添加后 Policy 表自身不横滚（沿用既有断言模式；桌面 + 手机 project 各跑一遍）
+      await page.getByRole("button", { name: "删除规则 ghost-provider/policy-only-model", exact: true }).scrollIntoViewIfNeeded();
+      await expectPolicyTableLayout(page, mobile, "ghost-provider/policy-only-model");
+      await expectNoBodyOverflow(page, `policy-add-${testInfo.project.name}`);
+      await expect(page.locator("body")).not.toContainText(FIXTURE_SECRET);
+    } finally {
+      if (backupId) await restoreFixture(page, backupId);
+    }
+  });
+
+  test("Policy 区段：wildcard 删除流程，确认框含命中计数，删除后规则消失", async ({ page }, testInfo) => {
+    const mobile = Boolean(testInfo.project.use.isMobile);
+    const before = await readInventory(page);
+    const wildcard = before.policyRules.find(rule => rule.kind === "wildcard" && rule.value === "nvidia/*");
+    expect(wildcard?.removable).toBe(true);
+    let backupId: string | undefined;
+    try {
+      await connect(page);
+      await page.getByRole("button", { name: "模型", exact: true }).click();
+      await expect(page.getByTestId("models-view")).toBeVisible({ timeout: 15_000 });
+      await page.getByRole("button", { name: "展开 Policy 规则" }).click();
+      const policy = page.getByRole("region", { name: "Policy 规则", exact: true });
+
+      // removable wildcard 行提供删除入口；确认框展示命中计数与影响文案
+      const removeButton = policy.getByRole("button", { name: "删除规则 nvidia/*", exact: true });
+      await removeButton.scrollIntoViewIfNeeded();
+      await removeButton.click();
+      const dialog = page.getByRole("dialog");
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByText("确认删除通配规则 nvidia/*？只改 modelPolicy.allow。此操作将创建备份。", { exact: true })).toBeVisible();
+      await expect(dialog.getByText("命中 3 个模型", { exact: true })).toBeVisible();
+      await expect(dialog.getByText("删除后仅由该规则放行的模型将从选择器消失；目录、metadata 与 API Key 不变。", { exact: true })).toBeVisible();
+      const removeResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/model-policy/wildcard" && response.request().method() === "DELETE");
+      await dialog.getByRole("button", { name: "删除通配规则", exact: true }).click();
+      const removed = await removeResponse;
+      expect(removed.ok()).toBe(true);
+      const removedBody = await removed.json() as { backupId: string; removedCount: number };
+      backupId = removedBody.backupId;
+      expect(removedBody.removedCount).toBe(1);
+      await expect(dialog).toHaveCount(0);
+      await expect(page.getByText("已删除通配规则 nvidia/*（只改 modelPolicy.allow）", { exact: true })).toBeVisible();
+
+      // 规则从规则表消失（等待刷新）；服务端 inventory 回读确认只剩其余规则
+      await expect(policy.getByText("nvidia/*", { exact: true })).toHaveCount(0);
+      const after = await readInventory(page);
+      expect(after.policyRules.map(rule => rule.value)).toEqual(before.policyRules.map(rule => rule.value).filter(value => value !== "nvidia/*"));
+
+      // 删除后 Policy 表自身不横滚（沿用既有断言模式；桌面 + 手机 project 各跑一遍）
+      await page.getByRole("button", { name: "删除规则 ghost-provider/policy-only-model", exact: true }).scrollIntoViewIfNeeded();
+      await expectPolicyTableLayout(page, mobile, "ghost-provider/policy-only-model");
+      await expectNoBodyOverflow(page, `policy-remove-${testInfo.project.name}`);
+      await expect(page.locator("body")).not.toContainText(FIXTURE_SECRET);
+    } finally {
+      if (backupId) await restoreFixture(page, backupId);
+    }
+  });
+
 });
