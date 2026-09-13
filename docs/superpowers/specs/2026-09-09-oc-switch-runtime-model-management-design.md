@@ -333,7 +333,7 @@ CLI 与 Server 调用同一协调与 operation；非 TTY 的破坏性操作沿�
 - 每条显示命中数量和不可用数量；
 - 零命中 wildcard 单独标记；
 - exact ref 可安全删除；
-- wildcard 本期只读，避免在缺少明确收窄设计时误改用户策略。
+- ~~wildcard 本期只读，避免在缺少明确收窄设计时误改用户策略。~~（2026-09-13 起由 `2026-09-13-oc-switch-policy-editing-design.md` 取代：restricted 模式下可显式添加/删除 wildcard 规则，守卫 fail closed。）
 
 ## 12. 错误与安全边界
 
