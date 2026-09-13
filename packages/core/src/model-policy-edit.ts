@@ -130,7 +130,6 @@ export function addModelPolicyRule(
   }
 
   const raw = readModelPolicyAllowRaw(config)!;
-  const allowStrings = readModelPolicyAllow(config) ?? [];
   const warnings: string[] = [];
 
   // 3. duplicate / 冗余覆盖检查
@@ -158,7 +157,8 @@ export function addModelPolicyRule(
         `Wildcard rule ${storedRule} already exists in agents.defaults.modelPolicy.allow.`
       );
     }
-    // 用探测 ref `body/_` 检查是否被更宽的现有 wildcard 覆盖（`_` 不在任何条目中出现，不会命中 exact）
+    // 用探测 ref `body/_` 检查是否被更宽的现有 wildcard 覆盖；探测 ref 不会命中 exact 条目，
+    // 因为 findPolicyWildcardForRef 只执行 wildcard 匹配（与 `_` 是否出现在条目中无关）
     const coveringWildcard = findPolicyWildcardForRef(config, `${storedRule.slice(0, -2)}/_`);
     if (coveringWildcard !== undefined) {
       warnings.push(
