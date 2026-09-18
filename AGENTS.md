@@ -45,6 +45,16 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 - **Provider 模型目录**：`models.providers`；`listModels` 合并两者。
 - **主模型**：`agents.defaults.model`，双形态（见下节）。
 
+### Policy 规则原子编辑（2026-09-16 起）
+
+规格见 `docs/superpowers/specs/2026-09-16-oc-switch-policy-rule-replacement-design.md`（已实施）。
+
+- **原子替换**：Core `replaceModelPolicyRule` 按完全相同字符串匹配旧规则并替换全部副本，按最终 policy 覆盖校验（primary/fallback、防清空），不经过删除再添加的中间状态；入口为 CLI `model replace-policy-rule <value> <rule>`、API `PATCH /api/model-policy/rules`、Web 规则行「编辑」对话框（预填旧值、无变化禁用保存）。
+- **纯规则删除**：Core `removeModelPolicyRule` 统一 exact/wildcard 入口，只改 `modelPolicy.allow`，不动目录/metadata/密钥；被其他规则覆盖的冗余 exact（含被 wildcard 覆盖的 primary exact）可删。规则面板删除一律走该入口（无 metadata 复选项）；旧 `removeModelPolicyExactRef` / `model remove-policy-ref` / `DELETE /api/model-policy/exact-ref` 保留给模型行向导的引用清理语义，守卫未放宽。
+- **投影语义变化**：规则行 `removable` 改为纯规则删除判定（最终覆盖校验），取代旧引用清理守卫投影；新增规则行 `editable`（合法字符串规则在 restricted 下恒 true，不可删≠不可编辑）与 inventory 顶层 `policyRevision`。此两点取代 2026-09-13 spec 中「规则删除只能走 removeModelPolicyExactRef 语义」的结论。
+- **revision 冲突检测**：写入携带 `expectedRevision`（Web 打开对话框时冻结、CLI 确认前读取），事务 mutate 内比对，冲突返回 409 `policy-revision-conflict` / CLI 非零，绝不更新 revision 后继续写、不自动重试。旧后端缺 `policyRevision` 时 Web 编辑/删除入口显示「版本不支持」。
+- 不做：模式切换、整数组自由编辑、批量替换、invalid 条目修复、per-agent 策略写入、自动 wildcard 展开/去重。
+
 ### 三层写模型与删除分级（2026-09-13 起）
 
 规格见 `docs/superpowers/specs/2026-09-13-oc-switch-three-layer-write-model-design.md`（已实施）。
@@ -229,6 +239,7 @@ bun run packages/cli/src/index.ts     # 直接调用 CLI
 | Provider Attention Workflow（问题处理与用户决定） | `docs/superpowers/specs/2026-09-11-provider-attention-workflow-proposal.md` |
 | 三层写模型与删除分级 | `docs/superpowers/specs/2026-09-13-oc-switch-three-layer-write-model-design.md` |
 | Policy 规则编辑 | `docs/superpowers/specs/2026-09-13-oc-switch-policy-editing-design.md` |
+| Policy 规则原子编辑与规则层删除 | `docs/superpowers/specs/2026-09-16-oc-switch-policy-rule-replacement-design.md` |
 
 ## Learned User Preferences
 

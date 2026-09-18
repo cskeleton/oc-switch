@@ -4,6 +4,8 @@
 - 状态：已实施（2026-09-14；Sync Audit 见 §9）
 - 关联规格：`2026-09-13-oc-switch-three-layer-write-model-design.md`（三层写模型与写入纪律）、`2026-09-09-oc-switch-runtime-model-management-design.md`（§11.3 Policy 规则视图——本文**取代**其「wildcard 本期只读」结论）、`2026-09-11-model-picker-and-disable-design.md`（wildcard 写入纪律的停用限定例外）
 
+> 后续设计（2026-09-16，已实施）：[Policy 规则原子编辑与规则层删除](2026-09-16-oc-switch-policy-rule-replacement-design.md)。本文保留 2026-09-14 已实施基线；该设计已允许用户显式替换已有规则，并将规则面板的删除与旧引用清理入口分离（纯规则删除）。本文“不编辑已有规则”是当时的范围限制，已被该设计取代：规则行 `removable` 投影改为纯规则删除判定，冗余 exact（含被 wildcard 覆盖的 primary exact）可经新入口删除；本文的添加/wildcard 删除能力与守卫保持不变。
+
 ## 1. 背景与问题
 
 `agents.defaults.modelPolicy.allow` 当前只有间接写入（启用模型时同步 exact、Provider/插件停用的限定例外、sync push 整树覆盖）与一种显式编辑（`removeModelPolicyExactRef` 删除 exact 引用）。Models 页 Policy 规则面板中 wildcard 只读、没有任何添加入口。用户要收紧/放宽策略（如删掉 `cpa/*` 改用精确枚举、为新 Provider 加一条通配）只能手工编辑 JSON，绕过 oc-switch 的备份与守卫。

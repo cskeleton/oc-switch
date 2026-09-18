@@ -201,6 +201,8 @@ oc-switch models inventory [--json]    # unified inventory / 统一 inventory（
 oc-switch models unavailable [--json]  # pending unavailable/unknown rows / 待处理区段
 oc-switch model reconcile <ref> [--yes]          # materialize runtime model / 补全运行时模型
 oc-switch model remove-policy-ref <ref> [--remove-metadata] [--yes]  # 删除 policy 精确引用
+oc-switch model replace-policy-rule <value> <rule> [--yes]  # 原子替换 policy 规则
+oc-switch model remove-policy-rule <value> [--yes]          # 纯规则删除（不改目录/metadata）
 oc-switch use <provider>/<model-id...>
 oc-switch model add <provider>/<model-id...> [--alias <alias>]
 oc-switch model remove <provider>/<model-id...>
