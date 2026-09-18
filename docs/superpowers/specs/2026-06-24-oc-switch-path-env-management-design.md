@@ -867,5 +867,5 @@ SecretRef 迁移预检比较源 `.env` 与已唯一关联的 service env 时，�
 
 - 备份加密。
 - 更完整地识别 OpenClaw config `env` block 与非 Provider SecretRef。
-- 增加 `GET /api/gateway/env-drift`，比较管理源托管块与已发现的 service env；路径深度探测已纳入 §4.3。
+- ~~增加 `GET /api/gateway/env-drift`~~ **已实现（2026-09-19）**：比较管理源托管块与已发现的 service env；见 `2026-09-19-oc-switch-gateway-env-drift-design.md`。
 - 支持旧备份批量清理和敏感备份风险审计。

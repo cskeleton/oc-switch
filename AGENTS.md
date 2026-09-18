@@ -169,6 +169,7 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 - 分层 env 管理；跨平台运行实例探测（Linux systemd / macOS LaunchAgent），返回 `RuntimeDiscoveryResult` 与候选组（`candidateId`）；管理源 `.env` 与 Gateway service env 分离，后者只读展示且不得成为 active `envPath`
 - **运行时 env 来源**：`openclaw.json` 使用 canonical SecretRef 引用；`openclaw` CLI 与 Gateway 可加载 state 目录全局 `.env`。OpenClaw 同时为服务生成 env 快照（Linux：unit 实际 `EnvironmentFile=`，常见为 `gateway.systemd.env`；macOS：`service-env/*.env`）；服务进程环境优先于 dotenv，因此快照同名旧值会覆盖 `.env`，而快照缺项可由 `.env` 补足。改 API Key 后仍应同步服务 env 并 restart/apply，使运行中进程加载新值（日常切模型/allowlist 通常无需重启）。
 - Gateway 服务环境：`.env` 托管块在写入校验通过且能唯一关联候选组时自动同步到该组 service env（Linux：PID/unit 关联的 `EnvironmentFile=`，禁止仅按 `dirname(envPath)/gateway.systemd.env` 猜测；macOS：共享 LaunchAgent 解析器识别的 `service-env/*.env`，兼容 `/bin/sh + wrapper` 与旧 wrapper 布局）；无法唯一关联时主写入仍成功但 `gatewayEnvSync.ok=false`；目标文件块外内容原样保留，块外同名 Key 只告警不自动改写；Web/CLI/API 提供 `sync-env`、`restart`、`apply`（均可带 `--candidate` / `candidateId`），多实例时必须指定候选，不自动静默重启 Gateway
+- **Gateway 环境分叉检测**：`GET /api/gateway/env-drift`、`oc-switch gateway env-drift [--candidate] [--json]`、Settings「环境分叉」卡片；文件级比较 `.env` 托管块与已关联 service env 快照（**不读运行中进程 env**，文案须提示重启后生效），五态分类：`different`（快照旧值覆盖 `.env`）为 blocking，`extra-in-service`（仅目标托管块内残留）/`outside-conflict` 为 warning，`missing-in-service`（运行时由全局 `.env` 补足）/`equal` 为 info；源空值附 `unsyncable`；恒 200 + `report.status:"unavailable"` 承载无法关联（ambiguous 附 candidates）；只回显变量名与状态枚举，绝不回显值
 - 已知后续：stale allowlist 专用清理 UI、chmod 警告、真实配置写 E2E、`GET /api/gateway/env-drift`
 
 ## 产品与使用定位
@@ -240,6 +241,7 @@ bun run packages/cli/src/index.ts     # 直接调用 CLI
 | 三层写模型与删除分级 | `docs/superpowers/specs/2026-09-13-oc-switch-three-layer-write-model-design.md` |
 | Policy 规则编辑 | `docs/superpowers/specs/2026-09-13-oc-switch-policy-editing-design.md` |
 | Policy 规则原子编辑与规则层删除 | `docs/superpowers/specs/2026-09-16-oc-switch-policy-rule-replacement-design.md` |
+| Gateway 环境分叉检测（env-drift） | `docs/superpowers/specs/2026-09-19-oc-switch-gateway-env-drift-design.md` |
 
 ## Learned User Preferences
 
