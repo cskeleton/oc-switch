@@ -4579,6 +4579,183 @@ describe("server policy 规则编辑 endpoints", () => {
     const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
     expect(config.agents!.defaults!.modelPolicy!.allow).toContain("nvidia/z-ai/glm5.1");
   });
+
+  describe("POST /api/model-policy/rules/batch-remove（stale cleanup spec §4/§7）", () => {
+    test("批量删除多条 stale exact（含重复副本）：单事务成功，removedCount 为总副本数，其余规则原样保留", async () => {
+      const ws = policyEditWorkspace({
+        allow: ["nvidia/*", "ghost-provider/policy-only-model", "ghost-provider/policy-only-model", "DeepSeek/deepseek-chat"]
+      });
+      const app = policyEditApp(ws);
+      const revision = revisionFromDisk(ws);
+
+      const { response, json } = await jsonRequest(app, "/api/model-policy/rules/batch-remove", {
+        method: "POST",
+        body: JSON.stringify({
+          values: ["ghost-provider/policy-only-model", "DeepSeek/deepseek-chat"],
+          expectedRevision: revision
+        })
+      });
+
+      expect(response.status).toBe(200);
+      expect(json.ok).toBe(true);
+      expect(json.removedCount).toBe(3);
+      expect(json.backupId).toBeTruthy();
+      expect(existsSync(join(ws.paths.stateDir, "backups", String(json.backupId)))).toBe(true);
+      expect(json.runtimeConfirmed).toBe(true);
+      const warnings = json.warnings as string[];
+      expect(warnings.some((warning) => warning.includes("Removed 2 identical entries of the rule ghost-provider/policy-only-model"))).toBe(true);
+
+      const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+      expect(config.agents!.defaults!.modelPolicy!.allow).toEqual(["nvidia/*"]);
+      // 刷新后的 inventory 携带新 policyRevision
+      const refreshed = json.inventory as { policyRevision: string };
+      expect(refreshed.policyRevision).not.toBe(revision);
+      expect(refreshed.policyRevision).toBe(revisionFromDisk(ws));
+    });
+
+    test("缺失 / 格式非法的 expectedRevision → 400 且不写盘、无备份", async () => {
+      const ws = policyEditWorkspace();
+      const app = policyEditApp(ws);
+      const before = readFileSync(ws.paths.openclawPath, "utf8");
+
+      for (const body of [
+        { values: ["DeepSeek/deepseek-chat"] },
+        { values: ["DeepSeek/deepseek-chat"], expectedRevision: "garbage" },
+        { values: "DeepSeek/deepseek-chat", expectedRevision: revisionFromDisk(ws) },
+        { values: [42], expectedRevision: revisionFromDisk(ws) }
+      ]) {
+        const { response, json } = await jsonRequest(app, "/api/model-policy/rules/batch-remove", {
+          method: "POST",
+          body: JSON.stringify(body)
+        });
+        expect(response.status).toBe(400);
+        expect(String(json.error)).toMatch(/must be/);
+      }
+      expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+      const { json: backupsJson } = await jsonRequest(app, "/api/backups");
+      expect((backupsJson.backups as unknown[]).length).toBe(0);
+    });
+
+    test("过期 expectedRevision → 409 policy-revision-conflict，配置与 env 字节不变且无新备份", async () => {
+      const ws = policyEditWorkspace();
+      const app = policyEditApp(ws);
+      writeFileSync(ws.paths.envPath, "TEST_KEY=value\n");
+      const staleRevision = revisionFromDisk(ws);
+
+      // 先经既有端点改变 policy（产生一个合法备份），旧 revision 随即过期
+      const add = await jsonRequest(app, "/api/model-policy/rules", {
+        method: "POST",
+        body: JSON.stringify({ rule: "new-provider/model" })
+      });
+      expect(add.response.status).toBe(200);
+      const configBefore = readFileSync(ws.paths.openclawPath, "utf8");
+      const envBefore = readFileSync(ws.paths.envPath, "utf8");
+      const { json: backupsBefore } = await jsonRequest(app, "/api/backups");
+      const backupCountBefore = (backupsBefore.backups as unknown[]).length;
+
+      const { response, json } = await jsonRequest(app, "/api/model-policy/rules/batch-remove", {
+        method: "POST",
+        body: JSON.stringify({ values: ["DeepSeek/deepseek-chat"], expectedRevision: staleRevision })
+      });
+
+      expect(response.status).toBe(409);
+      expect(json.code).toBe("policy-revision-conflict");
+      expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(configBefore);
+      expect(readFileSync(ws.paths.envPath, "utf8")).toBe(envBefore);
+      const { json: backupsAfter } = await jsonRequest(app, "/api/backups");
+      expect((backupsAfter.backups as unknown[]).length).toBe(backupCountBefore);
+    });
+
+    test("守卫失败 400 且 details.refs 透出触发规则：not-found / last-rule-removal / primary（未知 Provider 不豁免）", async () => {
+      // not-found：refs 列出全部缺失值
+      const ws = policyEditWorkspace();
+      const app = policyEditApp(ws);
+      const notFound = await jsonRequest(app, "/api/model-policy/rules/batch-remove", {
+        method: "POST",
+        body: JSON.stringify({
+          values: ["DeepSeek/deepseek-chat", "nope/a", "nope/b"],
+          expectedRevision: revisionFromDisk(ws)
+        })
+      });
+      expect(notFound.response.status).toBe(400);
+      expect(notFound.json.code).toBe("policy-rule-not-found");
+      expect(notFound.json.details).toEqual({ refs: ["nope/a", "nope/b"] });
+
+      // last-rule-removal：refs 为全部待删值
+      const sole = policyEditWorkspace({ allow: ["nvidia/*", "DeepSeek/deepseek-chat"] });
+      const soleApp = policyEditApp(sole);
+      const soleBefore = readFileSync(sole.paths.openclawPath, "utf8");
+      const soleResult = await jsonRequest(soleApp, "/api/model-policy/rules/batch-remove", {
+        method: "POST",
+        body: JSON.stringify({ values: ["nvidia/*", "DeepSeek/deepseek-chat"], expectedRevision: revisionFromDisk(sole) })
+      });
+      expect(soleResult.response.status).toBe(400);
+      expect(soleResult.json.code).toBe("last-rule-removal");
+      expect(soleResult.json.details).toEqual({ refs: ["nvidia/*", "DeepSeek/deepseek-chat"] });
+      expect(readFileSync(sole.paths.openclawPath, "utf8")).toBe(soleBefore);
+      const { json: soleBackups } = await jsonRequest(soleApp, "/api/backups");
+      expect((soleBackups.backups as unknown[]).length).toBe(0);
+
+      // primary 指向未知 Provider 的悬空 ref：仍被保护（provider 不存在不豁免）
+      const primary = policyEditWorkspace({
+        allow: ["ghost-provider/policy-only-model", "minimax-portal/MiniMax-M3"],
+        model: "ghost-provider/policy-only-model"
+      });
+      const primaryApp = policyEditApp(primary);
+      const primaryBefore = readFileSync(primary.paths.openclawPath, "utf8");
+      const primaryResult = await jsonRequest(primaryApp, "/api/model-policy/rules/batch-remove", {
+        method: "POST",
+        body: JSON.stringify({
+          values: ["ghost-provider/policy-only-model"],
+          expectedRevision: revisionFromDisk(primary)
+        })
+      });
+      expect(primaryResult.response.status).toBe(400);
+      expect(primaryResult.json.code).toBe("primary-model-referenced");
+      expect(primaryResult.json.details).toEqual({ refs: ["ghost-provider/policy-only-model"] });
+      expect(readFileSync(primary.paths.openclawPath, "utf8")).toBe(primaryBefore);
+      const { json: primaryBackups } = await jsonRequest(primaryApp, "/api/backups");
+      expect((primaryBackups.backups as unknown[]).length).toBe(0);
+    });
+
+    test("legacy / unrestricted 模式 400 policy-not-restricted 且不写盘、无备份", async () => {
+      // sample 无 modelPolicy → legacy 模式
+      const ws = workspace();
+      const app = policyEditApp(ws);
+      const before = readFileSync(ws.paths.openclawPath, "utf8");
+
+      const { response, json } = await jsonRequest(app, "/api/model-policy/rules/batch-remove", {
+        method: "POST",
+        body: JSON.stringify({ values: ["nvidia/x"], expectedRevision: revisionFromDisk(ws) })
+      });
+
+      expect(response.status).toBe(400);
+      expect(json.code).toBe("policy-not-restricted");
+      expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+      const { json: backupsJson } = await jsonRequest(app, "/api/backups");
+      expect((backupsJson.backups as unknown[]).length).toBe(0);
+    });
+
+    test("空 values no-op 成功：removedCount 0、backupId null、无备份、配置与 env 字节不变", async () => {
+      const ws = policyEditWorkspace();
+      const app = policyEditApp(ws);
+      writeFileSync(ws.paths.envPath, "TEST_KEY=value\n");
+      const configBefore = readFileSync(ws.paths.openclawPath, "utf8");
+      const envBefore = readFileSync(ws.paths.envPath, "utf8");
+
+      const { response, json } = await jsonRequest(app, "/api/model-policy/rules/batch-remove", {
+        method: "POST",
+        body: JSON.stringify({ values: [], expectedRevision: revisionFromDisk(ws) })
+      });
+
+      expect(response.status).toBe(200);
+      expect(json).toMatchObject({ ok: true, removedCount: 0, backupId: null, warnings: [] });
+      expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(configBefore);
+      expect(readFileSync(ws.paths.envPath, "utf8")).toBe(envBefore);
+      const { json: backupsJson } = await jsonRequest(app, "/api/backups");
+      expect((backupsJson.backups as unknown[]).length).toBe(0);
+    });
+  });
 });
 
 describe("三层写模型：删除分级 / wildcard warning / discover 插件 Key 回退", () => {

@@ -3,8 +3,10 @@ import {
   addModelPolicyRule,
   assertModelPolicyRevision,
   buildModelPolicyRevision,
+  canRemoveModelPolicyRules,
   isModelPolicyEditError,
   removeModelPolicyRule,
+  removeModelPolicyRules,
   removeModelPolicyWildcard,
   replaceModelPolicyRule,
   ModelPolicyEditError
@@ -746,5 +748,167 @@ describe("removeModelPolicyRule", () => {
     // 删除 wildcard cpa/*：cpa/m1 仍被 exact 覆盖，仅 cpa/m2 失去放行
     const losing = removeModelPolicyRule(config, "cpa/*", { inventory });
     expect(losing.warnings.some((warning) => warning.includes("1 model(s)") && warning.includes("cpa/m2"))).toBe(true);
+  });
+});
+
+describe("removeModelPolicyRules（批量纯规则删除，stale cleanup spec §3/§7）", () => {
+  test("批量删除多条 exact（含重复副本与大小写变体）：removedCount 为总副本数，其余规则原样保留", () => {
+    const config = restrictedConfig(["ghost/missing", "ghost/missing", "Ghost/missing", "other/model", 42]);
+    const before = structuredClone(config);
+
+    const result = removeModelPolicyRules(config, ["ghost/missing", "Ghost/missing"]);
+
+    expect(result.removedCount).toBe(3);
+    expect(allowOf(result.config)).toEqual(["other/model", 42]);
+    // ghost/missing 两个完全相同副本报一条 warning；Ghost/missing 变体单副本不报
+    expect(result.warnings.filter((warning) => warning.includes("Removed 2 identical entries of the rule ghost/missing"))).toHaveLength(1);
+    expect(config).toEqual(before);
+  });
+
+  test("values 内重复字符串按一条计：removedCount 仍是 allow 中的总副本数", () => {
+    const config = restrictedConfig(["ghost/missing", "ghost/missing", "other/model"]);
+    const result = removeModelPolicyRules(config, ["ghost/missing", "ghost/missing"]);
+    expect(result.removedCount).toBe(2);
+    expect(allowOf(result.config)).toEqual(["other/model"]);
+  });
+
+  test("空数组 no-op 成功：removedCount 0、allow 不变、无 warning、不视为错误", () => {
+    const config = restrictedConfig(["ghost/missing", "other/model"]);
+    const result = removeModelPolicyRules(config, []);
+    expect(result.removedCount).toBe(0);
+    expect(result.warnings).toEqual([]);
+    expect(allowOf(result.config)).toEqual(["ghost/missing", "other/model"]);
+    // legacy 模式下空数组同样 no-op 成功（不触发模式门禁）
+    const legacy: OpenClawConfig = { agents: { defaults: {} } };
+    expect(removeModelPolicyRules(legacy, []).removedCount).toBe(0);
+  });
+
+  test("legacy / unrestricted 模式拒绝（非空 values）", () => {
+    const legacy: OpenClawConfig = { agents: { defaults: {} } };
+    expect(requirePolicyEditError(captureError(() => removeModelPolicyRules(legacy, ["cpa/*"]))).code).toBe(
+      "policy-not-restricted"
+    );
+    const unrestricted = restrictedConfig([]);
+    expect(requirePolicyEditError(captureError(() => removeModelPolicyRules(unrestricted, ["cpa/*"]))).code).toBe(
+      "policy-not-restricted"
+    );
+  });
+
+  test("任一 value 不存在：整体拒绝，policy-rule-not-found 且 refs/消息列出缺失值", () => {
+    const config = restrictedConfig(["ghost/missing", "other/model"]);
+    const before = structuredClone(config);
+
+    const error = requirePolicyEditError(
+      captureError(() => removeModelPolicyRules(config, ["ghost/missing", "nope/x", "also/missing"]))
+    );
+
+    expect(error.code).toBe("policy-rule-not-found");
+    expect(error.refs).toEqual(["nope/x", "also/missing"]);
+    expect(error.message).toContain("nope/x");
+    expect(error.message).toContain("also/missing");
+    expect(config).toEqual(before);
+  });
+
+  test("删后 raw 为空：last-rule-removal 整体拒绝，refs 为全部待删值", () => {
+    const config = restrictedConfig(["ghost/missing", "other/missing"]);
+    const error = requirePolicyEditError(captureError(() => removeModelPolicyRules(config, ["ghost/missing", "other/missing"])));
+    expect(error.code).toBe("last-rule-removal");
+    expect(error.refs).toEqual(["ghost/missing", "other/missing"]);
+  });
+
+  test("primary 指向未知 Provider 的 ref：仍被 primary-model-referenced 保护（provider 不存在不豁免）", () => {
+    const config: OpenClawConfig = {
+      ...restrictedConfig(["ghost/missing", "other/model"]),
+      agents: { defaults: { models: {}, model: "ghost/missing", modelPolicy: { allow: ["ghost/missing", "other/model"] } } }
+    };
+    const error = requirePolicyEditError(captureError(() => removeModelPolicyRules(config, ["ghost/missing"])));
+    expect(error.code).toBe("primary-model-referenced");
+    expect(error.refs).toEqual(["ghost/missing"]);
+  });
+
+  test("primary 被其中一条待删规则覆盖、其余规则不覆盖：refs 只列触发覆盖丢失的规则", () => {
+    // primary 同时被两条待删 exact 覆盖（Provider 大小写变体各覆盖）→ 两条都列为触发 ref；
+    // 保留 other/model 避免先触发 last-rule-removal（exact 匹配 model 大小写敏感，
+    // 所以变体只能变 Provider 段）
+    const config: OpenClawConfig = {
+      models: { providers: { cpa: { models: [{ id: "m1" }] } } },
+      agents: { defaults: { models: {}, model: "cpa/m1", modelPolicy: { allow: ["cpa/m1", "CPA/m1", "other/model"] } } }
+    };
+    const error = requirePolicyEditError(captureError(() => removeModelPolicyRules(config, ["cpa/m1", "CPA/m1"])));
+    expect(error.code).toBe("primary-model-referenced");
+    expect(error.refs).toEqual(["cpa/m1", "CPA/m1"]);
+
+    // 只删不覆盖 primary 的规则 → 成功
+    const ok = removeModelPolicyRules(config, ["other/model"]);
+    expect(ok.removedCount).toBe(1);
+  });
+
+  test("fallback 失去覆盖：fallback-referenced 且 refs 列触发规则", () => {
+    const config: OpenClawConfig = {
+      ...restrictedConfig(["ghost/missing", "other/model"]),
+      agents: {
+        defaults: {
+          models: {},
+          model: { primary: "other/model", fallbacks: ["ghost/missing"] },
+          modelPolicy: { allow: ["ghost/missing", "other/model"] }
+        }
+      }
+    };
+    const error = requirePolicyEditError(captureError(() => removeModelPolicyRules(config, ["ghost/missing"])));
+    expect(error.code).toBe("fallback-referenced");
+    expect(error.refs).toEqual(["ghost/missing"]);
+  });
+
+  test("wildcards 与非字符串条目永不进入批量删除：filter 只碰字符串精确匹配", () => {
+    const config = restrictedConfig(["ghost/*", "ghost/missing", 42, "other/model"]);
+    const result = removeModelPolicyRules(config, ["ghost/missing"]);
+    expect(result.removedCount).toBe(1);
+    expect(allowOf(result.config)).toEqual(["ghost/*", 42, "other/model"]);
+  });
+
+  test("inventory 提供时按每条被删规则追加「失去策略放行」warning", () => {
+    const config = restrictedConfig(["cpa/*", "ghost/missing", "other/model"]);
+    const inventory = buildModelInventory({ config, runtime: completeRuntime() });
+    const result = removeModelPolicyRules(config, ["ghost/missing"], { inventory });
+    // ghost/missing 作为 policy-only ref 也是 inventory 模型行：删除后它失去放行
+    expect(result.warnings.some((warning) => warning.includes("lose policy allowance") && warning.includes("ghost/missing"))).toBe(true);
+
+    // 被删规则不单独放行任何模型行（仍被 cpa/* 覆盖）→ 无失去放行 warning
+    const coveredConfig = restrictedConfig(["cpa/*", "cpa/m1", "other/model"]);
+    const covered = removeModelPolicyRules(coveredConfig, ["cpa/m1"], {
+      inventory: buildModelInventory({ config: coveredConfig, runtime: completeRuntime() })
+    });
+    expect(covered.warnings).toEqual([]);
+
+    const losingConfig = restrictedConfig(["cpa/m1", "cpa/m2", "other/model"]);
+    const losingInventory = buildModelInventory({ config: losingConfig, runtime: completeRuntime() });
+    const losing = removeModelPolicyRules(losingConfig, ["cpa/m1", "cpa/m2"], { inventory: losingInventory });
+    expect(losing.warnings.some((warning) => warning.includes("lose policy allowance"))).toBe(true);
+  });
+});
+
+describe("canRemoveModelPolicyRules（批量可删性投影）", () => {
+  test("与批量成败严格一致：可删 true；不存在 / 防清空 / primary / fallback / 非 restricted 均 false", () => {
+    expect(canRemoveModelPolicyRules(restrictedConfig(), ["ghost/missing"])).toBe(true);
+    expect(canRemoveModelPolicyRules(restrictedConfig(), ["ghost/missing", "nope/x"])).toBe(false);
+    expect(canRemoveModelPolicyRules(restrictedConfig(["ghost/missing"]), ["ghost/missing"])).toBe(false);
+
+    const primaryConfig: OpenClawConfig = {
+      ...restrictedConfig(["ghost/missing", "other/model"]),
+      agents: { defaults: { models: {}, model: "ghost/missing", modelPolicy: { allow: ["ghost/missing", "other/model"] } } }
+    };
+    expect(canRemoveModelPolicyRules(primaryConfig, ["ghost/missing"])).toBe(false);
+    expect(canRemoveModelPolicyRules(primaryConfig, ["other/model"])).toBe(true);
+
+    const legacy: OpenClawConfig = { agents: { defaults: {} } };
+    expect(canRemoveModelPolicyRules(legacy, ["cpa/*"])).toBe(false);
+  });
+
+  test("空数组投影为 true（no-op 可删）；输入 config 不被修改", () => {
+    const config = restrictedConfig();
+    const before = structuredClone(config);
+    expect(canRemoveModelPolicyRules(config, [])).toBe(true);
+    expect(canRemoveModelPolicyRules(config, ["ghost/missing", "ghost/missing"])).toBe(true);
+    expect(config).toEqual(before);
   });
 });

@@ -1,4 +1,5 @@
 import { ModelAttentionPanel } from "../components/ModelAttentionPanel";
+import { StalePolicyRefsCleanupDialog, type StalePolicyRef } from "../components/StalePolicyRefsCleanupDialog";
 import { Edit3, Inbox, Plus, RefreshCw, Search, Star, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState, useMemo } from "react";
 import { DataTable } from "../components/DataTable";
@@ -28,6 +29,7 @@ import { cn } from "../lib/utils";
 import {
   isPolicyRevisionConflict,
   type ApiClient,
+  type ConfigStatusReport,
   type ModelInventory,
   type ModelInventoryEntry,
   type ModelPolicyRuleEntry,
@@ -111,6 +113,10 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
   const [pendingAction, setPendingAction] = useState<PendingModelAction | null>(null);
   /** policy 规则视图（spec §11.3）：默认折叠，展开后渲染 inventory.policyRules */
   const [showPolicyRules, setShowPolicyRules] = useState(false);
+  /** config-status 报告：悬空策略引用清理（stale cleanup spec §6）的 stale 集来源 */
+  const [configStatus, setConfigStatus] = useState<ConfigStatusReport | null>(null);
+  /** 「清理悬空引用」对话框开关 */
+  const [staleCleanupOpen, setStaleCleanupOpen] = useState(false);
   const [removeMetadata, setRemoveMetadata] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   /** 添加 policy 规则对话框的受控输入（格式由服务端权威校验） */
@@ -121,6 +127,16 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
     try {
       const next = await client.getModelInventory();
       setInventory(next);
+      // 悬空引用清理入口仅在 restricted 且有规则时需要 config-status；失败安全回退为隐藏入口
+      if (next.policyMode === "restricted" && next.policyRules.length > 0) {
+        try {
+          setConfigStatus(await client.getConfigStatus());
+        } catch {
+          setConfigStatus(null);
+        }
+      } else {
+        setConfigStatus(null);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载失败");
     }
@@ -487,6 +503,26 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
     return models.slice().sort(comparePendingModels);
   }, [inventory]);
 
+  /**
+   * 悬空策略引用（stale cleanup spec §6）：stale 集 = unknownProviderRefs ∪ knownProviderUnknownModelRefs，
+   * 与 policyRules 中 kind==="exact" 规则按原始字符串求交。policyOnlyExactRefs 的有效子集绝不进列表。
+   */
+  const staleRefs = useMemo<StalePolicyRef[]>(() => {
+    const rules = inventory?.policyRules ?? [];
+    const policy = configStatus?.modelPolicy;
+    if (inventory?.policyMode !== "restricted" || rules.length === 0 || !policy) return [];
+    const unknownProviders = new Set(policy.unknownProviderRefs);
+    const exactValues = new Set(rules.filter((rule) => rule.kind === "exact").map((rule) => rule.value));
+    const result: StalePolicyRef[] = [];
+    const seen = new Set<string>();
+    for (const value of [...policy.unknownProviderRefs, ...policy.knownProviderUnknownModelRefs]) {
+      if (!exactValues.has(value) || seen.has(value)) continue;
+      seen.add(value);
+      result.push({ value, reason: unknownProviders.has(value) ? "unknown-provider" : "unknown-model" });
+    }
+    return result;
+  }, [inventory, configStatus]);
+
   const activeProvider = (inventory?.providers ?? []).find((p) => p.providerId.toLowerCase() === selectedProviderId?.toLowerCase());
   const activeProviderDisabled = Boolean(activeProvider?.disabled);
   const activeProviderFromConfig = Boolean(activeProvider?.sources.includes("config"));
@@ -815,6 +851,8 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
               onAddRule={() => openAction({ kind: "add-policy-rule", ref: "" })}
               onEditRule={openEditPolicyRule}
               onRemoveRule={openRemovePolicyRule}
+              staleRefs={staleRefs}
+              onCleanupStaleRefs={() => setStaleCleanupOpen(true)}
             />
           </div>
         ) : null}
@@ -963,6 +1001,16 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
           </form>
         </DialogContent>
       </Dialog>
+
+      {/* 悬空策略引用批量清理（stale cleanup spec §6）：确认冻结 revision 单次批量调用；成功刷新 inventory 与 config-status */}
+      <StalePolicyRefsCleanupDialog
+        open={staleCleanupOpen}
+        refs={staleRefs}
+        policyRevision={inventory?.policyRevision}
+        client={client}
+        onCancel={() => setStaleCleanupOpen(false)}
+        onChanged={() => void load()}
+      />
 
       <ConfirmDialog
         open={pendingAction?.kind === "materialize"}

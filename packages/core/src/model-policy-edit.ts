@@ -26,6 +26,8 @@ import type { OpenClawConfig } from "./types";
  *   不经过先删后加的中间状态（2026-09-16 spec §3.1/§3.2）；
  * - `removeModelPolicyRule`：纯规则删除入口，exact 与 wildcard 同一入口，
  *   使用与替换一致的最终覆盖判断（允许删除仍被其他规则覆盖的 primary exact）；
+ * - `removeModelPolicyRules` / `canRemoveModelPolicyRules`：批量纯规则删除（stale
+ *   refs cleanup spec §3），单事务原子、先全量守卫后统一改，禁用循环单条删除；
  * - `buildModelPolicyRevision`：policy 指纹（模式 + 完整原始 allow 的确定性序列化
  *   SHA-256），供事务层比对过期编辑冲突。
  *
@@ -52,11 +54,14 @@ export type ModelPolicyEditErrorCode =
 
 export class ModelPolicyEditError extends Error {
   readonly code: ModelPolicyEditErrorCode;
+  /** 触发违规的规则字符串列表（批量删除时供 Server 逐条标注；单条失败通常只有一项） */
+  readonly refs: string[] | undefined;
 
-  constructor(code: ModelPolicyEditErrorCode, message: string) {
+  constructor(code: ModelPolicyEditErrorCode, message: string, options?: { refs?: string[] | undefined }) {
     super(message);
     this.name = "ModelPolicyEditError";
     this.code = code;
+    this.refs = options?.refs;
   }
 }
 
@@ -187,15 +192,24 @@ function unknownProviderWarnings(providerSegment: string, options: AddModelPolic
  *   非字符串项不贡献覆盖，不依赖 availability。已存在的未覆盖问题不会被无关编辑
  *   扩大为全局阻断（coveredBefore && !coveredAfter 才拒绝）。
  */
-function assertPolicyFinalState(config: OpenClawConfig, finalRaw: unknown[], action: string): void {
+function assertPolicyFinalState(
+  config: OpenClawConfig,
+  finalRaw: unknown[],
+  action: string,
+  removedRefs?: string[]
+): void {
   if (finalRaw.length === 0) {
     throw new ModelPolicyEditError(
       "last-rule-removal",
-      `Cannot ${action} because removing the last agents.defaults.modelPolicy.allow entry would make [] unrestricted; keep another rule or narrow the policy first.`
+      `Cannot ${action} because removing the last agents.defaults.modelPolicy.allow entry would make [] unrestricted; keep another rule or narrow the policy first.`,
+      { refs: removedRefs }
     );
   }
   const beforeStrings = readModelPolicyAllow(config) ?? [];
   const afterStrings = finalRaw.filter((entry): entry is string => typeof entry === "string");
+  // 覆盖变化由删除/替换的规则贡献：编辑前被覆盖、编辑后不再覆盖时，这些规则即触发 ref
+  const triggeringRefs = (identity: string): string[] | undefined =>
+    removedRefs?.filter((value) => isPolicyAllowsRef([value], identity));
   const primaryIdentity = protectedRefIdentity(readPrimaryModelRef(config));
   if (
     primaryIdentity !== undefined &&
@@ -204,7 +218,8 @@ function assertPolicyFinalState(config: OpenClawConfig, finalRaw: unknown[], act
   ) {
     throw new ModelPolicyEditError(
       "primary-model-referenced",
-      `Cannot ${action}: the primary model ${primaryIdentity} is covered by the current policy and no remaining rule would cover it. Switch the primary model first.`
+      `Cannot ${action}: the primary model ${primaryIdentity} is covered by the current policy and no remaining rule would cover it. Switch the primary model first.`,
+      { refs: triggeringRefs(primaryIdentity) }
     );
   }
   for (const fallbackRef of readFallbackModelRefs(config)) {
@@ -216,7 +231,8 @@ function assertPolicyFinalState(config: OpenClawConfig, finalRaw: unknown[], act
     ) {
       throw new ModelPolicyEditError(
         "fallback-referenced",
-        `Cannot ${action}: the fallback model ${fallbackIdentity} is covered by the current policy and no remaining rule would cover it. Resolve the fallback reference first.`
+        `Cannot ${action}: the fallback model ${fallbackIdentity} is covered by the current policy and no remaining rule would cover it. Resolve the fallback reference first.`,
+        { refs: triggeringRefs(fallbackIdentity) }
       );
     }
   }
@@ -570,7 +586,7 @@ export function removeModelPolicyRule(
 
   // 3. 构造最终 allow 并统一校验最终状态（防清空 + primary/fallback 覆盖）
   const finalRaw = raw.filter((entry) => entry !== value);
-  assertPolicyFinalState(config, finalRaw, `remove ${value}`);
+  assertPolicyFinalState(config, finalRaw, `remove ${value}`, [value]);
 
   // 4. 写入：在克隆上重新计算，删除全部相同副本；不动其它条目与非字符串条目
   const next = structuredClone(config);
@@ -603,6 +619,92 @@ export function canRemoveModelPolicyRule(config: OpenClawConfig, value: string):
     const raw = readModelPolicyAllowRaw(config)!;
     if (!raw.some((entry) => entry === value)) return false;
     assertPolicyFinalState(config, raw.filter((entry) => entry !== value), `remove ${value}`);
+    return true;
+  } catch (error) {
+    if (isModelPolicyEditError(error)) return false;
+    throw error;
+  }
+}
+
+/**
+ * 批量纯规则删除（2026-09-19 stale policy refs cleanup spec §3）：单事务原子，
+ * 先全量守卫后统一改——对「删除全部 values 后的最终 allow」一次性校验，任一违规
+ * 整体拒绝，不落盘、无备份、无部分提交；禁用循环调单条 removeModelPolicyRule
+ * 的实现（中途失败会产生部分提交语义）。
+ *
+ * - `values` 为原始字符串，逐条按完全相同字符串匹配删全部副本（不 trim、不大小写
+ *   折叠定位），`removedCount` 为删除的总副本数；values 内重复字符串按一条计；
+ * - 守卫顺序：restricted 模式 → 任一 value 不存在（消息与 refs 列出缺失值）→
+ *   防清空 → primary/fallback 最终覆盖（refs 为触发覆盖丢失的规则）；
+ * - 空数组 no-op 成功（removedCount 0、返回克隆但不产生语义变化），不视为错误；
+ * - 只收窄策略，不触碰目录 / metadata / 密钥 / wildcard；输入 config 不被修改。
+ */
+export function removeModelPolicyRules(
+  config: OpenClawConfig,
+  values: string[],
+  options: RemoveModelPolicyWildcardOptions = {}
+): OperationResult & { removedCount: number } {
+  // 0. values 内去重（保序）；空数组 no-op 成功，不做模式门禁也不产生写入
+  const uniqueValues = [...new Set(values)];
+  if (uniqueValues.length === 0) {
+    return { config: structuredClone(config), warnings: [], removedCount: 0 };
+  }
+
+  // 1. 模式门禁
+  assertPolicyRestricted(config);
+
+  const raw = readModelPolicyAllowRaw(config)!;
+
+  // 2. 存在性守卫：任一 value 不存在即整体拒绝，消息与 refs 列出全部缺失值
+  const missing = uniqueValues.filter((value) => !raw.some((entry) => entry === value));
+  if (missing.length > 0) {
+    throw new ModelPolicyEditError(
+      "policy-rule-not-found",
+      `Rules not found in agents.defaults.modelPolicy.allow: ${missing.join(", ")}; nothing to remove.`,
+      { refs: missing }
+    );
+  }
+
+  // 3. 构造最终 allow 并一次性统一校验最终状态（防清空 + primary/fallback 覆盖）
+  const valueSet = new Set(uniqueValues);
+  const finalRaw = raw.filter((entry) => !valueSet.has(entry as string));
+  assertPolicyFinalState(config, finalRaw, `remove ${uniqueValues.join(", ")}`, uniqueValues);
+
+  // 4. 写入：在克隆上重新计算，删除全部匹配副本；不动其它条目与非字符串条目
+  const next = structuredClone(config);
+  next.agents!.defaults!.modelPolicy!.allow = readModelPolicyAllowRaw(next)!.filter(
+    (entry) => !valueSet.has(entry as string)
+  );
+
+  const removedCount = raw.length - finalRaw.length;
+  const finalStrings = finalRaw.filter((entry): entry is string => typeof entry === "string");
+  const warnings: string[] = [];
+  for (const value of uniqueValues) {
+    const copies = raw.filter((entry) => entry === value).length;
+    if (copies > 1) {
+      warnings.push(`Removed ${copies} identical entries of the rule ${value}.`);
+    }
+    warnings.push(...losingAllowanceWarnings(options.inventory, value, finalStrings));
+  }
+
+  return { config: next, warnings, removedCount };
+}
+
+/**
+ * 批量纯规则删除可删性投影（非抛出）：与 removeModelPolicyRules 的成败严格一致，
+ * 同一模式门禁、同一存在性检查、同一 assertPolicyFinalState 最终状态保护。
+ * 空数组视为 no-op 可删（true）。服务器校验仍是权威，投影仅供勾选默认值与禁用提示。
+ */
+export function canRemoveModelPolicyRules(config: OpenClawConfig, values: string[]): boolean {
+  try {
+    const uniqueValues = [...new Set(values)];
+    if (uniqueValues.length === 0) return true;
+    assertPolicyRestricted(config);
+    const raw = readModelPolicyAllowRaw(config)!;
+    const missing = uniqueValues.filter((value) => !raw.some((entry) => entry === value));
+    if (missing.length > 0) return false;
+    const valueSet = new Set(uniqueValues);
+    assertPolicyFinalState(config, raw.filter((entry) => !valueSet.has(entry as string)), "remove", uniqueValues);
     return true;
   } catch (error) {
     if (isModelPolicyEditError(error)) return false;

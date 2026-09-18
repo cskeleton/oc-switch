@@ -695,6 +695,52 @@ describe("runtime model inventory API client", () => {
     expect(result.runtimeConfirmed).toBe(false);
   });
 
+  test("batchRemoveModelPolicyRules POST /api/model-policy/rules/batch-remove 携带 values/expectedRevision 并解析 removedCount", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const client = createApiClient({
+      baseUrl: "http://localhost:7420",
+      token: "token",
+      fetchImpl: async (url, init = {}) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({
+          ok: true,
+          removedCount: 3,
+          backupId: "2026-09-19T00-00-00",
+          warnings: [],
+          runtimeConfirmed: true
+        }), { status: 200 });
+      }
+    });
+
+    const result = await client.batchRemoveModelPolicyRules(["ghost/m1", "cpa/dangling"], "v1:abc");
+
+    expect(calls[0]!.url).toBe("http://localhost:7420/api/model-policy/rules/batch-remove");
+    expect(calls[0]!.init.method).toBe("POST");
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ values: ["ghost/m1", "cpa/dangling"], expectedRevision: "v1:abc" });
+    expect(result.ok).toBe(true);
+    expect(result.removedCount).toBe(3);
+    expect(result.backupId).toBe("2026-09-19T00-00-00");
+  });
+
+  test("batchRemoveModelPolicyRules 400 守卫失败透传 details.refs", async () => {
+    const client = createApiClient({
+      baseUrl: "http://localhost:7420",
+      token: "token",
+      fetchImpl: async () =>
+        new Response(JSON.stringify({
+          error: "primary model references cpa/dangling (primary-model-referenced).",
+          code: "primary-model-referenced",
+          details: { refs: ["cpa/dangling"] }
+        }), { status: 400 })
+    });
+
+    const failure = await client.batchRemoveModelPolicyRules(["cpa/dangling"], "v1:abc").catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(ApiRequestError);
+    expect((failure as ApiRequestError).status).toBe(400);
+    expect((failure as ApiRequestError).code).toBe("primary-model-referenced");
+    expect((failure as ApiRequestError).details?.refs).toEqual(["cpa/dangling"]);
+  });
+
   test("409 policy-revision-conflict 抛 ApiRequestError 并可被 isPolicyRevisionConflict 识别", async () => {
     const client = createApiClient({
       baseUrl: "http://localhost:7420",

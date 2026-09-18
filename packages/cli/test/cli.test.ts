@@ -2307,6 +2307,157 @@ describe("cli 运行时模型管理（inventory / reconcile / plugin）", () => 
     });
   });
 
+  describe("model cleanup-stale-policy-refs（stale cleanup spec §5/§7）", () => {
+    /** 悬空 ref fixture：unknown Provider ref + known Provider unknown model ref + 有效规则若干 */
+    function writeStaleFixture(): { dir: string; configPath: string } {
+      const { dir, configPath } = writePolicyFixture();
+      const config = JSON.parse(readFileSync(configPath, "utf8")) as OpenClawConfig;
+      config.agents!.defaults!.modelPolicy!.allow = [
+        "nvidia/*",
+        "minimax-portal/MiniMax-M3",
+        "DeepSeek/deepseek-chat",
+        "ghost-provider/policy-only-model",
+        "ghost-provider/policy-only-model",
+        "nvidia/no-such-model"
+      ];
+      writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+      return { dir, configPath };
+    }
+
+    test("默认只预览：列出 ref + 原因，exit 0、不写盘、无备份", async () => {
+      const { dir, configPath } = writeStaleFixture();
+      const env = {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, completeRuntimeCommands())
+      };
+
+      const preview = await runCli(["model", "cleanup-stale-policy-refs"], env);
+      expect(preview.code).toBe(0);
+      expect(preview.stdout).toContain("ghost-provider/policy-only-model");
+      expect(preview.stdout).toContain("nvidia/no-such-model");
+      expect(preview.stdout).toContain("Provider 不存在");
+      expect(preview.stdout).toContain("模型不在目录");
+      expect(preview.stdout).toContain("--yes");
+      const before = readFileSync(configPath, "utf8");
+      expect(readFileSync(configPath, "utf8")).toBe(before);
+      expect(existsSync(join(dir, ".oc-switch", "backups"))).toBe(false);
+    });
+
+    test("--yes 执行批量删除：removedCount 为总副本数，其余规则原样保留，自动备份", async () => {
+      const { dir, configPath } = writeStaleFixture();
+      const result = await runCli(["model", "cleanup-stale-policy-refs", "--yes"], {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, completeRuntimeCommands())
+      });
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("已清理 2 条悬空策略引用（共删除 3 个规则副本");
+      const config = JSON.parse(readFileSync(configPath, "utf8"));
+      expect(config.agents.defaults.modelPolicy.allow).toEqual([
+        "nvidia/*",
+        "minimax-portal/MiniMax-M3",
+        "DeepSeek/deepseek-chat"
+      ]);
+      expect(existsSync(join(dir, ".oc-switch", "backups"))).toBe(true);
+    });
+
+    test("--json 契约：{ ok, removed, removedCount, backupId, warnings }，不含密钥", async () => {
+      const { dir, configPath } = writeStaleFixture();
+      const result = await runCli(["model", "cleanup-stale-policy-refs", "--yes", "--json"], {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, completeRuntimeCommands())
+      });
+
+      expect(result.code).toBe(0);
+      const json = JSON.parse(result.stdout) as Record<string, unknown>;
+      expect(json.ok).toBe(true);
+      expect(json.removed).toEqual([
+        "ghost-provider/policy-only-model",
+        "nvidia/no-such-model"
+      ]);
+      expect(json.removedCount).toBe(3);
+      expect(typeof json.backupId).toBe("string");
+      expect(Array.isArray(json.warnings)).toBe(true);
+      expect(result.stdout + result.stderr).not.toContain("sk-");
+    });
+
+    test("JSON 预览与空集：confirmed:false 列表；无悬空引用时 exit 0 无备份", async () => {
+      const { dir, configPath } = writeStaleFixture();
+      const env = {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, completeRuntimeCommands())
+      };
+
+      const preview = await runCli(["model", "cleanup-stale-policy-refs", "--json"], env);
+      expect(preview.code).toBe(0);
+      const previewJson = JSON.parse(preview.stdout) as { ok: boolean; confirmed: boolean; refs: Array<{ ref: string; reason: string }> };
+      expect(previewJson).toMatchObject({ ok: true, confirmed: false });
+      expect(previewJson.refs).toHaveLength(2);
+
+      // 无悬空引用：打印「没有可清理的悬空引用」，exit 0、无备份
+      const clean = writePolicyFixture();
+      const cleanConfig = JSON.parse(readFileSync(clean.configPath, "utf8")) as OpenClawConfig;
+      cleanConfig.agents!.defaults!.modelPolicy!.allow = [
+        "nvidia/*",
+        "minimax-portal/MiniMax-M3",
+        "DeepSeek/deepseek-chat"
+      ];
+      writeFileSync(clean.configPath, `${JSON.stringify(cleanConfig, null, 2)}\n`);
+      const cleanEnv = {
+        OPENCLAW_CONFIG_PATH: clean.configPath,
+        HOME: clean.dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(clean.dir, completeRuntimeCommands())
+      };
+      const empty = await runCli(["model", "cleanup-stale-policy-refs"], cleanEnv);
+      expect(empty.code).toBe(0);
+      expect(empty.stdout).toContain("没有可清理的悬空引用");
+      expect(existsSync(join(clean.dir, ".oc-switch", "backups"))).toBe(false);
+    });
+
+    test("非 restricted 模式：明确提示不支持，非零退出、无备份", async () => {
+      // sample 无 modelPolicy → legacy 模式
+      const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-cleanup-legacy-"));
+      tempDirs.push(dir);
+      const configPath = join(dir, "openclaw.json");
+      writeFileSync(configPath, `${JSON.stringify(sample, null, 2)}\n`);
+
+      const result = await runCli(["model", "cleanup-stale-policy-refs", "--yes"], {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir
+      });
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain("restricted");
+      expect(existsSync(join(dir, ".oc-switch", "backups"))).toBe(false);
+    });
+
+    test("守卫失败：primary 指向未知 Provider 的悬空 ref 仍被保护，逐条打印触发 ref、配置不变", async () => {
+      const { dir, configPath } = writePolicyFixture();
+      const config = JSON.parse(readFileSync(configPath, "utf8")) as OpenClawConfig;
+      config.agents!.defaults!.model = "ghost-provider/policy-only-model";
+      config.agents!.defaults!.modelPolicy = {
+        allow: ["ghost-provider/policy-only-model", "minimax-portal/MiniMax-M3"]
+      };
+      writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+      const before = readFileSync(configPath, "utf8");
+
+      const result = await runCli(["model", "cleanup-stale-policy-refs", "--yes"], {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, completeRuntimeCommands())
+      });
+
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain("primary");
+      expect(result.stderr).toContain("ghost-provider/policy-only-model");
+      expect(readFileSync(configPath, "utf8")).toBe(before);
+      expect(existsSync(join(dir, ".oc-switch", "backups"))).toBe(false);
+    });
+  });
+
   describe("model reconcile", () => {
     test("runtime available 且 Provider 存在：预览 + --yes 写入；--json 不含密钥", async () => {
       const { dir, configPath } = writePolicyFixture();

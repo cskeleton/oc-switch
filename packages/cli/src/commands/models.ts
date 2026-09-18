@@ -6,11 +6,14 @@ import {
   createConfigAdapter,
   disableModel,
   enableModel,
+  inspectConfigStatus,
+  isModelPolicyEditError,
   materializeRuntimeModel,
   normalizeModelRefForStorage,
   parseModelRef,
   removeModelPolicyExactRef,
   removeModelPolicyRule,
+  removeModelPolicyRules,
   removeModelPolicyWildcard,
   removeProviderModel,
   replaceModelPolicyRule,
@@ -21,6 +24,7 @@ import {
   type ModelInventoryEntry
 } from "@oc-switch/core";
 import type { Command } from "commander";
+import { existsSync, readFileSync } from "node:fs";
 import type { CommandContext } from "../command-context";
 import { commandErrorMessage } from "../errors";
 
@@ -426,6 +430,104 @@ export function registerModelCommands(program: Command, context: CommandContext)
         for (const warning of warnings) console.warn(warning);
       } catch (error) {
         console.error(commandErrorMessage(error));
+        process.exitCode = 1;
+      }
+    });
+
+  model.command("cleanup-stale-policy-refs")
+    .description(
+      "批量清理 agents.defaults.modelPolicy.allow 中的悬空 exact 引用（unknownProvider ∪ knownProviderUnknownModel；仅 restricted 模式；只删除策略规则，不影响目录/metadata/密钥；默认只预览，--yes 执行）"
+    )
+    .option("--yes", "确认执行批量删除（destructive action fail closed；未指定则只预览，不写入任何内容）")
+    .option("--json", "输出 JSON 结果")
+    .action(async (options: { yes?: boolean; json?: boolean }) => {
+      try {
+        const paths = context.activePaths();
+        const config = context.readConfig(paths);
+        // stale 集 = unknownProviderRefs ∪ knownProviderUnknownModelRefs（互斥），
+        // 均来自 restricted 规则中的字符串 exact；有效但无 metadata 的 policyOnlyExactRefs 不进列表
+        const envContent = existsSync(paths.envPath) ? readFileSync(paths.envPath, "utf8") : "";
+        const catalog = await context.pluginCatalog(paths);
+        const status = inspectConfigStatus({
+          config,
+          paths,
+          envContent,
+          pluginProviders: catalog.providers
+        });
+        // 与规则编辑门禁一致：legacy / unrestricted 不提供本入口
+        const mode = status.modelPolicy.mode;
+        if (mode !== "restricted") {
+          throw new Error(
+            `cleanup-stale-policy-refs 仅支持 restricted 模式；当前 modelPolicy.allow 模式为 ${mode}。`
+          );
+        }
+        const stale = [
+          ...status.modelPolicy.unknownProviderRefs.map((ref) => ({ ref, reason: "Provider 不存在" })),
+          ...status.modelPolicy.knownProviderUnknownModelRefs.map((ref) => ({ ref, reason: "模型不在目录" }))
+        ];
+        if (stale.length === 0) {
+          if (options.json) {
+            console.log(JSON.stringify({ ok: true, removed: [], removedCount: 0, warnings: [] }));
+            return;
+          }
+          console.log("没有可清理的悬空引用");
+          return;
+        }
+        // 默认只预览（fail closed：不写任何内容）；--yes 才执行批量删除
+        if (!options.yes) {
+          if (options.json) {
+            console.log(JSON.stringify({ ok: true, confirmed: false, refs: stale }));
+            return;
+          }
+          console.log(`发现 ${stale.length} 条悬空策略引用（清理只删除选择策略中的规则，不影响目录、metadata 与密钥）：`);
+          for (const item of stale) console.log(`  ${item.ref} — ${item.reason}`);
+          console.log("预览模式未写入任何内容；确认执行请加 --yes");
+          return;
+        }
+        // 确认前冻结 revision；事务 mutate 内比对，冲突非零退出、不自动重试
+        const expectedRevision = buildModelPolicyRevision(config);
+        let warnings: string[] = [];
+        let removedCount = 0;
+        const result = await writeOpenClawTransaction({
+          ...paths,
+          runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
+          reason: `cleanup stale policy refs (${stale.length})`,
+          normalizeConfig: false,
+          async mutate(config) {
+            assertModelPolicyRevision(config, expectedRevision);
+            const inventory = await context.buildInventory({ refresh: true, config, paths });
+            const operation = removeModelPolicyRules(
+              config,
+              stale.map((item) => item.ref),
+              { inventory }
+            );
+            warnings = operation.warnings;
+            removedCount = operation.removedCount;
+            return operation.config;
+          }
+        });
+        const removed = stale.map((item) => item.ref);
+        if (options.json) {
+          console.log(JSON.stringify({
+            ok: true,
+            removed,
+            removedCount,
+            backupId: result.backupDir.split("/").pop(),
+            warnings
+          }));
+          return;
+        }
+        console.log(`已清理 ${removed.length} 条悬空策略引用（共删除 ${removedCount} 个规则副本，backup: ${result.backupDir.split("/").pop()}）`);
+        for (const item of stale) console.log(`  ${item.ref} — ${item.reason}`);
+        for (const warning of warnings) console.warn(warning);
+      } catch (error) {
+        // 守卫失败：逐条打印触发 ref，不自动剔除后重试（用户可手工逐条 remove-policy-rule）
+        if (isModelPolicyEditError(error) && error.refs !== undefined && error.refs.length > 0) {
+          console.error(commandErrorMessage(error));
+          for (const ref of error.refs) console.error(`  触发规则: ${ref}`);
+        } else {
+          console.error(commandErrorMessage(error));
+        }
         process.exitCode = 1;
       }
     });

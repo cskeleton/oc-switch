@@ -1676,6 +1676,201 @@ async function assertPolicyEditingAcceptance(rootDir: string, outputs: string[])
   }
 }
 
+/**
+ * 悬空策略引用批量清理验收（stale cleanup spec §7）：
+ * restricted fixture 含 2 条悬空 exact（provider 不存在 + provider 在目录但 model 不在）
+ * + 1 条有效 exact + 1 条 wildcard（永不被触碰）；CLI 预览 → --yes 批量删除 → stale 归零；
+ * 另起 fixture 验证 primary 指向未知 Provider 的 ref 时守卫 fail closed。
+ * 全部走临时目录 + fake openclaw（runCli 默认注入），不触碰真实 ~/.openclaw。
+ */
+async function assertStalePolicyRefsCleanupAcceptance(rootDir: string, outputs: string[]): Promise<void> {
+  // ---------- Happy path：预览 → 批量删除 → stale 归零 ----------
+  const scenarioDir = join(rootDir, "stale-policy-cleanup");
+  const stateDir = join(scenarioDir, ".oc-switch");
+  const openclawPath = join(scenarioDir, "openclaw.json");
+  const envPath = join(scenarioDir, ".env");
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(envPath, "");
+
+  const cliEnv = {
+    OPENCLAW_CONFIG_PATH: openclawPath,
+    HOME: scenarioDir
+  };
+
+  function writeStaleConfig(allow: string[], primary?: string): void {
+    const config = JSON.parse(JSON.stringify(sample)) as OpenClawConfig;
+    config.agents!.defaults!.modelPolicy = { allow };
+    if (primary !== undefined) config.agents!.defaults!.model = primary;
+    writeFileSync(openclawPath, `${JSON.stringify(config, null, 2)}\n`);
+  }
+
+  function readRawAllow(): unknown[] {
+    const config = JSON.parse(readFileSync(openclawPath, "utf8"));
+    return config.agents?.defaults?.modelPolicy?.allow ?? [];
+  }
+
+  writeStaleConfig(["ghost/m1", "nvidia/no-such-model", "DeepSeek/deepseek-chat", "nvidia/*"]);
+
+  // 1. 预览（无 --yes）：列出悬空 ref 与原因，exit 0、配置字节不变、无备份
+  let before = readFileSync(openclawPath, "utf8");
+  const preview = await runCli(["model", "cleanup-stale-policy-refs"], cliEnv);
+  outputs.push(preview.combined);
+  assert(preview.code === 0, `cleanup-stale-policy-refs 预览应 exit 0，实际 ${preview.code}：${preview.combined}`);
+  assert(preview.stdout.includes("ghost/m1"), "预览应列出 unknown Provider 悬空 ref ghost/m1");
+  assert(preview.stdout.includes("nvidia/no-such-model"), "预览应列出 known Provider unknown model 悬空 ref");
+  assert(preview.stdout.includes("Provider 不存在"), "预览应给出 ghost/m1 的原因（Provider 不存在）");
+  assert(preview.stdout.includes("模型不在目录"), "预览应给出 nvidia/no-such-model 的原因（模型不在目录）");
+  assert(preview.stdout.includes("--yes"), "预览应提示确认执行需 --yes");
+  assertNoSecrets(preview.combined, "cleanup-stale-policy-refs 预览输出");
+  assert(readFileSync(openclawPath, "utf8") === before, "预览不得改动配置字节");
+  assert(listBackups(stateDir).length === 0, "预览不得产生备份");
+
+  // 2. --yes --json 批量删除：stale 归零，有效 exact 与 wildcard 原样保留
+  const envBefore = readFileSync(envPath, "utf8");
+  const cleanup = await runCli(["model", "cleanup-stale-policy-refs", "--yes", "--json"], cliEnv);
+  outputs.push(cleanup.combined);
+  assert(cleanup.code === 0, `cleanup-stale-policy-refs --yes 应成功，实际退出码 ${cleanup.code}：${cleanup.combined}`);
+  assertNoSecrets(cleanup.combined, "cleanup-stale-policy-refs 执行输出");
+  const cleanupJson = JSON.parse(cleanup.stdout) as {
+    ok: boolean;
+    removed: string[];
+    removedCount: number;
+    backupId: string;
+    warnings: string[];
+  };
+  assert(cleanupJson.ok === true, "批量删除 JSON 契约应报告 ok");
+  assert(
+    JSON.stringify(cleanupJson.removed) === JSON.stringify(["ghost/m1", "nvidia/no-such-model"]),
+    `removed 应为全部 stale ref，实际 ${JSON.stringify(cleanupJson.removed)}`
+  );
+  assert(cleanupJson.removedCount === 2, `removedCount 应为 2，实际 ${cleanupJson.removedCount}`);
+  assert(typeof cleanupJson.backupId === "string" && cleanupJson.backupId.length > 0, "批量删除应产生备份");
+  assert(Array.isArray(cleanupJson.warnings), "JSON 契约应携带 warnings 数组");
+  assert(
+    JSON.stringify(readRawAllow()) === JSON.stringify(["DeepSeek/deepseek-chat", "nvidia/*"]),
+    "批量删除后有效 exact 与 wildcard 必须原样保留（顺序不变）"
+  );
+  assert(readFileSync(envPath, "utf8") === envBefore, "批量删除不得改动 .env 字节");
+
+  // 除 modelPolicy.allow 子树外配置语义不变（格式化无关的逐字节 JSON 比较）
+  const beforeMasked = JSON.parse(before);
+  const afterMasked = JSON.parse(readFileSync(openclawPath, "utf8"));
+  beforeMasked.agents.defaults.modelPolicy.allow = "__masked__";
+  afterMasked.agents.defaults.modelPolicy.allow = "__masked__";
+  assert(
+    JSON.stringify(beforeMasked) === JSON.stringify(afterMasked),
+    "批量删除不得改动 modelPolicy.allow 之外的配置内容"
+  );
+
+  // 3. stale 归零：再次预览应报告没有可清理的悬空引用
+  const afterCleanup = await runCli(["model", "cleanup-stale-policy-refs"], cliEnv);
+  outputs.push(afterCleanup.combined);
+  assert(afterCleanup.code === 0, "清理后预览应 exit 0");
+  assert(afterCleanup.stdout.includes("没有可清理的悬空引用"), "批量删除后 stale 集应归零");
+
+  // 备份密钥纪律：本场景产生的备份不得含疑似密钥
+  assert(listBackups(stateDir).length === 1, "happy path 应恰好产生一个备份");
+  for (const backup of listBackups(stateDir)) {
+    assertNoSecrets(
+      readFileSync(join(stateDir, "backups", backup.id, "openclaw.json"), "utf8"),
+      `stale cleanup 备份 ${backup.id} openclaw.json`
+    );
+  }
+
+  // ---------- 守卫场景：primary 指向未知 Provider 的悬空 ref → fail closed ----------
+  const guardDir = join(rootDir, "stale-policy-cleanup-guard");
+  const guardStateDir = join(guardDir, ".oc-switch");
+  const guardOpenclawPath = join(guardDir, "openclaw.json");
+  const guardEnvPath = join(guardDir, ".env");
+  mkdirSync(guardStateDir, { recursive: true });
+  writeFileSync(guardEnvPath, "");
+  const guardConfig = JSON.parse(JSON.stringify(sample)) as OpenClawConfig;
+  guardConfig.agents!.defaults!.modelPolicy = { allow: ["ghost/m1", "minimax-portal/MiniMax-M3"] };
+  guardConfig.agents!.defaults!.model = "ghost/m1";
+  writeFileSync(guardOpenclawPath, `${JSON.stringify(guardConfig, null, 2)}\n`);
+  const guardCliEnv = {
+    OPENCLAW_CONFIG_PATH: guardOpenclawPath,
+    HOME: guardDir
+  };
+
+  const guardBefore = readFileSync(guardOpenclawPath, "utf8");
+  const guard = await runCli(["model", "cleanup-stale-policy-refs", "--yes"], guardCliEnv);
+  outputs.push(guard.combined);
+  assert(guard.code !== 0, "primary 指向未知 Provider 的悬空 ref 必须非零退出（provider 不存在不豁免）");
+  assert(guard.stderr.includes("primary"), "守卫报错应说明 primary 覆盖保护");
+  assert(guard.stderr.includes("ghost/m1"), "守卫报错应逐条列出触发 ref ghost/m1");
+  assert(readFileSync(guardOpenclawPath, "utf8") === guardBefore, "守卫拒绝后配置字节不得变化");
+  assert(listBackups(guardStateDir).length === 0, "守卫拒绝不得产生备份");
+}
+
+/**
+ * 配置文件权限警告验收（chmod warning spec §6）：
+ * fixture .env chmod 0644 → GET /api/config-status 出现 paths:permissions-too-open:env warning
+ * → chmod 600 → 再查消失。win32 跳过（mode 语义不可靠）。
+ */
+async function assertPermissionWarningAcceptance(rootDir: string, outputs: string[]): Promise<void> {
+  if (process.platform === "win32") return;
+  const scenarioDir = join(rootDir, "permission-warning");
+  const stateDir = join(scenarioDir, ".oc-switch");
+  const customDir = join(stateDir, "presets", "custom");
+  const openclawPath = join(scenarioDir, "openclaw.json");
+  const envPath = join(scenarioDir, ".openclaw", ".env");
+  mkdirSync(customDir, { recursive: true });
+  mkdirSync(join(scenarioDir, ".openclaw"), { recursive: true });
+  writeFileSync(openclawPath, `${JSON.stringify(sample, null, 2)}\n`);
+  writeFileSync(envPath, "# oc-switch:start\nPERMISSION_FIXTURE_KEY=value\n# oc-switch:end\n");
+  chmodSync(openclawPath, 0o600);
+  chmodSync(envPath, 0o644);
+
+  const app = createApp({
+    token: TOKEN,
+    paths: { openclawPath, envPath, stateDir },
+    presetDirs: { builtinDir: fixtureBuiltinDir, customDir },
+    pluginCatalogProvider: emptyPluginCatalog
+  });
+  const headers = { Authorization: `Bearer ${TOKEN}` };
+
+  /** 取 config-status 中 permissions-too-open 的 issue id 集合 */
+  async function fetchPermissionIssueIds(): Promise<string[]> {
+    const response = await app.request("/api/config-status", { headers });
+    assert(response.status === 200, "GET /api/config-status 应成功");
+    const text = await response.text();
+    outputs.push(text);
+    const report = JSON.parse(text) as { issues: Array<{ id: string; detail?: string; action?: string }> };
+    return report.issues.filter((issue) => issue.id.startsWith("paths:permissions-too-open:")).map((issue) => issue.id);
+  }
+
+  try {
+    const wideIds = await fetchPermissionIssueIds();
+    assert(
+      wideIds.includes("paths:permissions-too-open:env"),
+      `.env 0644 时应出现 paths:permissions-too-open:env，实际 ${JSON.stringify(wideIds)}`
+    );
+    assert(
+      !wideIds.includes("paths:permissions-too-open:openclaw"),
+      "openclaw.json 0600 时不应出现 openclaw 权限 issue"
+    );
+
+    // CLI health 同步输出权限警告与 chmod 建议
+    const cliEnv = { OPENCLAW_CONFIG_PATH: openclawPath, HOME: scenarioDir };
+    const health = await runCli(["health"], cliEnv);
+    outputs.push(health.combined);
+    assert(health.code === 0, `CLI health 应成功，实际退出码 ${health.code}`);
+    assert(health.stdout.includes("权限过宽"), "CLI health 应输出权限过宽警告");
+    assert(health.stdout.includes(`chmod 600 ${envPath}`), "CLI health 应输出 chmod 600 建议");
+
+    chmodSync(envPath, 0o600);
+    const narrowIds = await fetchPermissionIssueIds();
+    assert(
+      !narrowIds.includes("paths:permissions-too-open:env"),
+      `.env 0600 后权限 issue 应消失，实际 ${JSON.stringify(narrowIds)}`
+    );
+  } finally {
+    chmodSync(envPath, 0o644);
+    chmodSync(openclawPath, 0o644);
+  }
+}
+
 async function main(): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), "oc-switch-acceptance-"));
   const outputs: string[] = [];
@@ -1849,6 +2044,9 @@ async function main(): Promise<void> {
 
     // Policy 规则编辑 CLI/API 全链路（add/replace/remove、纯规则删除、revision 冲突 409、守卫 fail closed）
     await assertPolicyEditingAcceptance(dir, outputs);
+
+    // 悬空策略引用批量清理验收（预览 → --yes 批量删除 → stale 归零；primary 指向未知 Provider 的守卫）
+    await assertStalePolicyRefsCleanupAcceptance(dir, outputs);
 
     // 汇总扫描所有输出
     for (const text of outputs) {

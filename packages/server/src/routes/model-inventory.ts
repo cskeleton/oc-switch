@@ -5,6 +5,7 @@ import {
   normalizeModelRefForStorage,
   removeModelPolicyExactRef,
   removeModelPolicyRule,
+  removeModelPolicyRules,
   removeModelPolicyWildcard,
   replaceModelPolicyRule,
   writeOpenClawTransaction,
@@ -15,6 +16,7 @@ import { assertProviderCanEnable, type AppRuntime } from "../context";
 import { jsonError } from "../errors";
 import {
   requireAddModelPolicyRuleInput,
+  requireBatchRemoveModelPolicyRulesInput,
   requireJsonObject,
   requireMaterializeModelInput,
   requireRemoveModelPolicyRuleInput,
@@ -262,6 +264,51 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
       return c.json({
         ok: true,
         value: parsed.value,
+        removedCount,
+        backupId: result.backupDir.split("/").pop(),
+        warnings: capturedWarnings,
+        ...confirmation
+      });
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  /**
+   * 批量纯规则删除（stale cleanup spec §4）：命名对齐 POST /api/providers/:id/models/batch-remove。
+   * expectedRevision 必填，事务 mutate 内先比对再变更（冲突 409）；守卫失败 400 且
+   * details.refs 透出触发违规的规则字符串；单事务原子，无部分提交。
+   * 空 values 为 no-op：跳过事务（无备份），removedCount 0。
+   */
+  app.post("/api/model-policy/rules/batch-remove", async (c) => {
+    try {
+      const body = await requireJsonObject(c.req);
+      const parsed = requireBatchRemoveModelPolicyRulesInput(body);
+      const paths = runtime.currentPaths();
+      if (parsed.values.length === 0) {
+        const confirmation = await postWriteConfirmation(paths);
+        return c.json({ ok: true, removedCount: 0, backupId: null, warnings: [], ...confirmation });
+      }
+      // warnings 在 mutate 内捕获后经闭包透出（事务只落盘 config）
+      let capturedWarnings: string[] = [];
+      let removedCount = 0;
+      const result = await writeOpenClawTransaction({
+        ...paths,
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
+        reason: `batch remove model policy rules (${parsed.values.length})`,
+        normalizeConfig: false,
+        async mutate(config) {
+          assertModelPolicyRevision(config, parsed.expectedRevision);
+          const inventory = await runtime.buildCurrentInventory({ refresh: true, config, paths });
+          const operation = removeModelPolicyRules(config, parsed.values, { inventory });
+          capturedWarnings = operation.warnings;
+          removedCount = operation.removedCount;
+          return operation.config;
+        }
+      });
+      const confirmation = await postWriteConfirmation(paths);
+      return c.json({
+        ok: true,
         removedCount,
         backupId: result.backupDir.split("/").pop(),
         warnings: capturedWarnings,

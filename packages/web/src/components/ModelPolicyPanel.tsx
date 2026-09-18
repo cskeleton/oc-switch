@@ -1,6 +1,7 @@
 import type { ModelPolicyMode, ModelPolicyRuleEntry } from "../api";
 import { DataTable, type Column } from "./DataTable";
 import { EmptyState } from "./EmptyState";
+import type { StalePolicyRef } from "./StalePolicyRefsCleanupDialog";
 import { Button } from "./ui/button";
 import { Pill } from "./ui/pill";
 
@@ -10,7 +11,8 @@ import { Pill } from "./ui/pill";
  * - exact 规则：仅按 Core 的 removable 提供删除入口，保护性/最后一条/unknown 等只读；
  * - wildcard 规则：removable 时可显式删除；不可删时显示「受保护」；
  * - invalid 条目：值不回显（secret-free 纪律），仅显示原始下标；
- * - 规则编辑仅适用于 restricted 模式；其它模式（或旧后端缺 policyMode）只显示提示。
+ * - 规则编辑仅适用于 restricted 模式；其它模式（或旧后端缺 policyMode）只显示提示；
+ * - 顶部「清理悬空引用 (N)」：config-status 检出的悬空 exact 规则批量清理入口（stale cleanup spec §6）。
  */
 
 interface ModelPolicyPanelProps {
@@ -27,6 +29,10 @@ interface ModelPolicyPanelProps {
   onEditRule: (rule: ModelPolicyRuleEntry) => void;
   /** 删除规则入口；由调用方统一走纯规则删除流程 */
   onRemoveRule: (rule: ModelPolicyRuleEntry) => void | Promise<void>;
+  /** config-status 检出的悬空 exact 规则（∩ 当前 exact 规则，原始字符串）；非空时顶部显示批量清理入口 */
+  staleRefs?: StalePolicyRef[];
+  /** 打开「清理悬空引用」对话框 */
+  onCleanupStaleRefs?: () => void;
 }
 
 function kindPill(rule: ModelPolicyRuleEntry): { label: string; tone: "brand" | "muted" | "destructive" } {
@@ -51,7 +57,7 @@ function RuleCounts({ rule }: { rule: ModelPolicyRuleEntry }) {
   );
 }
 
-export function ModelPolicyPanel({ rules, policyMode, policyRevision, busy, onAddRule, onEditRule, onRemoveRule }: ModelPolicyPanelProps) {
+export function ModelPolicyPanel({ rules, policyMode, policyRevision, busy, onAddRule, onEditRule, onRemoveRule, staleRefs, onCleanupStaleRefs }: ModelPolicyPanelProps) {
   const columns: Column<ModelPolicyRuleEntry>[] = [
     {
       key: "value",
@@ -146,6 +152,18 @@ export function ModelPolicyPanel({ rules, policyMode, policyRevision, busy, onAd
             ? "添加、编辑或删除规则只改 modelPolicy.allow；目录、metadata 与 API Key 不变。规则编辑只修改选择策略；删除冗余规则不一定会停用模型。"
             : `当前为 ${policyMode ?? "legacy / unrestricted"} 模式，规则编辑仅适用于 restricted 模式。`}
         </p>
+        {(staleRefs?.length ?? 0) > 0 ? (
+          <Button
+            variant="outline"
+            size="sm"
+            aria-label="清理悬空引用"
+            disabled={busy === true}
+            title="批量删除选择策略中指向不存在 Provider 或不在目录模型的悬空规则；不影响目录、metadata 与密钥"
+            onClick={onCleanupStaleRefs}
+          >
+            清理悬空引用 ({staleRefs!.length})
+          </Button>
+        ) : null}
         {policyMode === "restricted" ? (
           <Button variant="outline" size="sm" disabled={busy === true} onClick={onAddRule}>
             添加规则

@@ -445,6 +445,22 @@ export function requireRemoveModelPolicyRuleInput(body: Record<string, unknown>)
   };
 }
 
+/**
+ * POST /api/model-policy/rules/batch-remove 请求体（stale cleanup spec §4）：
+ * values 为待删规则原始字符串数组（允许空数组 = no-op），expectedRevision 必填。
+ */
+export function requireBatchRemoveModelPolicyRulesInput(body: Record<string, unknown>): {
+  values: string[];
+  expectedRevision: string;
+} {
+  if (!Array.isArray(body.values)) throw new Error("values must be an array of non-empty strings");
+  const values = body.values.map((value, index) => requireString(value, `values[${index}]`));
+  return {
+    values,
+    expectedRevision: requirePolicyRevision(body.expectedRevision)
+  };
+}
+
 /** POST /api/models/materialize 请求体：ref + input（ProviderModelInput 字段 + enabled） */
 export function requireMaterializeModelInput(body: Record<string, unknown>): {
   ref: string;

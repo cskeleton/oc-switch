@@ -286,12 +286,23 @@ export interface DisabledProviderStatus {
   hiddenModelCount: number;
 }
 
+/** modelPolicy 的脱敏原始事实（与 core ConfigStatusModelPolicy 对齐）；悬空引用清理的 stale 集来源。 */
+export interface ConfigStatusModelPolicy {
+  mode: ModelPolicyMode;
+  policyEntryCount: number;
+  effectiveCatalogCount: number;
+  unknownProviderRefs: string[];
+  policyOnlyExactRefs: string[];
+  knownProviderUnknownModelRefs: string[];
+}
+
 export interface ConfigStatusReport {
   version: 1;
   health: ConfigHealthReport;
   disabledProviders: DisabledProviderStatus[];
   orphanEnvKeys: string[];
   envWarnings: string[];
+  modelPolicy: ConfigStatusModelPolicy;
   issues: ConfigStatusIssue[];
   summary: {
     issueCount: number;
@@ -797,15 +808,32 @@ export interface RemoveModelPolicyRuleResult extends MutationResult {
   runtimeConfirmed: boolean;
 }
 
+/** POST /api/model-policy/rules/batch-remove 的响应：批量纯规则删除（单事务原子，无部分提交）。 */
+export interface BatchRemoveModelPolicyRulesResult {
+  ok: true;
+  removedCount: number;
+  /** 空 values no-op 时为 null；非空成功时为备份目录名 */
+  backupId: string | null;
+  warnings: string[];
+  runtimeConfirmed?: boolean;
+}
+
+/** 结构化错误详情：批量删除守卫失败时 details.refs 携带触发违规的规则字符串。 */
+export interface ApiErrorDetails {
+  refs?: string[];
+}
+
 /** API 请求失败错误：携带 HTTP status 与服务端错误 code，供 409 等分支判定。 */
 export class ApiRequestError extends Error {
   readonly status: number;
   readonly code?: string | undefined;
-  constructor(message: string, status: number, code?: string) {
+  readonly details?: ApiErrorDetails | undefined;
+  constructor(message: string, status: number, code?: string, details?: ApiErrorDetails) {
     super(message);
     this.name = "ApiRequestError";
     this.status = status;
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -840,11 +868,13 @@ export function createApiClient(options: ApiClientOptions) {
         error?: string;
         code?: string;
         restart?: { message?: string };
+        details?: ApiErrorDetails;
       };
       throw new ApiRequestError(
         body.error ?? body.restart?.message ?? `Request failed: ${response.status}`,
         response.status,
-        body.code
+        body.code,
+        body.details
       );
     }
     const result = await response.json();
@@ -1039,6 +1069,12 @@ export function createApiClient(options: ApiClientOptions) {
       request<RemoveModelPolicyRuleResult>("/api/model-policy/rules", {
         method: "DELETE",
         body: JSON.stringify({ value, expectedRevision })
+      }),
+    /** POST /api/model-policy/rules/batch-remove：批量纯规则删除（单事务原子；守卫失败 400 带 details.refs） */
+    batchRemoveModelPolicyRules: (values: string[], expectedRevision: string) =>
+      request<BatchRemoveModelPolicyRulesResult>("/api/model-policy/rules/batch-remove", {
+        method: "POST",
+        body: JSON.stringify({ values, expectedRevision })
       }),
     /** POST /api/models/materialize：把运行时可用模型补全为 config Provider 目录项 */
     materializeRuntimeModel: (ref: string, input: ProviderModelInput & { enabled: boolean }) =>
