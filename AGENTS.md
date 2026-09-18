@@ -157,7 +157,7 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 
 ### 配置健康
 
-- `GET /api/config-status` 返回 `ConfigStatusReport` v1；`issues[]` 为去重行动列表（key：`source:kind:subject`）
+- `GET /api/config-status` 返回 `ConfigStatusReport` v1；`issues[]` 为去重行动列表（key：`source:kind:subject`）；含权限检查——`openclaw.json` / `.env` mode 含 group/other 位时产 warning `paths:permissions-too-open:*`（win32 跳过，只提示 `chmod 600` 不自动修复）；CLI `health` 输出 issues 汇总段（blocking 在前），Web Settings「路径」tab 显示权限 banner
 - 插件 Provider 的 policy ref 不再误报 `unknownProviderRefs`；`effectiveCatalogCount` 计入启用中插件的有效模型（v1 仍看不到运行时 shard 里的 live 模型，相关 ref 会被判为 model drift）
 - **悬空策略引用批量清理**（2026-09-19）：stale 集 = `unknownProviderRefs ∪ knownProviderUnknownModelRefs`（`policyOnlyExactRefs` 中 provider+model 在目录、仅缺 metadata 的子集是**有效规则**，绝不进清理列表）；Core `removeModelPolicyRules`（单事务原子：先对最终 allow 全量校验 restricted/存在性/防清空/primary/fallback 最终覆盖，任一违规整体拒绝不落盘；错误经 `ModelPolicyEditError.refs` 携带触发 ref）、`POST /api/model-policy/rules/batch-remove`（`{ values, expectedRevision }`，409 冲突，400 带 `details.refs`，空 values no-op 无备份）、CLI `model cleanup-stale-policy-refs`（默认预览 exit 0，`--yes` 才执行）、Web Models 页 policy 区段「清理悬空引用」对话框（400 逐条标红取消勾选不自动重试；旧后端显示「版本不支持」，禁止回退逐条 DELETE）
 
@@ -171,7 +171,7 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 - **运行时 env 来源**：`openclaw.json` 使用 canonical SecretRef 引用；`openclaw` CLI 与 Gateway 可加载 state 目录全局 `.env`。OpenClaw 同时为服务生成 env 快照（Linux：unit 实际 `EnvironmentFile=`，常见为 `gateway.systemd.env`；macOS：`service-env/*.env`）；服务进程环境优先于 dotenv，因此快照同名旧值会覆盖 `.env`，而快照缺项可由 `.env` 补足。改 API Key 后仍应同步服务 env 并 restart/apply，使运行中进程加载新值（日常切模型/allowlist 通常无需重启）。
 - Gateway 服务环境：`.env` 托管块在写入校验通过且能唯一关联候选组时自动同步到该组 service env（Linux：PID/unit 关联的 `EnvironmentFile=`，禁止仅按 `dirname(envPath)/gateway.systemd.env` 猜测；macOS：共享 LaunchAgent 解析器识别的 `service-env/*.env`，兼容 `/bin/sh + wrapper` 与旧 wrapper 布局）；无法唯一关联时主写入仍成功但 `gatewayEnvSync.ok=false`；目标文件块外内容原样保留，块外同名 Key 只告警不自动改写；Web/CLI/API 提供 `sync-env`、`restart`、`apply`（均可带 `--candidate` / `candidateId`），多实例时必须指定候选，不自动静默重启 Gateway
 - **Gateway 环境分叉检测**：`GET /api/gateway/env-drift`、`oc-switch gateway env-drift [--candidate] [--json]`、Settings「环境分叉」卡片；文件级比较 `.env` 托管块与已关联 service env 快照（**不读运行中进程 env**，文案须提示重启后生效），五态分类：`different`（快照旧值覆盖 `.env`）为 blocking，`extra-in-service`（仅目标托管块内残留）/`outside-conflict` 为 warning，`missing-in-service`（运行时由全局 `.env` 补足）/`equal` 为 info；源空值附 `unsyncable`；恒 200 + `report.status:"unavailable"` 承载无法关联（ambiguous 附 candidates）；只回显变量名与状态枚举，绝不回显值
-- 已知后续：stale allowlist 专用清理 UI、chmod 警告、真实配置写 E2E、`GET /api/gateway/env-drift`
+- 已知后续：真实配置写 E2E
 
 ## 产品与使用定位
 
@@ -244,6 +244,7 @@ bun run packages/cli/src/index.ts     # 直接调用 CLI
 | Policy 规则原子编辑与规则层删除 | `docs/superpowers/specs/2026-09-16-oc-switch-policy-rule-replacement-design.md` |
 | Gateway 环境分叉检测（env-drift） | `docs/superpowers/specs/2026-09-19-oc-switch-gateway-env-drift-design.md` |
 | 悬空策略引用批量清理 | `docs/superpowers/specs/2026-09-19-oc-switch-stale-policy-refs-cleanup-design.md` |
+| 配置文件权限警告 | `docs/superpowers/specs/2026-09-19-oc-switch-config-permission-warning-design.md` |
 
 ## Learned User Preferences
 
