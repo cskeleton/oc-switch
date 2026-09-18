@@ -159,6 +159,7 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 
 - `GET /api/config-status` 返回 `ConfigStatusReport` v1；`issues[]` 为去重行动列表（key：`source:kind:subject`）
 - 插件 Provider 的 policy ref 不再误报 `unknownProviderRefs`；`effectiveCatalogCount` 计入启用中插件的有效模型（v1 仍看不到运行时 shard 里的 live 模型，相关 ref 会被判为 model drift）
+- **悬空策略引用批量清理**（2026-09-19）：stale 集 = `unknownProviderRefs ∪ knownProviderUnknownModelRefs`（`policyOnlyExactRefs` 中 provider+model 在目录、仅缺 metadata 的子集是**有效规则**，绝不进清理列表）；Core `removeModelPolicyRules`（单事务原子：先对最终 allow 全量校验 restricted/存在性/防清空/primary/fallback 最终覆盖，任一违规整体拒绝不落盘；错误经 `ModelPolicyEditError.refs` 携带触发 ref）、`POST /api/model-policy/rules/batch-remove`（`{ values, expectedRevision }`，409 冲突，400 带 `details.refs`，空 values no-op 无备份）、CLI `model cleanup-stale-policy-refs`（默认预览 exit 0，`--yes` 才执行）、Web Models 页 policy 区段「清理悬空引用」对话框（400 逐条标红取消勾选不自动重试；旧后端显示「版本不支持」，禁止回退逐条 DELETE）
 
 ### 跨机同步
 
@@ -242,6 +243,7 @@ bun run packages/cli/src/index.ts     # 直接调用 CLI
 | Policy 规则编辑 | `docs/superpowers/specs/2026-09-13-oc-switch-policy-editing-design.md` |
 | Policy 规则原子编辑与规则层删除 | `docs/superpowers/specs/2026-09-16-oc-switch-policy-rule-replacement-design.md` |
 | Gateway 环境分叉检测（env-drift） | `docs/superpowers/specs/2026-09-19-oc-switch-gateway-env-drift-design.md` |
+| 悬空策略引用批量清理 | `docs/superpowers/specs/2026-09-19-oc-switch-stale-policy-refs-cleanup-design.md` |
 
 ## Learned User Preferences
 
