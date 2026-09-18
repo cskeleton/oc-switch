@@ -2444,6 +2444,209 @@ describe("server env APIs", () => {
     expect(seenTargetPath).toBe(expectedGatewayEnvPath(ws.dir));
     expect(seenTargetPath).not.toContain("restart-placeholder");
   });
+
+  test("GET /api/gateway/env-drift reports drift and never leaks env values", async () => {
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, [
+      "# oc-switch:start",
+      "NVIDIA_API_KEY=new-secret",
+      "REMOVED_KEY=managed-secret",
+      "# oc-switch:end"
+    ].join("\n") + "\n");
+    const gatewayPath = expectedGatewayEnvPath(ws.dir);
+    writeFileSync(gatewayPath, [
+      "# oc-switch:start",
+      "NVIDIA_API_KEY=old-secret",
+      "STALE_KEY=stale-secret",
+      "# oc-switch:end"
+    ].join("\n") + "\n");
+    const discovery = gatewayDiscoveryFor(ws);
+    const app = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: () => discovery
+    });
+
+    const { response, json } = await jsonRequest(app, "/api/gateway/env-drift");
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    const report = json.report as {
+      status: string;
+      target?: { candidateId: string; serviceEnvPath: string };
+      entries: Array<{ envVar: string; state: string; severity: string }>;
+      summary: Record<string, number>;
+      warnings: string[];
+    };
+    expect(report.status).toBe("ok");
+    expect(report.target?.candidateId).toBe("test:single:candidate");
+    expect(report.target?.serviceEnvPath).toBe(gatewayPath);
+    const byVar = Object.fromEntries(report.entries.map((entry) => [entry.envVar, entry]));
+    expect(byVar.NVIDIA_API_KEY?.state).toBe("different");
+    expect(byVar.NVIDIA_API_KEY?.severity).toBe("blocking");
+    expect(byVar.REMOVED_KEY?.state).toBe("missing-in-service");
+    expect(byVar.STALE_KEY?.state).toBe("extra-in-service");
+    expect(byVar.STALE_KEY?.severity).toBe("warning");
+    expect(report.summary.different).toBe(1);
+    expect(report.summary.extraInService).toBe(1);
+    // 安全：响应体任何位置不得出现 fixture 密钥值
+    const body = JSON.stringify(json);
+    expect(body).not.toContain("new-secret");
+    expect(body).not.toContain("old-secret");
+    expect(body).not.toContain("managed-secret");
+    expect(body).not.toContain("stale-secret");
+  });
+
+  test("GET /api/gateway/env-drift treats missing target file as all missing-in-service", async () => {
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, "# oc-switch:start\nK=v\n# oc-switch:end\n");
+    const discovery = gatewayDiscoveryFor(ws);
+    const app = createTestApp(ws, undefined, { runtimeDiscoveryProvider: () => discovery });
+
+    const { response, json } = await jsonRequest(app, "/api/gateway/env-drift");
+
+    expect(response.status).toBe(200);
+    const report = json.report as {
+      status: string;
+      entries: Array<{ envVar: string; state: string; severity: string }>;
+      warnings: string[];
+    };
+    expect(report.status).toBe("ok");
+    expect(report.entries).toEqual([{ envVar: "K", state: "missing-in-service", severity: "info" }]);
+    expect(report.warnings.length).toBeGreaterThan(0);
+  });
+
+  test("GET /api/gateway/env-drift returns unavailable with candidates on ambiguous-match", async () => {
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, "# oc-switch:start\nK=v\n# oc-switch:end\n");
+    const second = {
+      candidateId: "test:second:candidate",
+      instanceId: "test:second",
+      stateDir: join(ws.dir, "second"),
+      openclawPath: ws.paths.openclawPath,
+      envPath: ws.paths.envPath,
+      serviceEnvPath: join(ws.dir, "second", "gateway.systemd.env"),
+      serviceManager: "systemd" as const,
+      serviceId: "openclaw-gateway@second.service",
+      pid: 1002,
+      confidence: "strong" as const,
+      evidence: ["process-environ" as const]
+    };
+    const discovery = gatewayDiscoveryFor(ws, { extraGroups: [second] });
+    const app = createTestApp(ws, undefined, { runtimeDiscoveryProvider: () => discovery });
+
+    const { response, json } = await jsonRequest(app, "/api/gateway/env-drift");
+
+    expect(response.status).toBe(200);
+    const report = json.report as {
+      status: string;
+      unavailable?: {
+        code: string;
+        candidates?: Array<{ candidateId: string; serviceEnvPath?: string }>;
+      };
+    };
+    expect(report.status).toBe("unavailable");
+    expect(report.unavailable?.code).toBe("ambiguous-match");
+    expect(report.unavailable?.candidates?.map((item) => item.candidateId)).toEqual([
+      "test:single:candidate",
+      "test:second:candidate"
+    ]);
+    expect(report.unavailable?.candidates?.[0]?.serviceEnvPath).toBeTruthy();
+  });
+
+  test("GET /api/gateway/env-drift maps no-matching-group and stale candidateId to unavailable", async () => {
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, "# oc-switch:start\nK=v\n# oc-switch:end\n");
+    const emptyDiscovery: RuntimeDiscoveryResult = {
+      status: "gateway-not-detected",
+      instances: [],
+      candidateGroups: [],
+      diagnostics: []
+    };
+    const emptyApp = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: () => emptyDiscovery
+    });
+    const none = await jsonRequest(emptyApp, "/api/gateway/env-drift");
+    expect(none.response.status).toBe(200);
+    expect((none.json.report as { status: string; unavailable?: { code: string } }).status).toBe("unavailable");
+    expect((none.json.report as { unavailable?: { code: string } }).unavailable?.code).toBe("no-matching-group");
+
+    const discovery = gatewayDiscoveryFor(ws);
+    const app = createTestApp(ws, undefined, { runtimeDiscoveryProvider: () => discovery });
+    const stale = await jsonRequest(app, "/api/gateway/env-drift?candidateId=stale-id");
+    expect(stale.response.status).toBe(200);
+    expect((stale.json.report as { unavailable?: { code: string } }).unavailable?.code).toBe("stale-candidate");
+  });
+
+  test("GET /api/gateway/env-drift reports service-env-unreadable for unreadable target file", async () => {
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, "# oc-switch:start\nK=v\n# oc-switch:end\n");
+    const gatewayPath = expectedGatewayEnvPath(ws.dir);
+    writeFileSync(gatewayPath, "K=v\n");
+    chmodSync(gatewayPath, 0o000);
+    const discovery = gatewayDiscoveryFor(ws);
+    const app = createTestApp(ws, undefined, { runtimeDiscoveryProvider: () => discovery });
+
+    try {
+      const { response, json } = await jsonRequest(app, "/api/gateway/env-drift");
+      expect(response.status).toBe(200);
+      const report = json.report as { status: string; unavailable?: { code: string } };
+      expect(report.status).toBe("unavailable");
+      expect(report.unavailable?.code).toBe("service-env-unreadable");
+    } finally {
+      chmodSync(gatewayPath, 0o600);
+    }
+  });
+
+  test("GET /api/gateway/env-drift maps no-service-env and candidate-mismatch to unavailable", async () => {
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, "# oc-switch:start\nK=v\n# oc-switch:end\n");
+    // 匹配 active 路径但缺 serviceEnvPath → automatic no-service-env
+    const noEnvGroup = {
+      candidateId: "test:no-env",
+      instanceId: "test:no-env",
+      stateDir: ws.dir,
+      openclawPath: ws.paths.openclawPath,
+      envPath: ws.paths.envPath,
+      pid: 1003,
+      confidence: "strong" as const,
+      evidence: ["process-environ" as const]
+    };
+    const noEnvApp = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: () => ({
+        status: "resolved",
+        instances: [],
+        candidateGroups: [noEnvGroup],
+        diagnostics: []
+      })
+    });
+    const noEnv = await jsonRequest(noEnvApp, "/api/gateway/env-drift");
+    expect(noEnv.response.status).toBe(200);
+    expect((noEnv.json.report as { unavailable?: { code: string } }).unavailable?.code).toBe("no-service-env");
+
+    // candidateId 指向路径不匹配的组 → candidate-mismatch
+    const otherGroup = {
+      candidateId: "test:other",
+      instanceId: "test:other",
+      stateDir: join(ws.dir, "other"),
+      openclawPath: join(ws.dir, "other", "openclaw.json"),
+      envPath: join(ws.dir, "other", ".env"),
+      serviceEnvPath: join(ws.dir, "other", "gateway.systemd.env"),
+      serviceManager: "systemd" as const,
+      pid: 1004,
+      confidence: "strong" as const,
+      evidence: ["process-environ" as const]
+    };
+    const mismatchApp = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: () => ({
+        status: "resolved",
+        instances: [],
+        candidateGroups: [otherGroup],
+        diagnostics: []
+      })
+    });
+    const mismatch = await jsonRequest(mismatchApp, "/api/gateway/env-drift?candidateId=test:other");
+    expect(mismatch.response.status).toBe(200);
+    expect((mismatch.json.report as { unavailable?: { code: string } }).unavailable?.code).toBe("candidate-mismatch");
+  });
 });
 
 interface MetadataFetchSpec {

@@ -103,6 +103,43 @@ describe("createApiClient", () => {
 
     await expect(client.restartGateway()).rejects.toThrow("systemd service not found");
   });
+
+  test("getGatewayEnvDrift GET /api/gateway/env-drift，candidateId 走 query string", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const report = {
+      version: 1,
+      status: "ok",
+      target: { candidateId: "launchd:gw:abc", targetKind: "launchd", serviceEnvPath: "/tmp/gw.env" },
+      entries: [
+        { envVar: "ANTHROPIC_API_KEY", state: "different", severity: "blocking" },
+        { envVar: "OPENAI_API_KEY", state: "equal", severity: "info" }
+      ],
+      summary: {
+        checked: 2, equal: 1, missingInService: 0, different: 1,
+        extraInService: 0, outsideConflict: 0, unsyncable: 0
+      },
+      warnings: []
+    };
+    const client = createApiClient({
+      baseUrl: "http://localhost:7420",
+      token: "token",
+      fetchImpl: async (url, init) => {
+        calls.push({ url: String(url), ...(init ? { init } : {}) });
+        return new Response(JSON.stringify({ ok: true, report }), { status: 200 });
+      }
+    });
+
+    const withoutCandidate = await client.getGatewayEnvDrift();
+    expect(calls[0]?.url).toBe("http://localhost:7420/api/gateway/env-drift");
+    expect(calls[0]?.init?.method).toBeUndefined();
+    expect(withoutCandidate.report.summary.different).toBe(1);
+    expect(withoutCandidate.report.entries[0]?.state).toBe("different");
+
+    await client.getGatewayEnvDrift("launchd:gw:abc");
+    const second = new URL(calls[1]!.url);
+    expect(second.pathname).toBe("/api/gateway/env-drift");
+    expect(second.searchParams.get("candidateId")).toBe("launchd:gw:abc");
+  });
 });
 
 test("health 与合并方法使用正确的方法与 JSON body", async () => {

@@ -1,7 +1,12 @@
+import { existsSync, readFileSync } from "node:fs";
 import {
   restartGateway,
   syncManagedBlockToGatewayServiceEnv,
   resolveGatewayRuntimeTarget,
+  inspectGatewayEnvDrift,
+  listAmbiguousGatewayEnvDriftCandidates,
+  unavailableGatewayEnvDriftReport,
+  isGatewayRuntimeTargetError,
   type GatewayRestartExecutor,
   type GatewayRuntimeTarget,
   type GatewayServiceEnvSyncResult
@@ -48,6 +53,56 @@ function resolveExplicitGatewayTarget(
 export function registerGatewayRoutes(app: Hono, runtime: AppRuntime, options: GatewayRouteOptions = {}): void {
   const syncFn = options.syncManagedBlockToGatewayServiceEnv ?? syncManagedBlockToGatewayServiceEnv;
   const restartFn = options.restartGateway ?? restartGateway;
+
+  app.get("/api/gateway/env-drift", async (c) => {
+    const paths = runtime.currentPaths();
+    // 读报告：每次请求现做 discovery、现读文件，不缓存
+    const discovery = runtime.runtimeDiscoveryProvider();
+    const candidateId = c.req.query("candidateId")?.trim() || undefined;
+    let target: GatewayRuntimeTarget;
+    try {
+      target = resolveGatewayRuntimeTarget({
+        activePaths: paths,
+        discovery,
+        // 无 id 用 automatic、有 id 用 explicit（做路径匹配校验）
+        mode: candidateId ? "explicit" : "automatic",
+        ...(candidateId ? { candidateId } : {})
+      });
+    } catch (error) {
+      if (!isGatewayRuntimeTargetError(error)) throw error;
+      // 「无法唯一关联」是正常状态而非客户端错误：恒 200，由 report.status 承载
+      const candidates = error.code === "ambiguous-match"
+        ? listAmbiguousGatewayEnvDriftCandidates(paths, discovery)
+        : undefined;
+      return c.json({
+        ok: true,
+        report: unavailableGatewayEnvDriftReport({
+          code: error.code,
+          message: error.message,
+          ...(candidates ? { candidates } : {})
+        })
+      });
+    }
+
+    const envContent = existsSync(paths.envPath) ? readFileSync(paths.envPath, "utf8") : "";
+    let serviceEnvContent: string | null;
+    try {
+      serviceEnvContent = existsSync(target.serviceEnvTarget.targetPath)
+        ? readFileSync(target.serviceEnvTarget.targetPath, "utf8")
+        : null;
+    } catch (readError) {
+      const detail = readError instanceof Error ? readError.message : String(readError);
+      return c.json({
+        ok: true,
+        report: unavailableGatewayEnvDriftReport({
+          code: "service-env-unreadable",
+          message: `Gateway service env file is not readable at ${target.serviceEnvTarget.targetPath}: ${detail}`
+        })
+      });
+    }
+    const report = inspectGatewayEnvDrift({ envContent, target: target.serviceEnvTarget, serviceEnvContent });
+    return c.json({ ok: true, report });
+  });
 
   app.post("/api/gateway/sync-env", async (c) => {
     try {

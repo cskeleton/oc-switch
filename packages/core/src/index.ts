@@ -44,6 +44,7 @@ export * from "./env-operations";
 export * from "./env-updates";
 export * from "./env-verification";
 export * from "./gateway-service-env-sync";
+export * from "./gateway-env-drift";
 export * from "./gateway-systemd-env-sync";
 export * from "./gateway-systemd-unit";
 export * from "./gateway-actions";

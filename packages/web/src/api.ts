@@ -67,6 +67,75 @@ export interface GatewayRestartResult {
   message: string;
 }
 
+// —— Gateway 环境分叉（GET /api/gateway/env-drift）DTO，与 core gateway-env-drift.ts 对齐 ——
+
+export type GatewayEnvDriftState =
+  | "equal"
+  | "missing-in-service"
+  | "different"
+  | "extra-in-service"
+  | "outside-conflict";
+
+export type GatewayEnvDriftSeverity = "blocking" | "warning" | "info";
+
+export type GatewayEnvDriftUnsyncable = "empty-value" | "multiline-value";
+
+/** 单 key 分叉条目：只有变量名与状态枚举，绝不包含 value */
+export interface GatewayEnvDriftEntry {
+  envVar: string;
+  state: GatewayEnvDriftState;
+  severity: GatewayEnvDriftSeverity;
+  unsyncable?: GatewayEnvDriftUnsyncable;
+}
+
+export interface GatewayEnvDriftTarget {
+  candidateId: string;
+  targetKind: "systemd" | "launchd";
+  serviceEnvPath: string;
+}
+
+export interface GatewayEnvDriftSummary {
+  checked: number;
+  equal: number;
+  missingInService: number;
+  different: number;
+  extraInService: number;
+  outsideConflict: number;
+  unsyncable: number;
+}
+
+export interface GatewayEnvDriftUnavailableCandidate {
+  candidateId: string;
+  serviceManager?: "systemd" | "launchd";
+  serviceId?: string;
+  serviceEnvPath?: string;
+}
+
+export type GatewayEnvDriftUnavailableCode =
+  | "no-matching-group"
+  | "ambiguous-match"
+  | "missing-candidate-id"
+  | "stale-candidate"
+  | "candidate-mismatch"
+  | "no-service-env"
+  | "missing-service-manager"
+  | "service-env-unreadable";
+
+/** 文件级分叉报告：进程 env 固定于启动时，修复需 sync-env / apply 并重启 */
+export interface GatewayEnvDriftReport {
+  version: 1;
+  status: "ok" | "unavailable";
+  target?: GatewayEnvDriftTarget;
+  entries: GatewayEnvDriftEntry[];
+  summary: GatewayEnvDriftSummary;
+  warnings: string[];
+  unavailable?: {
+    code: GatewayEnvDriftUnavailableCode;
+    message: string;
+    candidates?: GatewayEnvDriftUnavailableCandidate[];
+  };
+}
+
 export type ApiKeyEnvStatus = "managed" | "unmanaged" | "missing" | "complex" | "duplicate";
 
 export interface ProviderSummary {
@@ -1046,6 +1115,14 @@ export function createApiClient(options: ApiClientOptions) {
         method: "POST",
         body: JSON.stringify(candidateId ? { candidateId } : {})
       }),
+    getGatewayEnvDrift: (candidateId?: string) => {
+      const params = new URLSearchParams();
+      if (candidateId) params.set("candidateId", candidateId);
+      const query = params.toString();
+      return request<{ ok: true; report: GatewayEnvDriftReport }>(
+        `/api/gateway/env-drift${query ? `?${query}` : ""}`
+      );
+    },
     restartGateway: (candidateId?: string) =>
       request<{ ok: boolean; restart: GatewayRestartResult }>("/api/gateway/restart", {
         method: "POST",

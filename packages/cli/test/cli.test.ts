@@ -1153,6 +1153,196 @@ describe("cli gateway commands", () => {
       staleProgram.parseAsync(["gateway", "restart", "--candidate", "missing"], { from: "user" })
     ).rejects.toThrow(/missing|stale|no longer/i);
   });
+
+  test("gateway env-drift exits 0 and prints human report (no values) when drift exists", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-env-drift-"));
+    tempDirs.push(dir);
+    const homeDir = join(dir, "home");
+    mkdirSync(homeDir, { recursive: true });
+    prepareGatewayEnvTarget(dir, homeDir);
+    const openclawPath = join(dir, "openclaw.json");
+    const envPath = join(dir, ".env");
+    const stateDir = join(homeDir, ".oc-switch");
+    const serviceEnvPath = expectedGatewayEnvPath(dir);
+    writeFileSync(envPath, "# oc-switch:start\nDRIFT_KEY=new-secret\n# oc-switch:end\n");
+    writeFileSync(openclawPath, `${JSON.stringify(sample, null, 2)}\n`);
+    writeFileSync(serviceEnvPath, "# oc-switch:start\nDRIFT_KEY=old-secret\nSTALE_KEY=stale-secret\n# oc-switch:end\n");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(join(stateDir, "settings.json"), JSON.stringify({ openclawPath, envPath }));
+
+    const serviceManager = process.platform === "darwin" ? "launchd" as const : "systemd" as const;
+    const discovery: RuntimeDiscoveryResult = {
+      status: "resolved",
+      instances: [],
+      candidateGroups: [{
+        candidateId: "cli:drift:candidate",
+        instanceId: "cli:drift",
+        stateDir: dir,
+        openclawPath,
+        envPath,
+        serviceEnvPath,
+        serviceManager,
+        pid: 42,
+        confidence: "strong",
+        evidence: ["process-environ"]
+      }],
+      diagnostics: []
+    };
+
+    const program = new Command();
+    program.exitOverride();
+    const context = createCommandContext({
+      env: { HOME: homeDir, OPENCLAW_CONFIG_PATH: openclawPath },
+      stateDir,
+      runtimeDiscoveryProvider: () => discovery
+    });
+    registerGatewayCommands(program, context);
+    let stdout = "";
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      stdout += args.map(String).join(" ") + "\n";
+    };
+    try {
+      // 存在 blocking 分叉仍须 exit 0（正常 resolve，不抛错）
+      await program.parseAsync(["gateway", "env-drift"], { from: "user" });
+    } finally {
+      console.log = originalLog;
+    }
+    expect(stdout).toContain("cli:drift:candidate");
+    expect(stdout).toContain("DRIFT_KEY | different | blocking");
+    expect(stdout).toContain("STALE_KEY | extra-in-service | warning");
+    expect(stdout).toContain("Summary:");
+    expect(stdout).toContain("gateway sync-env");
+    expect(stdout).toContain("重启后生效");
+    // 安全：任何输出位置不得出现 env value
+    expect(stdout).not.toContain("new-secret");
+    expect(stdout).not.toContain("old-secret");
+    expect(stdout).not.toContain("stale-secret");
+  });
+
+  test("gateway env-drift --json prints the full report without values", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-env-drift-json-"));
+    tempDirs.push(dir);
+    const homeDir = join(dir, "home");
+    mkdirSync(homeDir, { recursive: true });
+    prepareGatewayEnvTarget(dir, homeDir);
+    const openclawPath = join(dir, "openclaw.json");
+    const envPath = join(dir, ".env");
+    const stateDir = join(homeDir, ".oc-switch");
+    const serviceEnvPath = expectedGatewayEnvPath(dir);
+    writeFileSync(envPath, "# oc-switch:start\nJSON_KEY=json-secret\n# oc-switch:end\n");
+    writeFileSync(openclawPath, `${JSON.stringify(sample, null, 2)}\n`);
+    writeFileSync(serviceEnvPath, "");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(join(stateDir, "settings.json"), JSON.stringify({ openclawPath, envPath }));
+
+    const serviceManager = process.platform === "darwin" ? "launchd" as const : "systemd" as const;
+    const discovery: RuntimeDiscoveryResult = {
+      status: "resolved",
+      instances: [],
+      candidateGroups: [{
+        candidateId: "cli:json:candidate",
+        instanceId: "cli:json",
+        stateDir: dir,
+        openclawPath,
+        envPath,
+        serviceEnvPath,
+        serviceManager,
+        pid: 42,
+        confidence: "strong",
+        evidence: ["process-environ"]
+      }],
+      diagnostics: []
+    };
+
+    const program = new Command();
+    program.exitOverride();
+    const context = createCommandContext({
+      env: { HOME: homeDir, OPENCLAW_CONFIG_PATH: openclawPath },
+      stateDir,
+      runtimeDiscoveryProvider: () => discovery
+    });
+    registerGatewayCommands(program, context);
+    let stdout = "";
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      stdout += args.map(String).join(" ") + "\n";
+    };
+    try {
+      await program.parseAsync(["gateway", "env-drift", "--json"], { from: "user" });
+    } finally {
+      console.log = originalLog;
+    }
+    const report = JSON.parse(stdout) as {
+      version: number;
+      status: string;
+      entries: Array<{ envVar: string; state: string; severity: string }>;
+      summary: { missingInService: number };
+      target?: { candidateId: string };
+    };
+    expect(report.version).toBe(1);
+    expect(report.status).toBe("ok");
+    expect(report.target?.candidateId).toBe("cli:json:candidate");
+    expect(report.entries).toEqual([{ envVar: "JSON_KEY", state: "missing-in-service", severity: "info" }]);
+    expect(report.summary.missingInService).toBe(1);
+    expect(stdout).not.toContain("json-secret");
+  });
+
+  test("gateway env-drift exits 1 and lists candidates when target is ambiguous", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-env-drift-multi-"));
+    tempDirs.push(dir);
+    const homeDir = join(dir, "home");
+    mkdirSync(homeDir, { recursive: true });
+    const openclawPath = join(dir, "openclaw.json");
+    const envPath = join(dir, ".env");
+    const stateDir = join(homeDir, ".oc-switch");
+    writeFileSync(envPath, "# oc-switch:start\nK=v\n# oc-switch:end\n");
+    writeFileSync(openclawPath, `${JSON.stringify(sample, null, 2)}\n`);
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(join(stateDir, "settings.json"), JSON.stringify({ openclawPath, envPath }));
+
+    const group = (candidateId: string, sub: string): RuntimeDiscoveryResult["candidateGroups"][number] => ({
+      candidateId,
+      instanceId: candidateId,
+      stateDir: join(dir, sub),
+      openclawPath,
+      envPath,
+      serviceEnvPath: join(dir, sub, "gateway.systemd.env"),
+      serviceManager: "systemd",
+      pid: 1,
+      confidence: "strong",
+      evidence: ["process-environ"]
+    });
+    const discovery: RuntimeDiscoveryResult = {
+      status: "resolved",
+      instances: [],
+      candidateGroups: [group("cli:multi:a", "a"), group("cli:multi:b", "b")],
+      diagnostics: []
+    };
+
+    const program = new Command();
+    program.exitOverride();
+    const context = createCommandContext({
+      env: { HOME: homeDir, OPENCLAW_CONFIG_PATH: openclawPath },
+      stateDir,
+      runtimeDiscoveryProvider: () => discovery
+    });
+    registerGatewayCommands(program, context);
+    let stderr = "";
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      stderr += args.map(String).join(" ") + "\n";
+    };
+    try {
+      await expect(program.parseAsync(["gateway", "env-drift"], { from: "user" })).rejects.toThrow();
+    } finally {
+      console.error = originalError;
+    }
+    expect(stderr).toContain("cli:multi:a");
+    expect(stderr).toContain("cli:multi:b");
+    expect(stderr).toContain("--candidate");
+    expect(stderr).not.toContain("K=v");
+  });
 });
 
 describe("provider sync-metadata / metadata-queue", () => {

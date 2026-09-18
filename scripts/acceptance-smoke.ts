@@ -730,6 +730,138 @@ async function assertRuntimeDiscoveryAcceptance(outputs: string[]): Promise<void
   }
 }
 
+/** env-drift 验收用的报告视图（完整 DTO 见 core gateway-env-drift.ts） */
+interface EnvDriftReportView {
+  status: string;
+  entries: Array<{ envVar: string; state: string; severity: string }>;
+  summary: Record<string, number>;
+  warnings: string[];
+  unavailable?: { code: string; candidates?: Array<{ candidateId: string }> };
+}
+
+/**
+ * Gateway env-drift 验收（2026-09-19 spec §7）：
+ * 托管块写入 → drift 报 missing-in-service → sync-env 归零 → 手改快照为旧值 → different(blocking)。
+ * 歧义时恒 200 + candidates。全程 API + 注入 discovery，响应任何位置不得含 fixture 密钥值。
+ */
+async function assertGatewayEnvDriftAcceptance(rootDir: string, outputs: string[]): Promise<void> {
+  const scenarioDir = join(rootDir, "gateway-env-drift");
+  const stateDir = join(scenarioDir, ".oc-switch");
+  const customDir = join(stateDir, "presets", "custom");
+  const openclawPath = join(scenarioDir, "openclaw.json");
+  const envPath = join(scenarioDir, ".env");
+  const serviceEnvPath = join(scenarioDir, "gateway.systemd.env");
+  mkdirSync(customDir, { recursive: true });
+  writeFileSync(openclawPath, `${JSON.stringify(sample, null, 2)}\n`);
+  writeFileSync(envPath, "# oc-switch:start\nNVIDIA_API_KEY=acceptance-key-pending-sync\n# oc-switch:end\n");
+
+  const group = discoveryGroup({
+    candidateId: "acceptance:env-drift",
+    instanceId: "acceptance:env-drift",
+    stateDir: scenarioDir,
+    openclawPath,
+    envPath,
+    serviceEnvPath
+  });
+  const app = createApp({
+    token: TOKEN,
+    paths: { openclawPath, envPath, stateDir },
+    presetDirs: { builtinDir: fixtureBuiltinDir, customDir },
+    runtimeDiscoveryProvider: () => discoveryResult([group]),
+    pluginCatalogProvider: emptyPluginCatalog
+  });
+  const headers = { Authorization: `Bearer ${TOKEN}` };
+
+  /** 取 env-drift 报告并做安全扫描；快照旧值也不得出现在响应里 */
+  async function fetchDrift(query = ""): Promise<{ status: number; report: EnvDriftReportView; text: string }> {
+    const response = await app.request(`/api/gateway/env-drift${query}`, { headers });
+    const text = await response.text();
+    outputs.push(text);
+    assert(response.status === 200, `GET /api/gateway/env-drift 应恒 200，实际 ${response.status}`);
+    assertNoSecrets(text, "env-drift 响应");
+    const body = JSON.parse(text) as { report: EnvDriftReportView };
+    return { status: response.status, report: body.report, text };
+  }
+
+  // 1. 快照文件不存在：全部 missing-in-service + warning
+  let drift = await fetchDrift();
+  assert(drift.report.status === "ok", "目标文件缺失时报告应为 ok（missing 是正常数据状态）");
+  assert(
+    drift.report.entries.some((entry) => entry.envVar === "NVIDIA_API_KEY" && entry.state === "missing-in-service"),
+    "快照缺失时托管块 key 应为 missing-in-service"
+  );
+  assert(
+    drift.report.warnings.some((warning) => warning.includes("not found")),
+    "快照文件缺失应产生 warning"
+  );
+
+  // 2. sync-env 后 drift 归零（源托管块 key 全部 equal，extra 清零）
+  const sync = await app.request("/api/gateway/sync-env", {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body: "{}"
+  });
+  const syncText = await sync.text();
+  outputs.push(syncText);
+  assert(sync.status === 200, `sync-env 应成功，实际 ${sync.status}`);
+  assertNoSecrets(syncText, "sync-env 响应");
+  assert(
+    readFileSync(serviceEnvPath, "utf8").includes("NVIDIA_API_KEY=acceptance-key-pending-sync"),
+    "sync-env 应把托管块写入 service env"
+  );
+
+  drift = await fetchDrift();
+  assert(drift.report.status === "ok", "sync 后报告应为 ok");
+  assert(
+    drift.report.entries.length > 0
+      && drift.report.entries.every((entry) => entry.state === "equal"),
+    `sync 后所有条目应 equal，实际 ${JSON.stringify(drift.report.entries.map((entry) => `${entry.envVar}:${entry.state}`))}`
+  );
+  assert(drift.report.summary.extraInService === 0, "sync 后 extra 应清零");
+
+  // 3. 手改快照为旧值 → different(blocking)；响应不得含旧值
+  const managed = readFileSync(serviceEnvPath, "utf8");
+  writeFileSync(
+    serviceEnvPath,
+    managed.replace("acceptance-key-pending-sync", "stale-acceptance-value")
+  );
+  drift = await fetchDrift();
+  assert(drift.report.status === "ok", "手改快照后报告应为 ok");
+  const diffEntry = drift.report.entries.find((entry) => entry.envVar === "NVIDIA_API_KEY");
+  assert(diffEntry?.state === "different", `同名不同值应判 different，实际 ${diffEntry?.state}`);
+  assert(diffEntry?.severity === "blocking", "different 应为 blocking");
+  assert(!drift.text.includes("stale-acceptance-value"), "drift 响应不得含快照旧值");
+
+  // 4. 歧义：两个 active 路径匹配且带 serviceEnvPath 的组 → 恒 200 + unavailable + candidates
+  const groupB = discoveryGroup({
+    candidateId: "acceptance:env-drift:b",
+    instanceId: "acceptance:env-drift:b",
+    stateDir: join(scenarioDir, "b"),
+    openclawPath,
+    envPath,
+    serviceEnvPath: join(scenarioDir, "b", "gateway.systemd.env")
+  });
+  const ambiguousApp = createApp({
+    token: TOKEN,
+    paths: { openclawPath, envPath, stateDir },
+    presetDirs: { builtinDir: fixtureBuiltinDir, customDir },
+    runtimeDiscoveryProvider: () => discoveryResult([group, groupB]),
+    pluginCatalogProvider: emptyPluginCatalog
+  });
+  const ambiguousResponse = await ambiguousApp.request("/api/gateway/env-drift", { headers });
+  const ambiguousText = await ambiguousResponse.text();
+  outputs.push(ambiguousText);
+  assert(ambiguousResponse.status === 200, "歧义时 env-drift 应恒 200（读报告语义）");
+  const ambiguousReport = (JSON.parse(ambiguousText) as { report: EnvDriftReportView }).report;
+  assert(ambiguousReport.status === "unavailable", "歧义时 report.status 应为 unavailable");
+  assert(ambiguousReport.unavailable?.code === "ambiguous-match", "歧义 code 应为 ambiguous-match");
+  assert(
+    (ambiguousReport.unavailable?.candidates ?? []).map((item) => item.candidateId).sort()
+      .join(",") === "acceptance:env-drift,acceptance:env-drift:b",
+    "歧义应附完整候选列表供 candidateId 重试"
+  );
+}
+
 /**
  * 插件 provider 只读验收：合并展示、编排放行、破坏性写操作 fail closed。
  * 全程注入固定插件 catalog，不依赖本机 openclaw。
@@ -1702,6 +1834,9 @@ async function main(): Promise<void> {
 
     // Runtime discovery / 多实例 / service-env 验收（临时 fixture）
     await assertRuntimeDiscoveryAcceptance(outputs);
+
+    // Gateway env-drift 验收（missing → sync-env 归零 → 手改快照 different → 歧义 candidates）
+    await assertGatewayEnvDriftAcceptance(dir, outputs);
 
     // Model policy 三态与独立 Provider state 验收（临时脱敏 fixture）
     await assertModelPolicyAcceptance(dir, outputs);

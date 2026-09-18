@@ -13,6 +13,7 @@ import { formatEnvWriteSuccess, formatGatewayServiceEnvLabel, nextStepHintForGat
 import { DataTable } from "../components/DataTable";
 import { EnvMigrationConfirmDialog } from "../components/EnvMigrationConfirmDialog";
 import { GatewayApplyBanner } from "../components/GatewayApplyBanner";
+import { GatewayEnvDriftCard } from "../components/GatewayEnvDriftCard";
 import { PageHeader } from "../components/PageHeader";
 import { useToast } from "../components/Toast";
 import { Button } from "../components/ui/button";
@@ -72,6 +73,8 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
   } | null>(null);
   const [gatewayManualLoading, setGatewayManualLoading] = useState(false);
   const [gatewayApplyCandidateId, setGatewayApplyCandidateId] = useState<string | null>(null);
+  // env 写入 / Gateway 操作成功后递增，使环境分叉卡片重取
+  const [driftRefreshToken, setDriftRefreshToken] = useState(0);
 
   const load = useCallback(async () => {
     setError(null);
@@ -122,6 +125,8 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
       envWrite: result.envWrite,
       ...(result.gatewayEnvSync ? { gatewayEnvSync: result.gatewayEnvSync } : {})
     });
+    // env 写入成功（GatewayApplyBanner 流程入口）后使环境分叉报告重取
+    setDriftRefreshToken((token) => token + 1);
   }
 
   function withGatewayHint(message: string, result: { gatewayEnvSync?: GatewayEnvSyncResult }) {
@@ -142,6 +147,7 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
       const result = await client.applyGateway(candidateId);
       if (!result.ok) throw new Error(result.restart.message);
       toast.success(`已同步托管块到 ${formatGatewayServiceEnvLabel(result.sync)} 并重启 Gateway。`);
+      setDriftRefreshToken((token) => token + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Gateway 操作失败");
     } finally {
@@ -497,6 +503,12 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
               </Button>
             </CardContent>
           </Card>
+
+          <GatewayEnvDriftCard
+            client={client}
+            candidateId={gatewayApplyCandidateId}
+            refreshToken={driftRefreshToken}
+          />
 
           {effective.orphanEnvKeys.length > 0 && (
             <Card className="border-warning/50">
