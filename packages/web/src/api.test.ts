@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createApiClient } from "./api";
+import { ApiRequestError, createApiClient, isPolicyRevisionConflict } from "./api";
 import type { ModelInventory } from "./api";
 
 describe("createApiClient", () => {
@@ -592,6 +592,90 @@ describe("runtime model inventory API client", () => {
 
     await expect(client.addModelPolicyRule("")).rejects.toThrow(errors[0]);
     await expect(client.removeModelPolicyWildcard("cpa/*")).rejects.toThrow(errors[1]);
+  });
+
+  test("replaceModelPolicyRule PATCH /api/model-policy/rules 携带 value/rule/expectedRevision", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const client = createApiClient({
+      baseUrl: "http://localhost:7420",
+      token: "token",
+      fetchImpl: async (url, init = {}) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({
+          ok: true,
+          rule: "cpa/m9",
+          kind: "exact",
+          replacedCount: 2,
+          backupId: "2026-09-16T00-00-00",
+          warnings: [],
+          runtimeConfirmed: true,
+          diagnostics: [],
+          inventory: {}
+        }), { status: 200 });
+      }
+    });
+
+    const result = await client.replaceModelPolicyRule("cpa/m2", "cpa/m9", "v1:abc");
+
+    expect(calls[0]!.url).toBe("http://localhost:7420/api/model-policy/rules");
+    expect(calls[0]!.init.method).toBe("PATCH");
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ value: "cpa/m2", rule: "cpa/m9", expectedRevision: "v1:abc" });
+    expect(result.ok).toBe(true);
+    expect(result.rule).toBe("cpa/m9");
+    expect(result.kind).toBe("exact");
+    expect(result.replacedCount).toBe(2);
+    expect(result.runtimeConfirmed).toBe(true);
+  });
+
+  test("removeModelPolicyRule DELETE /api/model-policy/rules 携带 value/expectedRevision", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const client = createApiClient({
+      baseUrl: "http://localhost:7420",
+      token: "token",
+      fetchImpl: async (url, init = {}) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({
+          ok: true,
+          value: "cpa/m2",
+          removedCount: 1,
+          backupId: "2026-09-16T00-00-01",
+          warnings: [],
+          runtimeConfirmed: false,
+          diagnostics: [],
+          inventory: {}
+        }), { status: 200 });
+      }
+    });
+
+    const result = await client.removeModelPolicyRule("cpa/m2", "v1:abc");
+
+    expect(calls[0]!.url).toBe("http://localhost:7420/api/model-policy/rules");
+    expect(calls[0]!.init.method).toBe("DELETE");
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ value: "cpa/m2", expectedRevision: "v1:abc" });
+    expect(result.ok).toBe(true);
+    expect(result.removedCount).toBe(1);
+    // runtimeConfirmed:false 不是 HTTP 失败：200 + ok:true 正常返回
+    expect(result.runtimeConfirmed).toBe(false);
+  });
+
+  test("409 policy-revision-conflict 抛 ApiRequestError 并可被 isPolicyRevisionConflict 识别", async () => {
+    const client = createApiClient({
+      baseUrl: "http://localhost:7420",
+      token: "token",
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ error: "modelPolicy.allow 已被其他写入修改", code: "policy-revision-conflict" }), { status: 409 })
+    });
+
+    const failure = await client.replaceModelPolicyRule("cpa/m2", "cpa/m9", "v1:stale").catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(ApiRequestError);
+    expect((failure as ApiRequestError).status).toBe(409);
+    expect((failure as ApiRequestError).code).toBe("policy-revision-conflict");
+    expect((failure as ApiRequestError).message).toContain("modelPolicy.allow");
+    expect(isPolicyRevisionConflict(failure)).toBe(true);
+    // 其它错误与普通 Error 均不误判为 revision 冲突
+    expect(isPolicyRevisionConflict(new ApiRequestError("bad", 400, "invalid-rule-format"))).toBe(false);
+    expect(isPolicyRevisionConflict(new Error("policy-revision-conflict"))).toBe(false);
+    expect(isPolicyRevisionConflict(undefined)).toBe(false);
   });
 
   test("materializeRuntimeModel POST /api/models/materialize 携带 ref 与 input", async () => {

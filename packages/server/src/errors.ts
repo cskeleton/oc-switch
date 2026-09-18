@@ -9,7 +9,9 @@ export function jsonError(c: { json: (body: unknown, status: number) => Response
   if (error instanceof SyntaxError) return c.json({ error: "Invalid JSON input or configuration" }, 400);
   if (error instanceof TypeError) return c.json({ error: "Internal server error" }, 500);
   if (isModelReconciliationError(error) || isPluginStateError(error) || isModelPolicyEditError(error)) {
-    return c.json({ error: error.message, code: error.code }, 400);
+    // policy 过期编辑冲突是独立的 409（2026-09-16 spec §5），其余结构化 blocker 仍为 400
+    const status = isModelPolicyEditError(error) && error.code === "policy-revision-conflict" ? 409 : 400;
+    return c.json({ error: error.message, code: error.code }, status);
   }
   if (isValidationError(error)) {
     return c.json({ error: (error as Error).message }, 400);

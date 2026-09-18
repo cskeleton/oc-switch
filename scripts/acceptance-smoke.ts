@@ -1273,12 +1273,15 @@ async function assertRuntimeModelAcceptance(rootDir: string, outputs: string[]):
 }
 
 /**
- * Policy 规则编辑验收（policy-editing spec §8 acceptance 条）。
+ * Policy 规则编辑验收（policy-editing spec §8 + 2026-09-16 规则替换 spec 的 acceptance 条）。
  *
  * CLI 全链路：restricted fixture 下 add exact → add wildcard → remove wildcard，
  * 守卫（防清空 / primary 覆盖 / legacy 模式门禁）fail closed。
+ * 2026-09-16 新增：sole wildcard → exact 原子替换（CLI replace-policy-rule）、
+ * 冗余 exact 纯规则删除（CLI remove-policy-rule，含重复副本一并删除）、
+ * API revision 冲突拒绝（过期 expectedRevision → 409 policy-revision-conflict）。
  * 回读 openclaw.json 断言：新规则追加在 allow 末尾（exact 按归一存储、wildcard 原样）、
- * 删除只移目标规则，且每次写入 policy.allow 之外的内容逐字节等价。
+ * 删除只移目标规则，且每次写入 policy.allow 之外的配置语义不变、.env 字节不变。
  */
 async function assertPolicyEditingAcceptance(rootDir: string, outputs: string[]): Promise<void> {
   const scenarioDir = join(rootDir, "policy-editing");
@@ -1396,6 +1399,124 @@ async function assertPolicyEditingAcceptance(rootDir: string, outputs: string[])
   );
   assert(readFileSync(openclawPath, "utf8") === before, "primary 覆盖保护拒绝后配置字节不得变化");
   assert(listBackups(stateDir).length === backupsBefore, "守卫拒绝不得产生备份");
+
+  // ---------- 4c. sole wildcard → exact 原子替换（2026-09-16）：最终 policy 仍覆盖 primary，无中间删除态 ----------
+  writePolicyConfig(["minimax-portal/*"]);
+  before = readFileSync(openclawPath, "utf8");
+  let envBefore = readFileSync(envPath, "utf8");
+  backupsBefore = listBackups(stateDir).length;
+  const replaceBlocked = await runCli(["model", "replace-policy-rule", "minimax-portal/*", "minimax-portal/MiniMax-M3"], cliEnv);
+  outputs.push(replaceBlocked.combined);
+  assert(replaceBlocked.code !== 0, "非 TTY 无 --yes 的 replace-policy-rule 必须 fail closed");
+  assert(readFileSync(openclawPath, "utf8") === before, "fail closed 拒绝后配置字节不得变化");
+
+  const replaced = await runCli(["model", "replace-policy-rule", "minimax-portal/*", "minimax-portal/MiniMax-M3", "--yes", "--json"], cliEnv);
+  outputs.push(replaced.combined);
+  assert(replaced.code === 0, `replace-policy-rule --yes 应成功，实际退出码 ${replaced.code}：${replaced.combined}`);
+  assertNoSecrets(replaced.combined, "replace-policy-rule 输出");
+  const replacedJson = JSON.parse(replaced.stdout) as { ok: boolean; rule: string; kind: string; replacedCount: number };
+  assert(replacedJson.ok === true && replacedJson.kind === "exact" && replacedJson.replacedCount === 1, "replace 的 JSON 契约应报告 ok + kind=exact + replacedCount=1");
+  assert(
+    JSON.stringify(readRawAllow()) === JSON.stringify(["minimax-portal/MiniMax-M3"]),
+    "sole wildcard 应被原子替换为 exact（primary 仍被最终 policy 覆盖）"
+  );
+  assertOnlyPolicyAllowChanged(before, "replace sole wildcard");
+  assert(readFileSync(envPath, "utf8") === envBefore, "replace 不得改动 .env 字节");
+  assert(listBackups(stateDir).length === backupsBefore + 1, "replace 应产生一个备份");
+
+  // ---------- 4d. 冗余 exact 纯规则删除（2026-09-16）：被 wildcard 覆盖的 exact 可删，重复副本一并删除 ----------
+  writePolicyConfig(["minimax-portal/*", "minimax-portal/MiniMax-M3", "minimax-portal/MiniMax-M3"]);
+  // inventory 投影：被 wildcard 覆盖的 primary exact 现在 removable=true（纯规则删除语义）且 editable=true
+  const invBeforeRemoval = await runCli(["models", "inventory", "--json"], cliEnv);
+  outputs.push(invBeforeRemoval.combined);
+  assert(invBeforeRemoval.code === 0, "删除前 inventory 应成功");
+  const redundantRule = (JSON.parse(invBeforeRemoval.stdout) as ModelInventory).policyRules
+    .find((rule) => rule.value === "minimax-portal/MiniMax-M3");
+  assert(redundantRule?.removable === true, "被 wildcard 覆盖的 exact 规则应投影为 removable（纯规则删除）");
+  assert((redundantRule as { editable?: boolean } | undefined)?.editable === true, "合法规则应投影为 editable");
+
+  before = readFileSync(openclawPath, "utf8");
+  envBefore = readFileSync(envPath, "utf8");
+  backupsBefore = listBackups(stateDir).length;
+  const removeRuleBlocked = await runCli(["model", "remove-policy-rule", "minimax-portal/MiniMax-M3"], cliEnv);
+  outputs.push(removeRuleBlocked.combined);
+  assert(removeRuleBlocked.code !== 0, "非 TTY 无 --yes 的 remove-policy-rule 必须 fail closed");
+  assert(readFileSync(openclawPath, "utf8") === before, "fail closed 拒绝后配置字节不得变化");
+
+  const removedRule = await runCli(["model", "remove-policy-rule", "minimax-portal/MiniMax-M3", "--yes", "--json"], cliEnv);
+  outputs.push(removedRule.combined);
+  assert(removedRule.code === 0, `remove-policy-rule --yes 应成功，实际退出码 ${removedRule.code}：${removedRule.combined}`);
+  assertNoSecrets(removedRule.combined, "remove-policy-rule 输出");
+  const removedRuleJson = JSON.parse(removedRule.stdout) as { ok: boolean; value: string; removedCount: number };
+  assert(removedRuleJson.ok === true && removedRuleJson.removedCount === 2, "纯规则删除应按完全相同字符串删除全部重复副本（removedCount=2）");
+  assert(
+    JSON.stringify(readRawAllow()) === JSON.stringify(["minimax-portal/*"]),
+    "纯规则删除只移目标规则（含副本），wildcard 保持不动"
+  );
+  assertOnlyPolicyAllowChanged(before, "remove redundant exact");
+  assert(readFileSync(envPath, "utf8") === envBefore, "纯规则删除不得改动 .env 字节");
+  assert(listBackups(stateDir).length === backupsBefore + 1, "纯规则删除应产生一个备份");
+
+  // ---------- 4e. API revision 冲突拒绝（2026-09-16）：过期 expectedRevision → 409，配置与备份不变 ----------
+  writePolicyConfig(["minimax-portal/*", "minimax-portal/MiniMax-M3"]);
+  const policyCustomDir = join(stateDir, "presets", "custom");
+  mkdirSync(policyCustomDir, { recursive: true });
+  const policyApp = createApp({
+    token: TOKEN,
+    paths: { openclawPath, envPath, stateDir },
+    presetDirs: { builtinDir: fixtureBuiltinDir, customDir: policyCustomDir }
+  });
+  const policyHeaders = { Authorization: `Bearer ${TOKEN}`, "content-type": "application/json" };
+  const invResponse = await policyApp.request("/api/model-inventory", { headers: policyHeaders });
+  assert(invResponse.status === 200, "GET /api/model-inventory 应成功");
+  const rev1 = ((await invResponse.json()) as ModelInventory).policyRevision;
+  assert(typeof rev1 === "string" && rev1.length > 0, "inventory 必须返回 policyRevision");
+
+  // 外部写入（CLI）使 rev1 过期
+  const externalAdd = await runCli(["model", "add-policy-rule", "DeepSeek/deepseek-chat", "--json"], cliEnv);
+  outputs.push(externalAdd.combined);
+  assert(externalAdd.code === 0, `外部 add-policy-rule 应成功：${externalAdd.combined}`);
+
+  before = readFileSync(openclawPath, "utf8");
+  backupsBefore = listBackups(stateDir).length;
+  const stalePatch = await policyApp.request("/api/model-policy/rules", {
+    method: "PATCH",
+    headers: policyHeaders,
+    body: JSON.stringify({ value: "minimax-portal/MiniMax-M3", rule: "minimax-portal/other", expectedRevision: rev1 })
+  });
+  const stalePatchBody = await stalePatch.json() as { error?: string; code?: string };
+  outputs.push(JSON.stringify(stalePatchBody));
+  assert(stalePatch.status === 409, `过期 revision 的 PATCH 必须 409，实际 ${stalePatch.status}`);
+  assert(stalePatchBody.code === "policy-revision-conflict", "409 响应必须携带 code=policy-revision-conflict");
+  assert(readFileSync(openclawPath, "utf8") === before, "409 冲突拒绝后配置字节不得变化");
+
+  const staleDelete = await policyApp.request("/api/model-policy/rules", {
+    method: "DELETE",
+    headers: policyHeaders,
+    body: JSON.stringify({ value: "minimax-portal/MiniMax-M3", expectedRevision: rev1 })
+  });
+  assert(staleDelete.status === 409, `过期 revision 的 DELETE 必须 409，实际 ${staleDelete.status}`);
+  assert(readFileSync(openclawPath, "utf8") === before, "DELETE 409 冲突拒绝后配置字节不得变化");
+  assert(listBackups(stateDir).length === backupsBefore, "冲突拒绝不得产生备份");
+
+  // 新鲜 revision 的 DELETE 成功（API 纯规则删除 happy path）
+  const inv2Response = await policyApp.request("/api/model-inventory", { headers: policyHeaders });
+  const rev2 = ((await inv2Response.json()) as ModelInventory).policyRevision;
+  const freshDelete = await policyApp.request("/api/model-policy/rules", {
+    method: "DELETE",
+    headers: policyHeaders,
+    body: JSON.stringify({ value: "minimax-portal/MiniMax-M3", expectedRevision: rev2 })
+  });
+  assert(freshDelete.status === 200, `新鲜 revision 的 DELETE 应成功，实际 ${freshDelete.status}`);
+  const freshDeleteBody = await freshDelete.json() as { ok?: boolean; removedCount?: number };
+  outputs.push(JSON.stringify(freshDeleteBody));
+  assert(freshDeleteBody.ok === true && freshDeleteBody.removedCount === 1, "API 纯规则删除应报告 removedCount=1");
+  assert(
+    JSON.stringify(readRawAllow()) === JSON.stringify(["minimax-portal/*", "deepseek/deepseek-chat"]),
+    "API 删除后 policy 应只移目标规则"
+  );
+  assertOnlyPolicyAllowChanged(before, "API fresh-revision delete");
+  assert(readFileSync(envPath, "utf8") === envBefore, "API 删除不得改动 .env 字节");
 
   // ---------- 5. legacy fixture（sample 无 modelPolicy）：模式门禁拒绝 add，不创建 policy ----------
   writeFileSync(openclawPath, `${JSON.stringify(sample, null, 2)}\n`);
@@ -1591,7 +1712,7 @@ async function main(): Promise<void> {
     // 运行时模型协调（spec §13.4 七步：fake openclaw + 失败模式切换）
     await assertRuntimeModelAcceptance(dir, outputs);
 
-    // Policy 规则编辑 CLI 全链路（add exact/wildcard、remove wildcard、守卫 fail closed）
+    // Policy 规则编辑 CLI/API 全链路（add/replace/remove、纯规则删除、revision 冲突 409、守卫 fail closed）
     await assertPolicyEditingAcceptance(dir, outputs);
 
     // 汇总扫描所有输出

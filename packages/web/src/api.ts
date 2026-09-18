@@ -622,6 +622,8 @@ export interface ModelPolicyRuleEntry {
   matchedModelCount: number;
   unavailableModelCount: number;
   removable: boolean;
+  /** Core 投影：规则可被原子替换（restricted 模式、合法字符串规则）。旧后端缺字段时前端不提供编辑入口。 */
+  editable?: boolean;
 }
 
 /** 插件级 descriptor 的非模型能力（用于启停确认框的影响面提示）。 */
@@ -661,6 +663,8 @@ export interface ModelInventory {
   pickerSource?: "gateway" | "inferred";
   /** 顶层策略模式；旧后端缺字段时前端隐藏规则添加入口（安全回退）。 */
   policyMode?: ModelPolicyMode;
+  /** policy 内容指纹（写入冲突校验用）；旧后端缺字段时前端禁用规则编辑/删除入口。 */
+  policyRevision?: string;
   providers: ProviderInventoryEntry[];
   models: ModelInventoryEntry[];
   plugins: ModelPluginDescriptor[];
@@ -707,6 +711,40 @@ export interface RemoveModelPolicyWildcardResult extends MutationResult {
   runtimeConfirmed: boolean;
 }
 
+/** PATCH /api/model-policy/rules 的响应：原子替换规则（同值副本一并替换）。 */
+export interface ReplaceModelPolicyRuleResult extends MutationResult {
+  rule: string;
+  kind: "exact" | "wildcard";
+  replacedCount: number;
+  warnings: string[];
+  runtimeConfirmed: boolean;
+}
+
+/** DELETE /api/model-policy/rules 的响应：纯规则删除（不改目录/metadata），removedCount 含全部相同副本。 */
+export interface RemoveModelPolicyRuleResult extends MutationResult {
+  value: string;
+  removedCount: number;
+  warnings: string[];
+  runtimeConfirmed: boolean;
+}
+
+/** API 请求失败错误：携带 HTTP status 与服务端错误 code，供 409 等分支判定。 */
+export class ApiRequestError extends Error {
+  readonly status: number;
+  readonly code?: string | undefined;
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+/** 是否为 policy revision 冲突（409）：前端据此提示刷新重核，不自动重试。 */
+export function isPolicyRevisionConflict(error: unknown): boolean {
+  return error instanceof ApiRequestError && error.status === 409 && error.code === "policy-revision-conflict";
+}
+
 export type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 export interface ApiClientOptions {
@@ -731,9 +769,14 @@ export function createApiClient(options: ApiClientOptions) {
     if (!response.ok) {
       const body = (await response.json().catch(() => ({}))) as {
         error?: string;
+        code?: string;
         restart?: { message?: string };
       };
-      throw new Error(body.error ?? body.restart?.message ?? `Request failed: ${response.status}`);
+      throw new ApiRequestError(
+        body.error ?? body.restart?.message ?? `Request failed: ${response.status}`,
+        response.status,
+        body.code
+      );
     }
     const result = await response.json();
     if (path === "/api/model-inventory" || path === "/api/model-inventory/refresh") {
@@ -915,6 +958,18 @@ export function createApiClient(options: ApiClientOptions) {
       request<RemoveModelPolicyWildcardResult>("/api/model-policy/wildcard", {
         method: "DELETE",
         body: JSON.stringify({ value })
+      }),
+    /** PATCH /api/model-policy/rules：原子替换单条规则（携带打开对话框时冻结的 expectedRevision） */
+    replaceModelPolicyRule: (value: string, rule: string, expectedRevision: string) =>
+      request<ReplaceModelPolicyRuleResult>("/api/model-policy/rules", {
+        method: "PATCH",
+        body: JSON.stringify({ value, rule, expectedRevision })
+      }),
+    /** DELETE /api/model-policy/rules：纯规则删除（不改目录/metadata，含全部相同副本） */
+    removeModelPolicyRule: (value: string, expectedRevision: string) =>
+      request<RemoveModelPolicyRuleResult>("/api/model-policy/rules", {
+        method: "DELETE",
+        body: JSON.stringify({ value, expectedRevision })
       }),
     /** POST /api/models/materialize：把运行时可用模型补全为 config Provider 目录项 */
     materializeRuntimeModel: (ref: string, input: ProviderModelInput & { enabled: boolean }) =>

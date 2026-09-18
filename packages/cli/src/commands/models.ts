@@ -1,6 +1,8 @@
 import {
   addModelPolicyRule,
   addProviderModel,
+  assertModelPolicyRevision,
+  buildModelPolicyRevision,
   createConfigAdapter,
   disableModel,
   enableModel,
@@ -8,8 +10,10 @@ import {
   normalizeModelRefForStorage,
   parseModelRef,
   removeModelPolicyExactRef,
+  removeModelPolicyRule,
   removeModelPolicyWildcard,
   removeProviderModel,
+  replaceModelPolicyRule,
   readProviderStates,
   setPrimaryModel,
   writeOpenClawTransaction,
@@ -323,6 +327,102 @@ export function registerModelCommands(program: Command, context: CommandContext)
           return;
         }
         console.log(`Removed policy wildcard ${value} (${removedCount} entries, backup: ${result.backupDir.split("/").pop()})`);
+        for (const warning of warnings) console.warn(warning);
+      } catch (error) {
+        console.error(commandErrorMessage(error));
+        process.exitCode = 1;
+      }
+    });
+
+  model.command("replace-policy-rule")
+    .description("原子替换 agents.defaults.modelPolicy.allow 的一条规则（exact/wildcard；旧值按完全相同字符串匹配并替换全部副本；仅 restricted 模式）")
+    .argument("<value>", "读取到的旧规则字符串（完全相同匹配，不做大小写折叠）")
+    .argument("<rule>", "新规则（exact provider/model 或 wildcard provider/*）")
+    .option("--yes", "非交互环境显式确认修改（destructive action fail closed）")
+    .option("--json", "输出 JSON 结果")
+    .action(async (value: string, rule: string, options: { yes?: boolean; json?: boolean }) => {
+      try {
+        requireNonInteractiveYes("model replace-policy-rule", options.yes);
+        const paths = context.activePaths();
+        // 确认前读取当前 config 得到 revision；事务 mutate 内比对，
+        // 冲突时非零退出、不自动重试、绝不更新 revision 后继续写（spec §5）
+        const expectedRevision = buildModelPolicyRevision(context.readConfig(paths));
+        let warnings: string[] = [];
+        let stored: { rule: string; kind: "exact" | "wildcard"; replacedCount: number } | undefined;
+        const result = await writeOpenClawTransaction({
+          ...paths,
+          runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
+          reason: `replace model policy rule ${value}`,
+          normalizeConfig: false,
+          async mutate(config) {
+            assertModelPolicyRevision(config, expectedRevision);
+            const inventory = await context.buildInventory({ refresh: true, config, paths });
+            const operation = replaceModelPolicyRule(config, value, rule, {
+              knownProviderIds: inventory.providers.map((provider) => provider.providerId),
+              inventory
+            });
+            warnings = operation.warnings;
+            stored = { rule: operation.rule, kind: operation.kind, replacedCount: operation.replacedCount };
+            return operation.config;
+          }
+        });
+        if (options.json) {
+          console.log(JSON.stringify({
+            ok: true,
+            rule: stored!.rule,
+            kind: stored!.kind,
+            replacedCount: stored!.replacedCount,
+            backupId: result.backupDir.split("/").pop(),
+            warnings
+          }));
+          return;
+        }
+        console.log(`Replaced policy rule ${value} -> ${stored!.rule} (${stored!.replacedCount} entries, backup: ${result.backupDir.split("/").pop()})`);
+        for (const warning of warnings) console.warn(warning);
+      } catch (error) {
+        console.error(commandErrorMessage(error));
+        process.exitCode = 1;
+      }
+    });
+
+  model.command("remove-policy-rule")
+    .description("纯规则删除 agents.defaults.modelPolicy.allow 的一条规则（exact 与 wildcard 同一入口；按完全相同字符串删除全部副本；不动目录/metadata/密钥）")
+    .argument("<value>", "读取到的规则字符串（完全相同匹配，不做大小写折叠）")
+    .option("--yes", "非交互环境显式确认删除（destructive action fail closed）")
+    .option("--json", "输出 JSON 结果")
+    .action(async (value: string, options: { yes?: boolean; json?: boolean }) => {
+      try {
+        requireNonInteractiveYes("model remove-policy-rule", options.yes);
+        const paths = context.activePaths();
+        // 确认前读取当前 config 得到 revision；事务 mutate 内比对，冲突非零退出、不自动重试
+        const expectedRevision = buildModelPolicyRevision(context.readConfig(paths));
+        let warnings: string[] = [];
+        let removedCount = 0;
+        const result = await writeOpenClawTransaction({
+          ...paths,
+          runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
+          reason: `remove model policy rule ${value}`,
+          normalizeConfig: false,
+          async mutate(config) {
+            assertModelPolicyRevision(config, expectedRevision);
+            const inventory = await context.buildInventory({ refresh: true, config, paths });
+            const operation = removeModelPolicyRule(config, value, { inventory });
+            warnings = operation.warnings;
+            removedCount = operation.removedCount;
+            return operation.config;
+          }
+        });
+        if (options.json) {
+          console.log(JSON.stringify({
+            ok: true,
+            value,
+            removedCount,
+            backupId: result.backupDir.split("/").pop(),
+            warnings
+          }));
+          return;
+        }
+        console.log(`Removed policy rule ${value} (${removedCount} entries, backup: ${result.backupDir.split("/").pop()})`);
         for (const warning of warnings) console.warn(warning);
       } catch (error) {
         console.error(commandErrorMessage(error));

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { buildModelInventory } from "../src/model-inventory";
+import { buildModelPolicyRevision, removeModelPolicyRule } from "../src/model-policy-edit";
 import type {
   ModelInventory,
   ModelInventoryEntry,
@@ -948,5 +949,106 @@ describe("buildModelInventory：真实差异回归 fixture", () => {
       availability: "available"
     });
     expect(byProvider(inventory).get("ghost")).toBeUndefined();
+  });
+});
+
+describe("buildModelInventory：policyRevision 与规则 editable/removable 投影（2026-09-16 spec §4）", () => {
+  test("policyRevision 与 buildModelPolicyRevision 一致；policy 变化改变、无关配置变化不改变", () => {
+    const config: OpenClawConfig = {
+      models: { providers: { cpa: { models: [{ id: "m1" }] } } },
+      agents: { defaults: { modelPolicy: { allow: ["cpa/*", "other/model"] } } }
+    };
+    const inventory = buildModelInventory({ config, runtime: makeSnapshot() });
+    expect(inventory.policyRevision).toBe(buildModelPolicyRevision(config));
+
+    const policyChanged = structuredClone(config);
+    policyChanged.agents!.defaults!.modelPolicy!.allow = ["cpa/*"];
+    expect(buildModelInventory({ config: policyChanged, runtime: makeSnapshot() }).policyRevision).not.toBe(
+      inventory.policyRevision
+    );
+
+    const unrelated = structuredClone(config);
+    unrelated.models!.providers!.extra = { models: [{ id: "x" }] };
+    unrelated.agents!.defaults!.model = "cpa/m1";
+    expect(buildModelInventory({ config: unrelated, runtime: makeSnapshot() }).policyRevision).toBe(
+      inventory.policyRevision
+    );
+  });
+
+  test("editable：restricted 合法字符串规则 editable=true，invalid editable=false", () => {
+    const config: OpenClawConfig = {
+      agents: { defaults: { modelPolicy: { allow: ["cpa/*", "cpa/m1", 42, null] } } }
+    };
+    const inventory = buildModelInventory({ config, runtime: makeSnapshot() });
+
+    const stringRules = inventory.policyRules.filter((rule) => rule.kind !== "invalid");
+    expect(stringRules.length).toBe(2);
+    expect(stringRules.every((rule) => rule.editable)).toBe(true);
+
+    const invalids = inventory.policyRules.filter((rule) => rule.kind === "invalid");
+    expect(invalids.length).toBe(2);
+    expect(invalids.every((rule) => rule.editable === false && rule.removable === false)).toBe(true);
+  });
+
+  test("sole wildcard：editable=true 且 removable=false（不可删除不等于不可编辑）", () => {
+    const config: OpenClawConfig = {
+      agents: { defaults: { model: "cpa/m1", modelPolicy: { allow: ["cpa/*"] } } }
+    };
+    const inventory = buildModelInventory({ config, runtime: makeSnapshot() });
+
+    expect(inventory.policyRules).toHaveLength(1);
+    expect(inventory.policyRules[0]).toMatchObject({ kind: "wildcard", value: "cpa/*", editable: true, removable: false });
+  });
+
+  test("同一 primary exact：被 wildcard 覆盖时规则 removable=true，模型引用清理 canRemovePolicyExactRef 仍 false", () => {
+    const config: OpenClawConfig = {
+      models: { providers: { cpa: { models: [{ id: "m1" }] } } },
+      agents: { defaults: { model: "cpa/m1", modelPolicy: { allow: ["cpa/*", "cpa/m1"] } } }
+    };
+    const runtime = makeSnapshot({ configuredModels: [rt("cpa/m1", { available: true })] });
+    const inventory = buildModelInventory({ config, runtime });
+
+    // 规则行：删除被 cpa/* 覆盖的 primary exact 是纯规则删除允许的（面板放宽仅限规则层）
+    expect(inventory.policyRules.find((rule) => rule.value === "cpa/m1")).toMatchObject({
+      kind: "exact",
+      removable: true,
+      editable: true
+    });
+    // 模型行：引用清理守卫不随面板放宽（primary + wildcard 覆盖仍 fail closed）
+    expect(byRef(inventory).get("cpa/m1")?.capabilities.canRemovePolicyExactRef).toBe(false);
+  });
+
+  test("规则行 removable 与 removeModelPolicyRule 成败逐项一致（别名 / 零命中 / unknown availability）", () => {
+    // OpenRouter 别名：primary 写别名形态，唯一覆盖是 openrouter/free exact
+    const aliasConfig: OpenClawConfig = {
+      agents: {
+        defaults: {
+          model: "openrouter/openrouter/free",
+          modelPolicy: { allow: ["openrouter/free", "cpa/*", "cpa/m1", "ghost/missing"] }
+        }
+      }
+    };
+    // 完整探测与探测失败（unknown availability）各跑一遍，规则可删性不依赖 availability
+    for (const runtime of [makeSnapshot(), makeSnapshot({ completeness: { status: false, configuredList: false, allList: false } })]) {
+      const inventory = buildModelInventory({ config: aliasConfig, runtime });
+      const byValue = new Map(inventory.policyRules.map((rule) => [rule.value, rule]));
+
+      // 别名唯一覆盖 primary → 不可删；其余规则不涉及 protected identity → 可删（含零命中 ghost/missing）
+      expect(byValue.get("openrouter/free")?.removable).toBe(false);
+      expect(byValue.get("cpa/*")?.removable).toBe(true);
+      expect(byValue.get("cpa/m1")?.removable).toBe(true);
+      expect(byValue.get("ghost/missing")?.removable).toBe(true);
+
+      // 与 Core 实际判定逐项一致：投影不复制匹配器，成败必须严格对齐
+      for (const rule of inventory.policyRules.filter((candidate) => candidate.kind !== "invalid")) {
+        let allowed = true;
+        try {
+          removeModelPolicyRule(aliasConfig, rule.value);
+        } catch {
+          allowed = false;
+        }
+        expect(rule.removable).toBe(allowed);
+      }
+    }
   });
 });

@@ -9,6 +9,7 @@ import { MAX_PROVIDER_MODELS, upsertDisabledProviderState, writeModelMetadataQue
 import { prepareGatewayEnvTarget, expectedGatewayEnvPath } from "../../core/test/gateway-sync-fixture";
 import { createCommandContext, repoRoot } from "../src/command-context";
 import { registerGatewayCommands } from "../src/commands/gateway";
+import { registerModelCommands } from "../src/commands/models";
 
 // 新增的 inventory / reconcile / plugin 命令每次 runCli 都要 spawn bun 子进程 + 8s 级探测，
 // 偶发超过 bun:test 默认 5s 超时；放宽到 30s（只调时长，不放宽断言）
@@ -1925,6 +1926,194 @@ describe("cli 运行时模型管理（inventory / reconcile / plugin）", () => 
       expect(primary.code).not.toBe(0);
       expect(primary.stderr).toContain("primary");
       expect(readFileSync(configPath, "utf8")).toBe(primaryBefore);
+    });
+  });
+
+  describe("model replace-policy-rule / remove-policy-rule", () => {
+    test("replace-policy-rule：非 TTY 无 --yes fail closed；--yes 原子替换 wildcard→exact 成功并落盘", async () => {
+      const { dir, configPath } = writePolicyFixture();
+      const env = {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, completeRuntimeCommands())
+      };
+
+      const blocked = await runCli(["model", "replace-policy-rule", "nvidia/*", "nvidia/z-ai/glm5.1"], env);
+      expect(blocked.code).not.toBe(0);
+      expect(blocked.stderr).toContain("--yes");
+      // fail closed：配置不变
+      expect(JSON.parse(readFileSync(configPath, "utf8")).agents.defaults.modelPolicy.allow).toContain("nvidia/*");
+
+      const replaced = await runCli(["model", "replace-policy-rule", "nvidia/*", "nvidia/z-ai/glm5.1", "--yes"], env);
+      expect(replaced.code).toBe(0);
+      expect(replaced.stdout).toContain("Replaced policy rule nvidia/* -> nvidia/z-ai/glm5.1");
+      // 失去放行 warning：nvidia 其余目录模型 + 运行时 nvidia 模型不再被覆盖
+      expect(replaced.stderr).toContain("lose policy allowance");
+      const config = JSON.parse(readFileSync(configPath, "utf8"));
+      // 替换在原位置，其它条目原样保留
+      expect(config.agents.defaults.modelPolicy.allow).toEqual([
+        "nvidia/z-ai/glm5.1",
+        "minimax-portal/MiniMax-M3",
+        "DeepSeek/deepseek-chat",
+        "ghost-provider/policy-only-model"
+      ]);
+    });
+
+    test("replace-policy-rule --json 输出契约：ok / rule / kind / replacedCount / backupId / warnings", async () => {
+      const { dir, configPath } = writePolicyFixture();
+      const result = await runCli(["model", "replace-policy-rule", "nvidia/*", "nvidia/z-ai/glm5.1", "--yes", "--json"], {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, completeRuntimeCommands())
+      });
+      expect(result.code).toBe(0);
+      const json = JSON.parse(result.stdout) as Record<string, unknown>;
+      expect(json).toMatchObject({ ok: true, rule: "nvidia/z-ai/glm5.1", kind: "exact", replacedCount: 1 });
+      expect(typeof json.backupId).toBe("string");
+      expect((json.warnings as string[]).some((warning) => warning.includes("lose policy allowance"))).toBe(true);
+      expect(JSON.stringify(json)).not.toContain("sk-");
+    });
+
+    test("remove-policy-rule：exact 与 wildcard 同一入口；重复副本全删并报 removedCount", async () => {
+      const { dir, configPath } = writePolicyFixture();
+      const env = {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, completeRuntimeCommands())
+      };
+
+      // 非 TTY 无 --yes fail closed
+      const blocked = await runCli(["model", "remove-policy-rule", "ghost-provider/policy-only-model"], env);
+      expect(blocked.code).not.toBe(0);
+      expect(blocked.stderr).toContain("--yes");
+      expect(JSON.parse(readFileSync(configPath, "utf8")).agents.defaults.modelPolicy.allow).toContain(
+        "ghost-provider/policy-only-model"
+      );
+
+      // exact 删除成功
+      const exact = await runCli(["model", "remove-policy-rule", "ghost-provider/policy-only-model", "--yes"], env);
+      expect(exact.code).toBe(0);
+      expect(exact.stdout).toContain("Removed policy rule ghost-provider/policy-only-model (1 entries");
+      expect(JSON.parse(readFileSync(configPath, "utf8")).agents.defaults.modelPolicy.allow).toEqual([
+        "nvidia/*",
+        "minimax-portal/MiniMax-M3",
+        "DeepSeek/deepseek-chat"
+      ]);
+
+      // wildcard 重复副本：全删并提示「同时修改 N 条相同规则」
+      const dupConfig = structuredClone(sample) as OpenClawConfig;
+      dupConfig.agents!.defaults!.modelPolicy = { allow: ["nvidia/*", "nvidia/*", "minimax-portal/MiniMax-M3"] };
+      writeFileSync(configPath, `${JSON.stringify(dupConfig, null, 2)}\n`);
+      const dup = await runCli(["model", "remove-policy-rule", "nvidia/*", "--yes", "--json"], env);
+      expect(dup.code).toBe(0);
+      const dupJson = JSON.parse(dup.stdout) as { removedCount: number; warnings: string[] };
+      expect(dupJson.removedCount).toBe(2);
+      expect(dupJson.warnings.some((warning) => warning.includes("Removed 2 identical entries"))).toBe(true);
+      expect(JSON.parse(readFileSync(configPath, "utf8")).agents.defaults.modelPolicy.allow).toEqual([
+        "minimax-portal/MiniMax-M3"
+      ]);
+    });
+
+    test("remove-policy-rule --json 输出契约：ok / value / removedCount / backupId / warnings", async () => {
+      const { dir, configPath } = writePolicyFixture();
+      const result = await runCli(["model", "remove-policy-rule", "ghost-provider/policy-only-model", "--yes", "--json"], {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, completeRuntimeCommands())
+      });
+      expect(result.code).toBe(0);
+      const json = JSON.parse(result.stdout) as Record<string, unknown>;
+      expect(json).toMatchObject({ ok: true, value: "ghost-provider/policy-only-model", removedCount: 1 });
+      expect(typeof json.backupId).toBe("string");
+      // 悬空 exact 删除后失去放行（不再被任何剩余规则覆盖）
+      expect((json.warnings as string[]).some((warning) => warning.includes("lose policy allowance"))).toBe(true);
+    });
+
+    test("保护失败：primary 覆盖保护与 last-rule-removal fail closed，配置不变", async () => {
+      const { dir, configPath } = writePolicyFixture();
+      const env = {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, completeRuntimeCommands())
+      };
+
+      // 替换为不覆盖 primary 的规则：fail closed
+      const primaryConfig = structuredClone(sample) as OpenClawConfig;
+      primaryConfig.agents!.defaults!.model = "nvidia/z-ai/glm5.1";
+      primaryConfig.agents!.defaults!.modelPolicy = { allow: ["nvidia/*", "DeepSeek/deepseek-chat"] };
+      writeFileSync(configPath, `${JSON.stringify(primaryConfig, null, 2)}\n`);
+      const primaryBefore = readFileSync(configPath, "utf8");
+      const primary = await runCli(["model", "replace-policy-rule", "nvidia/*", "other/x", "--yes"], env);
+      expect(primary.code).not.toBe(0);
+      expect(primary.stderr).toContain("primary");
+      expect(readFileSync(configPath, "utf8")).toBe(primaryBefore);
+
+      // 删除唯一一条规则：fail closed
+      const lastConfig = structuredClone(sample) as OpenClawConfig;
+      lastConfig.agents!.defaults!.modelPolicy = { allow: ["nvidia/*"] };
+      writeFileSync(configPath, `${JSON.stringify(lastConfig, null, 2)}\n`);
+      const lastBefore = readFileSync(configPath, "utf8");
+      const last = await runCli(["model", "remove-policy-rule", "nvidia/*", "--yes"], env);
+      expect(last.code).not.toBe(0);
+      expect(last.stderr).toMatch(/unrestricted/);
+      expect(readFileSync(configPath, "utf8")).toBe(lastBefore);
+    });
+
+    test("事务内 revision 冲突（policy 被外部修改）：非零退出、明确报错、不覆盖外部新状态", async () => {
+      const { dir, configPath } = writePolicyFixture();
+      const stateDir = join(dir, ".oc-switch");
+      mkdirSync(stateDir, { recursive: true });
+      let fired = false;
+      // 注入缝：事务预检的第一次运行时探测模拟外部进程改写 policy；
+      // prepare 重做时仍比对确认前的旧 revision，绝不更新后继续写
+      const context = createCommandContext({
+        env: { HOME: dir, OPENCLAW_CONFIG_PATH: configPath },
+        stateDir,
+        runtimeDiscoveryProvider: () => ({ status: "resolved", instances: [], candidateGroups: [], diagnostics: [] }),
+        pluginCatalogProvider: () => ({ providers: [], plugins: [], diagnostics: [] }),
+        runtimeModelCatalogProvider: async () => {
+          if (!fired) {
+            fired = true;
+            const current = JSON.parse(readFileSync(configPath, "utf8")) as OpenClawConfig;
+            current.agents!.defaults!.modelPolicy!.allow!.push("external/added-rule");
+            writeFileSync(configPath, `${JSON.stringify(current, null, 2)}\n`);
+          }
+          return {
+            fallbackRefs: [],
+            allowedRefs: [],
+            configuredModels: [],
+            allModels: [],
+            completeness: { status: true, configuredList: true, allList: true },
+            diagnostics: [],
+            capturedAt: "2026-09-16T00:00:00.000Z"
+          };
+        }
+      });
+      const program = new Command();
+      program.exitOverride();
+      let stderr = "";
+      const originalError = console.error;
+      console.error = (...args: unknown[]) => {
+        stderr += args.map(String).join(" ") + "\n";
+      };
+      const previousExitCode = process.exitCode;
+      process.exitCode = 0;
+      registerModelCommands(program, context);
+      try {
+        await program.parseAsync(["model", "replace-policy-rule", "nvidia/*", "nvidia/z-ai/glm5.1", "--yes"], { from: "user" });
+      } finally {
+        console.error = originalError;
+      }
+
+      // 冲突：非零退出、明确报错、不自动重试/接受新策略
+      expect(process.exitCode).toBe(1);
+      expect(stderr).toContain("model policy has changed");
+      const config = JSON.parse(readFileSync(configPath, "utf8")) as OpenClawConfig;
+      // 外部新状态被保留，请求的替换未落盘
+      expect(config.agents!.defaults!.modelPolicy!.allow).toContain("external/added-rule");
+      expect(config.agents!.defaults!.modelPolicy!.allow).toContain("nvidia/*");
+      expect(existsSync(join(stateDir, "backups"))).toBe(false);
+      process.exitCode = previousExitCode;
     });
   });
 

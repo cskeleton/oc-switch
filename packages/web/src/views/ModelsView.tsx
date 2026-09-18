@@ -25,13 +25,15 @@ import {
 import { Pill } from "../components/ui/pill";
 import { Switch } from "../components/ui/switch";
 import { cn } from "../lib/utils";
-import type {
-  ApiClient,
-  ModelInventory,
-  ModelInventoryEntry,
-  ModelSummary,
-  ProviderModelInput,
-  ProviderSummary
+import {
+  isPolicyRevisionConflict,
+  type ApiClient,
+  type ModelInventory,
+  type ModelInventoryEntry,
+  type ModelPolicyRuleEntry,
+  type ModelSummary,
+  type ProviderModelInput,
+  type ProviderSummary
 } from "../api";
 
 interface ModelsViewProps {
@@ -41,8 +43,12 @@ interface ModelsViewProps {
 
 /** 处理向导只记录目标；权限始终读取当前 inventory，不复制策略算法。 */
 interface PendingModelAction {
-  kind: "handle" | "remove-policy-ref" | "materialize" | "replace" | "add-policy-rule" | "remove-policy-wildcard";
+  kind: "handle" | "remove-policy-ref" | "materialize" | "replace" | "add-policy-rule" | "remove-policy-rule" | "edit-policy-rule";
   ref: string;
+  /** 打开对话框时冻结的 policy revision（背景刷新不替换），用于写入冲突校验 */
+  ruleRevision?: string | undefined;
+  /** 打开对话框时冻结的相同规则副本数（仅用于提示） */
+  ruleCopies?: number | undefined;
 }
 
 /** 编辑能力不等于删除能力：引用保护与 exact 删除许可均使用 Core 返回的事实。 */
@@ -69,6 +75,16 @@ function pendingSeverity(entry: ModelInventoryEntry): number {
 function comparePendingModels(a: ModelInventoryEntry, b: ModelInventoryEntry): number {
   const severityDiff = pendingSeverity(a) - pendingSeverity(b);
   return severityDiff !== 0 ? severityDiff : a.ref.localeCompare(b.ref);
+}
+
+/** 编辑保存前的客户端预检（服务端仍是权威）：trim 后折叠 exact 的 provider 段大小写，判断是否真有变化 */
+function ruleEditUnchanged(oldValue: string, input: string): boolean {
+  const trimmed = input.trim();
+  const slash = trimmed.indexOf("/");
+  const normalized = slash > 0 && !trimmed.endsWith("*")
+    ? trimmed.slice(0, slash).toLowerCase() + trimmed.slice(slash)
+    : trimmed;
+  return normalized === oldValue;
 }
 
 export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
@@ -253,9 +269,9 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
     ? inventory?.policyRules.some(rule => rule.kind === "exact" && rule.value === pendingAction.ref && rule.removable) === true
     : pendingEntry?.capabilities.canRemovePolicyExactRef === true;
 
-  /** 删除 wildcard 的 gating 在确认前从当前 inventory 重查（find 不到或不可删则禁用确认） */
-  const pendingWildcardRule = pendingAction?.kind === "remove-policy-wildcard"
-    ? inventory?.policyRules.find(rule => rule.kind === "wildcard" && rule.value === pendingAction.ref)
+  /** 纯规则删除的 gating 在确认前从当前 inventory 重查（find 不到或不可删则禁用确认） */
+  const pendingPolicyRule = pendingAction?.kind === "remove-policy-rule"
+    ? inventory?.policyRules.find(rule => rule.kind !== "invalid" && rule.value === pendingAction.ref)
     : undefined;
 
   /** 仅决定是否打开人工填写表单，不声明模型可运行或可写；创建仍走 Core 预检。 */
@@ -303,20 +319,69 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
     }
   }
 
-  /** 删除 wildcard 规则：确认前重查 removable；守卫失败（400）内联展示 */
-  async function confirmRemovePolicyWildcard() {
-    if (pendingAction?.kind !== "remove-policy-wildcard" || busy || pendingWildcardRule?.removable !== true) return;
+  /** 打开纯规则删除确认框：冻结当前 revision 与相同副本数 */
+  function openRemovePolicyRule(rule: ModelPolicyRuleEntry) {
+    openAction({
+      kind: "remove-policy-rule",
+      ref: rule.value,
+      ruleRevision: inventory?.policyRevision,
+      ruleCopies: (inventory?.policyRules ?? []).filter(item => item.value === rule.value).length
+    });
+  }
+
+  /** 打开规则编辑对话框：预填旧值，冻结当前 revision 与相同副本数 */
+  function openEditPolicyRule(rule: ModelPolicyRuleEntry) {
+    openAction({
+      kind: "edit-policy-rule",
+      ref: rule.value,
+      ruleRevision: inventory?.policyRevision,
+      ruleCopies: (inventory?.policyRules ?? []).filter(item => item.value === rule.value).length
+    });
+    setPolicyRuleInput(rule.value);
+  }
+
+  /** 纯规则删除：只改 modelPolicy.allow，不改目录/metadata；守卫失败（400）与 revision 冲突（409）内联展示 */
+  async function confirmRemovePolicyRule() {
+    if (pendingAction?.kind !== "remove-policy-rule" || busy || pendingPolicyRule?.removable !== true) return;
+    if (!pendingAction.ruleRevision) return;
     const value = pendingAction.ref;
     setBusy(value);
     setActionError(null);
     try {
-      const result = await client.removeModelPolicyWildcard(value);
+      const result = await client.removeModelPolicyRule(value, pendingAction.ruleRevision);
       setPendingAction(null);
-      toast.success(`已删除通配规则 ${value}（只改 modelPolicy.allow）`);
+      toast.success(`已删除${result.removedCount > 1 ? ` ${result.removedCount} 条相同` : ""}规则 ${value}（只改 modelPolicy.allow）`);
       for (const warning of result.warnings ?? []) toast.warning(warning);
+      if (result.runtimeConfirmed === false) toast.warning("配置已保存，运行时未确认");
       await load();
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : "删除通配规则失败");
+      setActionError(isPolicyRevisionConflict(err)
+        ? "策略已变化，请刷新后重新核对规则再试。"
+        : err instanceof Error ? err.message : "删除规则失败");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /** 编辑规则：原子替换（无中间删除态）；409 保留输入不自动重试 */
+  async function confirmEditPolicyRule() {
+    if (pendingAction?.kind !== "edit-policy-rule" || busy) return;
+    if (!pendingAction.ruleRevision) return;
+    const rule = policyRuleInput.trim();
+    if (!rule || rule === pendingAction.ref) return;
+    setBusy(pendingAction.ref);
+    setActionError(null);
+    try {
+      const result = await client.replaceModelPolicyRule(pendingAction.ref, rule, pendingAction.ruleRevision);
+      setPendingAction(null);
+      toast.success(`已把规则 ${pendingAction.ref} 替换为 ${result.rule}（只改 modelPolicy.allow）`);
+      for (const warning of result.warnings ?? []) toast.warning(warning);
+      if (result.runtimeConfirmed === false) toast.warning("配置已保存，运行时未确认");
+      await load();
+    } catch (err) {
+      setActionError(isPolicyRevisionConflict(err)
+        ? "策略已变化，请刷新后重新核对规则再试。"
+        : err instanceof Error ? err.message : "编辑规则失败");
     } finally {
       setBusy(null);
     }
@@ -725,7 +790,7 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
       </div>
 
       {/* Policy 规则视图（spec §11.3 + 规则编辑 spec §6）：modelPolicy.allow 原始规则投影，默认折叠的次级区段。
-          exact removable 可删（经确认框走 removeModelPolicyExactRef）；wildcard removable 可显式删除（ConfirmDialog 确认）；
+          editable 规则可编辑（原子替换对话框）；removable 规则可纯规则删除（ConfirmDialog，exact/wildcard 统一入口）；
           restricted 模式提供「添加规则」入口 */}
       <section aria-label="Policy 规则">
         <button
@@ -745,11 +810,11 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
             <ModelPolicyPanel
               rules={inventory?.policyRules ?? []}
               policyMode={inventory?.policyMode}
+              policyRevision={inventory?.policyRevision}
               busy={busy !== null}
               onAddRule={() => openAction({ kind: "add-policy-rule", ref: "" })}
-              onRemoveRule={(rule) => openAction(rule.kind === "wildcard"
-                ? { kind: "remove-policy-wildcard", ref: rule.value }
-                : { kind: "remove-policy-ref", ref: rule.value })}
+              onEditRule={openEditPolicyRule}
+              onRemoveRule={openRemovePolicyRule}
             />
           </div>
         ) : null}
@@ -834,27 +899,70 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
         </DialogContent>
       </Dialog>
 
-      {/* 删除 wildcard 规则：收窄选择范围，必须确认；确认前从当前 inventory 重查 removable */}
+      {/* 纯规则删除（exact / wildcard 统一入口）：只改 modelPolicy.allow，不改目录/metadata；确认前从当前 inventory 重查 removable */}
       <ConfirmDialog
-        open={pendingAction?.kind === "remove-policy-wildcard"}
-        title="删除通配规则"
-        message={`确认删除通配规则 ${pendingAction?.kind === "remove-policy-wildcard" ? pendingAction.ref : ""}？只改 modelPolicy.allow。此操作将创建备份。`}
+        open={pendingAction?.kind === "remove-policy-rule"}
+        title="删除 Policy 规则"
+        message={`确认删除${pendingPolicyRule?.kind === "wildcard" ? "通配" : "精确"}规则 ${pendingAction?.kind === "remove-policy-rule" ? pendingAction.ref : ""}？只改 modelPolicy.allow。此操作将创建备份。`}
         danger
-        confirmLabel="删除通配规则"
-        confirmDisabled={busy !== null || pendingWildcardRule?.removable !== true}
+        confirmLabel="删除规则"
+        confirmDisabled={busy !== null || pendingPolicyRule?.removable !== true || !pendingAction?.ruleRevision}
         onCancel={closeAction}
-        onConfirm={() => void confirmRemovePolicyWildcard()}
+        onConfirm={() => void confirmRemovePolicyRule()}
       >
         <p className="text-sm text-muted-foreground">
-          命中 {pendingWildcardRule?.matchedModelCount ?? 0} 个模型
-          {(pendingWildcardRule?.unavailableModelCount ?? 0) > 0 ? `，其中 ${pendingWildcardRule?.unavailableModelCount} 个不可用` : ""}
+          命中 {pendingPolicyRule?.matchedModelCount ?? 0} 个模型
+          {(pendingPolicyRule?.unavailableModelCount ?? 0) > 0 ? `，其中 ${pendingPolicyRule?.unavailableModelCount} 个不可用` : ""}
         </p>
-        <p className="mt-2 text-sm text-muted-foreground">删除后仅由该规则放行的模型将从选择器消失；目录、metadata 与 API Key 不变。</p>
-        {pendingWildcardRule?.removable !== true ? (
+        {(pendingAction?.ruleCopies ?? 0) > 1 ? (
+          <p className="mt-2 text-sm text-muted-foreground">该规则有 {pendingAction?.ruleCopies} 条相同副本，将一并删除。</p>
+        ) : null}
+        <p className="mt-2 text-sm text-muted-foreground">删除后仅由该规则放行的模型将从选择器消失；目录、metadata 与 API Key 不变。删除冗余规则不一定会停用模型。</p>
+        {pendingPolicyRule?.removable !== true ? (
           <p className="mt-2 text-sm text-muted-foreground">该规则当前不可删除：被主模型/fallback 依赖，或为避免清空策略。</p>
         ) : null}
         {actionError ? <p role="alert" className="mt-3 text-sm text-destructive">{actionError}</p> : null}
       </ConfirmDialog>
+
+      {/* 编辑 policy 规则：原子替换（无中间删除态）；无变化禁用保存，409 保留输入 */}
+      <Dialog open={pendingAction?.kind === "edit-policy-rule"} onOpenChange={open => { if (!open) closeAction(); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>编辑 Policy 规则</DialogTitle>
+            <DialogDescription className="break-all">
+              将规则 {pendingAction?.kind === "edit-policy-rule" ? pendingAction.ref : ""} 原子替换为新规则；只改 modelPolicy.allow，目录、metadata 与 API Key 不变。此操作将创建备份。
+            </DialogDescription>
+          </DialogHeader>
+          <form className="space-y-3" onSubmit={event => { event.preventDefault(); void confirmEditPolicyRule(); }}>
+            <label className="grid gap-2 text-sm">
+              新规则
+              <input
+                aria-label="新规则"
+                name="rule"
+                value={policyRuleInput}
+                disabled={busy !== null}
+                onChange={event => setPolicyRuleInput(event.target.value)}
+                placeholder="provider/model 或 provider/*"
+                className="w-full min-w-0 rounded-md border border-input bg-background p-2"
+              />
+            </label>
+            {(pendingAction?.ruleCopies ?? 0) > 1 ? (
+              <p className="text-xs text-muted-foreground">将同时修改 {pendingAction?.ruleCopies} 条相同规则。</p>
+            ) : null}
+            <p className="text-xs text-muted-foreground">provider/model 精确规则或 provider/* 通配规则；服务端为权威校验。规则编辑只修改选择策略，不一定改变模型启用状态。</p>
+            {actionError ? <p role="alert" className="text-sm text-destructive">{actionError}</p> : null}
+            <DialogFooter>
+              <Button variant="outline" disabled={busy !== null} onClick={closeAction}>取消</Button>
+              <Button
+                type="submit"
+                disabled={busy !== null || !pendingAction?.ruleRevision || policyRuleInput.trim() === "" || (pendingAction ? ruleEditUnchanged(pendingAction.ref, policyRuleInput) : true)}
+              >
+                保存规则
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       <ConfirmDialog
         open={pendingAction?.kind === "materialize"}

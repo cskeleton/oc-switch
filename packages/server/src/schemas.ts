@@ -409,6 +409,42 @@ export function requireRemoveModelPolicyWildcardInput(body: Record<string, unkno
   return { value: requireString(body.value, "value") };
 }
 
+/** policy revision 格式：`v1:<64 位 sha256 hex>`（缺失/格式不合法一律 400，不做语义比对） */
+function requirePolicyRevision(value: unknown): string {
+  const revision = requireString(value, "expectedRevision");
+  if (!/^v1:[0-9a-f]{64}$/.test(revision)) {
+    throw new Error("expectedRevision must be a policy revision string (v1:<sha256 hex>)");
+  }
+  return revision;
+}
+
+/**
+ * PATCH /api/model-policy/rules 请求体（2026-09-16 spec §5）：
+ * 旧值 value + 新规则 rule + 必填 expectedRevision；不声明 removeMetadata（纯规则编辑不接受）。
+ */
+export function requireReplaceModelPolicyRuleInput(body: Record<string, unknown>): {
+  value: string;
+  rule: string;
+  expectedRevision: string;
+} {
+  return {
+    value: requireString(body.value, "value"),
+    rule: requireString(body.rule, "rule"),
+    expectedRevision: requirePolicyRevision(body.expectedRevision)
+  };
+}
+
+/** DELETE /api/model-policy/rules 请求体：旧值 value + 必填 expectedRevision；不声明 removeMetadata。 */
+export function requireRemoveModelPolicyRuleInput(body: Record<string, unknown>): {
+  value: string;
+  expectedRevision: string;
+} {
+  return {
+    value: requireString(body.value, "value"),
+    expectedRevision: requirePolicyRevision(body.expectedRevision)
+  };
+}
+
 /** POST /api/models/materialize 请求体：ref + input（ProviderModelInput 字段 + enabled） */
 export function requireMaterializeModelInput(body: Record<string, unknown>): {
   ref: string;

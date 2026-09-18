@@ -1,5 +1,6 @@
 import { normalizeProviderId, parseModelRef } from "./model-ref";
 import { getModelPolicyMode, getModelSelectionSource, readModelPolicyAllowRaw, isPolicyAllowsRef, findPolicyWildcardForRef } from "./model-policy";
+import { buildModelPolicyRevision, canRemoveModelPolicyRule } from "./model-policy-edit";
 import type { PluginProvider } from "./plugin-catalog";
 import { readFallbackModelRefs, readPrimaryModelRef } from "./primary-model";
 import type { RuntimeModelDiagnostic, RuntimeModelEntry, RuntimeModelSnapshot } from "./runtime-model-catalog";
@@ -114,7 +115,17 @@ export interface ModelPolicyRuleEntry {
   invalidIndex?: number;
   matchedModelCount: number;
   unavailableModelCount: number;
+  /**
+   * 纯规则删除（removeModelPolicyRule）的结果投影（2026-09-16 spec §4）：
+   * 与 Core 实际判定严格一致，不再从模型行 canRemovePolicyExactRef 推断；
+   * invalid 条目恒为 false。
+   */
   removable: boolean;
+  /**
+   * restricted 模式下合法字符串规则恒为 true（可打开行内编辑，最终结果由服务器校验；
+   * 不可删除不等于不可编辑——sole wildcard removable=false 仍 editable=true）；invalid 为 false。
+   */
+  editable: boolean;
 }
 
 /** 插件级 descriptor：Task 4 由 plugin-catalog 产出；本层只消费 id/origin/enabled/providerIds。 */
@@ -159,6 +170,8 @@ export interface ModelInventory {
   policyRules: ModelPolicyRuleEntry[];
   /** 全局 policy 模式（spec §3.4 顶层透出；前端据此显隐规则编辑入口）。 */
   policyMode: ModelPolicyMode;
+  /** 当前 policy 指纹（buildModelPolicyRevision；规则编辑请求携带用于冲突检测，2026-09-16 spec §4/§5）。 */
+  policyRevision: string;
   diagnostics: RuntimeModelDiagnostic[];
   summary: {
     modelCount: number;
@@ -636,10 +649,7 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
   providers.sort((a, b) => (a.providerId < b.providerId ? -1 : a.providerId > b.providerId ? 1 : 0));
 
   // ---------- 4. policy rule 投影 ----------
-  const protectedIdentities = new Set(
-    [primaryIdentity, ...fallbackIdentities].filter((identity) => identity !== undefined)
-  );
-  const policyRules = projectPolicyRules(policyAllowRaw, policyMode, models, protectedIdentities);
+  const policyRules = projectPolicyRules(config, policyAllowRaw, policyMode, models);
 
   // ---------- 5. summary 与插件回显 ----------
   return {
@@ -650,6 +660,7 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
     plugins: derivePlugins(plugins, pluginProviders),
     policyRules,
     policyMode,
+    policyRevision: buildModelPolicyRevision(config),
     // 防御性拷贝：消费方修改输出不得污染缓存的 runtime snapshot
     diagnostics: [
       ...runtime.diagnostics.map((diagnostic) => ({ ...diagnostic })),
@@ -721,35 +732,22 @@ function exactEntryCovers(entry: string, ref: string): boolean {
 /**
  * policy.allow 原始规则投影。
  *
- * - exact 条目回显值；仅当不命中主模型/fallback 引用时 removable=true（保护性引用
- *   即使可删除也会被 operation 预检阻断，规则行不应诱导注定失败的删除）；
- * - wildcard 的 removable 与 removeModelPolicyWildcard 的守卫事实严格对齐（spec §3.4）：
- *   移除该值的所有完全相同字符串条目后，raw 仍剩 ≥1 条（含非字符串条目），且无
- *   protected identity（primary/fallback）失去全部剩余规则覆盖，才可删；
+ * - removable 是纯规则删除（removeModelPolicyRule / canRemoveModelPolicyRule）的结果投影
+ *   （2026-09-16 spec §4）：exact 与 wildcard 同一入口、同一最终覆盖判断——删除仍被其他
+ *   规则覆盖的 primary exact 允许；不再从模型行 canRemovePolicyExactRef 推断规则可删性，
+ *   模型行的引用清理守卫不随面板放宽；
+ * - editable：合法字符串规则在 restricted 模式下恒为 true（不可删除不等于不可编辑；
+ *   sole wildcard removable=false 仍可打开编辑框），invalid 恒为 false；
  * - 非字符串条目不回显值，仅返回 index/invalid 诊断（secret-free 纪律）。
  */
 function projectPolicyRules(
+  config: OpenClawConfig,
   policyAllowRaw: unknown[],
   policyMode: ModelPolicyMode,
-  models: ModelInventoryEntry[],
-  protectedIdentities: Set<string>
+  models: ModelInventoryEntry[]
 ): ModelPolicyRuleEntry[] {
   // legacy / unrestricted 模式下 allow 不产生有效规则，不投影（保持三态语义）
   if (policyMode === "legacy" || policyMode === "unrestricted") return [];
-
-  /** wildcard 可删性：与 removeModelPolicyWildcard 的防清空 + primary/fallback 覆盖守卫一致。 */
-  const wildcardRemovable = (entry: string): boolean => {
-    const remainingRaw = policyAllowRaw.filter((candidate) => candidate !== entry);
-    if (remainingRaw.length === 0) return false;
-    const remainingStrings = remainingRaw.filter((candidate): candidate is string => typeof candidate === "string");
-    for (const identity of protectedIdentities) {
-      const stillCovered = remainingStrings.some(
-        (candidate) => exactEntryCovers(candidate, identity) || wildcardEntryCovers(candidate, identity)
-      );
-      if (wildcardEntryCovers(entry, identity) && !stillCovered) return false;
-    }
-    return true;
-  };
 
   const rules: ModelPolicyRuleEntry[] = [];
   policyAllowRaw.forEach((entry, index) => {
@@ -761,7 +759,8 @@ function projectPolicyRules(
         invalidIndex: index,
         matchedModelCount: 0,
         unavailableModelCount: 0,
-        removable: false
+        removable: false,
+        editable: false
       });
       return;
     }
@@ -771,17 +770,14 @@ function projectPolicyRules(
         ? model.catalogSources.length > 0 && wildcardEntryCovers(entry, `${model.providerId}/${model.modelId}`)
         : exactEntryCovers(entry, `${model.providerId}/${model.modelId}`)
     );
-    // exact 规则自身命中主模型/fallback 时不可删（规则行与模型行的 fail-closed 对齐）
-    const protectedExact = kind === "exact" && protectedIdentities.has(refIdentity(entry) ?? "");
     rules.push({
       value: entry,
       kind,
       matchedModelCount: matched.length,
       unavailableModelCount: matched.filter((model) => model.availability === "unavailable").length,
-      removable:
-        kind === "wildcard"
-          ? wildcardRemovable(entry)
-          : !protectedExact && matched.some(model => model.capabilities.canRemovePolicyExactRef)
+      // 可删性与 Core 纯规则删除共用同一守卫（同一匹配器、同一最终覆盖判断）
+      removable: canRemoveModelPolicyRule(config, entry),
+      editable: true
     });
   });
 

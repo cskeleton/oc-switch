@@ -17,11 +17,15 @@ interface ModelPolicyPanelProps {
   rules: ModelPolicyRuleEntry[];
   /** 当前策略模式；缺失（旧后端）时隐藏添加入口，安全回退为提示 */
   policyMode?: ModelPolicyMode | undefined;
+  /** policy 内容指纹；缺失（旧后端）时编辑/删除入口显示「版本不支持」 */
+  policyRevision?: string | undefined;
   /** 有写操作进行中时禁用添加入口 */
   busy?: boolean;
   /** 打开添加规则对话框（仅 restricted 模式渲染入口） */
   onAddRule: () => void;
-  /** 删除规则入口；由调用方按 rule.kind 分发到 exact / wildcard 流程 */
+  /** 打开编辑规则对话框（仅 editable 规则渲染入口） */
+  onEditRule: (rule: ModelPolicyRuleEntry) => void;
+  /** 删除规则入口；由调用方统一走纯规则删除流程 */
   onRemoveRule: (rule: ModelPolicyRuleEntry) => void | Promise<void>;
 }
 
@@ -47,7 +51,7 @@ function RuleCounts({ rule }: { rule: ModelPolicyRuleEntry }) {
   );
 }
 
-export function ModelPolicyPanel({ rules, policyMode, busy, onAddRule, onRemoveRule }: ModelPolicyPanelProps) {
+export function ModelPolicyPanel({ rules, policyMode, policyRevision, busy, onAddRule, onEditRule, onRemoveRule }: ModelPolicyPanelProps) {
   const columns: Column<ModelPolicyRuleEntry>[] = [
     {
       key: "value",
@@ -92,18 +96,33 @@ export function ModelPolicyPanel({ rules, policyMode, busy, onAddRule, onRemoveR
       render: (row) => {
         // invalid 条目永远只读（不回显值）
         if (row.kind === "invalid") return <Pill variant="muted">只读</Pill>;
-        // gating 一律读 Core 投影的 removable，前端不重新实现 policy 守卫
-        if (row.removable) {
-          return (
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-label={`删除规则 ${row.value}`}
-              onClick={() => void onRemoveRule(row)}
-            >
-              删除
-            </Button>
-          );
+        // 旧后端缺 policyRevision：无法做冲突校验，编辑/删除入口统一禁用
+        if (policyRevision === undefined) return <Pill variant="muted" title="后端版本不支持规则编辑，请升级后刷新">版本不支持</Pill>;
+        // 编辑 gating 一律读 Core 投影的 editable，与 removable 相互独立
+        const editButton = row.editable === true ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label={`编辑规则 ${row.value}`}
+            onClick={() => onEditRule(row)}
+          >
+            编辑
+          </Button>
+        ) : null;
+        // 删除 gating 一律读 Core 投影的 removable，前端不重新实现 policy 守卫
+        const removeButton = row.removable ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label={`删除规则 ${row.value}`}
+            onClick={() => void onRemoveRule(row)}
+          >
+            删除
+          </Button>
+        ) : null;
+        if (editButton || removeButton) {
+          // 手机操作列仅 w-20：编辑+删除并存时允许纵向换行，不得撑破表格宽度
+          return <span className="inline-flex flex-wrap items-center gap-1">{editButton}{removeButton}</span>;
         }
         // 不可删的 wildcard：受主模型/fallback 覆盖保护或为避免清空策略
         if (row.kind === "wildcard") {
@@ -124,7 +143,7 @@ export function ModelPolicyPanel({ rules, policyMode, busy, onAddRule, onRemoveR
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-muted-foreground">
           {policyMode === "restricted"
-            ? "添加或删除规则只改 modelPolicy.allow；目录、metadata 与 API Key 不变。"
+            ? "添加、编辑或删除规则只改 modelPolicy.allow；目录、metadata 与 API Key 不变。规则编辑只修改选择策略；删除冗余规则不一定会停用模型。"
             : `当前为 ${policyMode ?? "legacy / unrestricted"} 模式，规则编辑仅适用于 restricted 模式。`}
         </p>
         {policyMode === "restricted" ? (

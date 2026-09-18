@@ -111,6 +111,16 @@ export function findPolicyExactEntryForRef(config: OpenClawConfig, ref: string):
   return (readModelPolicyAllow(config) ?? []).find((entry) => exactEntryMatches(entry, ref));
 }
 
+/** 在给定字符串条目列表中返回语义覆盖 ref 的首个精确条目（规则编辑 duplicate 检测用；不做模式门禁）。 */
+export function findExactEntryInAllowList(allow: string[], ref: string): string | undefined {
+  return allow.find((entry) => exactEntryMatches(entry, ref));
+}
+
+/** 在给定字符串条目列表中返回覆盖 ref 的首个通配条目（规则编辑冗余提示用；不做模式门禁）。 */
+export function findWildcardEntryInAllowList(allow: string[], ref: string): string | undefined {
+  return allow.find((entry) => wildcardEntryMatches(entry, ref));
+}
+
 /** 返回受限 policy 中属于指定 Provider 的首个通配条目。 */
 export function findPolicyWildcardForProvider(config: OpenClawConfig, providerId: string): string | undefined {
   if (!policyRestricts(config)) return undefined;

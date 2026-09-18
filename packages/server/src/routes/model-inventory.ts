@@ -1,9 +1,12 @@
 import {
   addModelPolicyRule,
+  assertModelPolicyRevision,
   materializeRuntimeModel,
   normalizeModelRefForStorage,
   removeModelPolicyExactRef,
+  removeModelPolicyRule,
   removeModelPolicyWildcard,
+  replaceModelPolicyRule,
   writeOpenClawTransaction,
   type OcSwitchPaths
 } from "@oc-switch/core";
@@ -14,8 +17,10 @@ import {
   requireAddModelPolicyRuleInput,
   requireJsonObject,
   requireMaterializeModelInput,
+  requireRemoveModelPolicyRuleInput,
   requireRemoveModelPolicyWildcardInput,
-  requireRemovePolicyExactRefInput
+  requireRemovePolicyExactRefInput,
+  requireReplaceModelPolicyRuleInput
 } from "../schemas";
 
 /**
@@ -163,6 +168,91 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
         async mutate(config) {
           const inventory = await runtime.buildCurrentInventory({ refresh: true, config, paths });
           const operation = removeModelPolicyWildcard(config, parsed.value, { inventory });
+          capturedWarnings = operation.warnings;
+          removedCount = operation.removedCount;
+          return operation.config;
+        }
+      });
+      const confirmation = await postWriteConfirmation(paths);
+      return c.json({
+        ok: true,
+        value: parsed.value,
+        removedCount,
+        backupId: result.backupDir.split("/").pop(),
+        warnings: capturedWarnings,
+        ...confirmation
+      });
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  /**
+   * 原子替换 policy 规则（2026-09-16 spec §5）：expectedRevision 必填。
+   * 事务 mutate 内先比对当前 revision（外部改动触发 prepare 重做时仍比对原
+   * expectedRevision，绝不更新后继续写），再按最新 config 校验与变更；冲突 409。
+   */
+  app.patch("/api/model-policy/rules", async (c) => {
+    try {
+      const body = await requireJsonObject(c.req);
+      const parsed = requireReplaceModelPolicyRuleInput(body);
+      // warnings 在 mutate 内捕获后经闭包透出（事务只落盘 config）
+      const paths = runtime.currentPaths();
+      let capturedWarnings: string[] = [];
+      let stored: { rule: string; kind: "exact" | "wildcard"; replacedCount: number } | undefined;
+      const result = await writeOpenClawTransaction({
+        ...paths,
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
+        reason: `replace model policy rule ${parsed.value}`,
+        normalizeConfig: false,
+        async mutate(config) {
+          assertModelPolicyRevision(config, parsed.expectedRevision);
+          const inventory = await runtime.buildCurrentInventory({ refresh: true, config, paths });
+          const operation = replaceModelPolicyRule(config, parsed.value, parsed.rule, {
+            knownProviderIds: inventory.providers.map((provider) => provider.providerId),
+            inventory
+          });
+          capturedWarnings = operation.warnings;
+          stored = { rule: operation.rule, kind: operation.kind, replacedCount: operation.replacedCount };
+          return operation.config;
+        }
+      });
+      const confirmation = await postWriteConfirmation(paths);
+      return c.json({
+        ok: true,
+        rule: stored!.rule,
+        kind: stored!.kind,
+        replacedCount: stored!.replacedCount,
+        backupId: result.backupDir.split("/").pop(),
+        warnings: capturedWarnings,
+        ...confirmation
+      });
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  /**
+   * 纯规则删除（2026-09-16 spec §5）：exact 与 wildcard 同一入口，expectedRevision 必填；
+   * 不接受 removeMetadata（规则删除只收窄策略）。冲突 409，守卫失败 400。
+   */
+  app.delete("/api/model-policy/rules", async (c) => {
+    try {
+      const body = await requireJsonObject(c.req);
+      const parsed = requireRemoveModelPolicyRuleInput(body);
+      // warnings 在 mutate 内捕获后经闭包透出（事务只落盘 config）
+      const paths = runtime.currentPaths();
+      let capturedWarnings: string[] = [];
+      let removedCount = 0;
+      const result = await writeOpenClawTransaction({
+        ...paths,
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
+        reason: `remove model policy rule ${parsed.value}`,
+        normalizeConfig: false,
+        async mutate(config) {
+          assertModelPolicyRevision(config, parsed.expectedRevision);
+          const inventory = await runtime.buildCurrentInventory({ refresh: true, config, paths });
+          const operation = removeModelPolicyRule(config, parsed.value, { inventory });
           capturedWarnings = operation.warnings;
           removedCount = operation.removedCount;
           return operation.config;

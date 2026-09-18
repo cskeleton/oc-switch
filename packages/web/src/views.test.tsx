@@ -3678,11 +3678,13 @@ describe("ModelPolicyPanel", () => {
       <ToastProvider>
         <ModelPolicyPanel
           rules={[
-            { value: "cpa/m2", kind: "exact", matchedModelCount: 1, unavailableModelCount: 0, removable: true },
-            { value: "cpa/*", kind: "wildcard", matchedModelCount: 3, unavailableModelCount: 1, removable: false },
-            { value: "prim/protected", kind: "exact", matchedModelCount: 1, unavailableModelCount: 0, removable: false }
+            { value: "cpa/m2", kind: "exact", matchedModelCount: 1, unavailableModelCount: 0, removable: true, editable: true },
+            { value: "cpa/*", kind: "wildcard", matchedModelCount: 3, unavailableModelCount: 1, removable: false, editable: false },
+            { value: "prim/protected", kind: "exact", matchedModelCount: 1, unavailableModelCount: 0, removable: false, editable: false }
           ]}
+          policyRevision="v1:fixture"
           onAddRule={() => {}}
+          onEditRule={() => {}}
           onRemoveRule={onRemoveRule}
         />
       </ToastProvider>
@@ -4026,10 +4028,11 @@ function modelsViewInventoryFixture(): ModelInventory {
       })
     ],
     policyRules: [
-      { value: "cpa/m2", kind: "exact", matchedModelCount: 1, unavailableModelCount: 0, removable: true },
-      { value: "cpa/dangling", kind: "exact", matchedModelCount: 1, unavailableModelCount: 1, removable: true },
-      { value: "cpa/*", kind: "wildcard", matchedModelCount: 3, unavailableModelCount: 1, removable: false }
+      { value: "cpa/m2", kind: "exact", matchedModelCount: 1, unavailableModelCount: 0, removable: true, editable: true },
+      { value: "cpa/dangling", kind: "exact", matchedModelCount: 1, unavailableModelCount: 1, removable: true, editable: true },
+      { value: "cpa/*", kind: "wildcard", matchedModelCount: 3, unavailableModelCount: 1, removable: false, editable: true }
     ],
+    policyRevision: "v1:fixture",
     summary: { modelCount: 6, policyAllowedCount: 5, availableCount: 3, unavailableCount: 2, unknownCount: 1 }
   });
 }
@@ -4049,11 +4052,13 @@ describe("ModelsView（统一 inventory）", () => {
 
 
 
-  test("Policy 规则区段（spec §11.3）：默认折叠，展开后渲染规则并可删除 exact 引用", async () => {
+  test("Policy 规则区段（spec §11.3）：默认折叠，展开后渲染规则并可纯规则删除 exact", async () => {
     const getModelInventory = mock(async () => modelsViewInventoryFixture());
-    const removeModelPolicyExactRef = mock(async () => ({ ok: true as const, backupId: "backup-rule-1" }));
+    const removeModelPolicyRule = mock(async (value: string, expectedRevision: string) => ({
+      ok: true as const, value, removedCount: 1, backupId: "backup-rule-1", warnings: [] as string[], runtimeConfirmed: true
+    }));
     const { queryByText, findByLabelText, findByText, findAllByText, getByText } = renderModelsView(
-      mockClient({ getModelInventory, removeModelPolicyExactRef })
+      mockClient({ getModelInventory, removeModelPolicyRule })
     );
 
     // 折叠态：规则视图不渲染，仅折叠入口显示条数（fixture 有 3 条规则）；
@@ -4068,11 +4073,11 @@ describe("ModelsView（统一 inventory）", () => {
     expect((await findAllByText("通配")).length).toBeGreaterThan(0);
     expect((await findAllByText(/命中 3 个模型，其中 1 个不可用/)).filter(node => node.closest("td")?.cellIndex === 2)).toHaveLength(1);
 
-    // exact 删除：确认框 → removeModelPolicyExactRef(ref, false)（legacy metadata 保留）
+    // exact 删除：确认框 → removeModelPolicyRule(ref, 冻结 revision)（纯规则删除，不动 metadata）
     await userEvent.click(await findByLabelText("删除规则 cpa/m2"));
-    expect(await findByText(/确认删除 cpa\/m2/)).toBeTruthy();
-    await userEvent.click(getByText("仅删除 policy 引用"));
-    await waitFor(() => expect(removeModelPolicyExactRef).toHaveBeenCalledWith("cpa/m2", false));
+    expect(await findByText(/确认删除精确规则 cpa\/m2/)).toBeTruthy();
+    await userEvent.click(getByText("删除规则"));
+    await waitFor(() => expect(removeModelPolicyRule).toHaveBeenCalledWith("cpa/m2", "v1:fixture"));
   });
 });
 

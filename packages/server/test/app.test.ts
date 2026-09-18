@@ -21,7 +21,8 @@ import {
   writeModelMetadataQueue,
   MAX_PROVIDER_MODELS,
   MODELS_DEV_API_URL,
-  MODELS_DEV_MODELS_URL
+  MODELS_DEV_MODELS_URL,
+  buildModelPolicyRevision
 } from "@oc-switch/core";
 import { prepareGatewayEnvTarget, expectedGatewayEnvPath } from "../../core/test/gateway-sync-fixture";
 
@@ -4099,6 +4100,281 @@ describe("server policy 规则编辑 endpoints", () => {
     expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
     const { json: backupsJson } = await jsonRequest(app, "/api/backups");
     expect((backupsJson.backups as unknown[]).length).toBe(0);
+  });
+
+  /** 直接从磁盘 config 计算当前 policy revision（不触发运行时探测注入缝） */
+  function revisionFromDisk(ws: Workspace): string {
+    return buildModelPolicyRevision(JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig);
+  }
+
+  test("PATCH /api/model-policy/rules 原子替换 wildcard→exact 成功（响应含 replacedCount 与新 policyRevision）", async () => {
+    const ws = policyEditWorkspace();
+    const app = policyEditApp(ws);
+    const revision = revisionFromDisk(ws);
+
+    const { response, json } = await jsonRequest(app, "/api/model-policy/rules", {
+      method: "PATCH",
+      body: JSON.stringify({ value: "nvidia/*", rule: "nvidia/z-ai/glm5.1", expectedRevision: revision })
+    });
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.rule).toBe("nvidia/z-ai/glm5.1");
+    expect(json.kind).toBe("exact");
+    expect(json.replacedCount).toBe(1);
+    expect(json.backupId).toBeTruthy();
+    expect(existsSync(join(ws.paths.stateDir, "backups", String(json.backupId)))).toBe(true);
+    expect(json.runtimeConfirmed).toBe(true);
+    // 仅 deepseek-v4-flash 失去放行（glm5.1 被新 exact 继续覆盖）
+    const warnings = json.warnings as string[];
+    expect(warnings.some((warning) => warning.includes("1 model(s) will lose policy allowance"))).toBe(true);
+
+    // 落盘生效：替换在原位置，其它条目原样保留
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    expect(config.agents!.defaults!.modelPolicy!.allow).toEqual([
+      "nvidia/z-ai/glm5.1",
+      "minimax-portal/MiniMax-M3",
+      "DeepSeek/deepseek-chat"
+    ]);
+    // 刷新后的 inventory 携带新 policyRevision 与新规则行
+    const refreshed = json.inventory as { policyRevision: string; policyRules: Array<{ value: string }> };
+    expect(refreshed.policyRevision).not.toBe(revision);
+    expect(refreshed.policyRevision).toBe(revisionFromDisk(ws));
+    expect(refreshed.policyRules.some((rule) => rule.value === "nvidia/z-ai/glm5.1")).toBe(true);
+  });
+
+  test("DELETE /api/model-policy/rules 纯规则删除 exact 成功", async () => {
+    const ws = policyEditWorkspace();
+    const app = policyEditApp(ws);
+    const revision = revisionFromDisk(ws);
+
+    const { response, json } = await jsonRequest(app, "/api/model-policy/rules", {
+      method: "DELETE",
+      body: JSON.stringify({ value: "DeepSeek/deepseek-chat", expectedRevision: revision })
+    });
+
+    expect(response.status).toBe(200);
+    expect(json).toMatchObject({ ok: true, value: "DeepSeek/deepseek-chat", removedCount: 1 });
+    expect(json.backupId).toBeTruthy();
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    expect(config.agents!.defaults!.modelPolicy!.allow).toEqual(["nvidia/*", "minimax-portal/MiniMax-M3"]);
+  });
+
+  test("PATCH/DELETE 缺失或格式非法的 expectedRevision → 400 且不写盘、无备份", async () => {
+    const ws = policyEditWorkspace();
+    const app = policyEditApp(ws);
+    const before = readFileSync(ws.paths.openclawPath, "utf8");
+
+    const cases: Array<{ method: string; body: Record<string, unknown> }> = [
+      { method: "PATCH", body: { value: "nvidia/*", rule: "nvidia/z-ai/glm5.1" } },
+      { method: "PATCH", body: { value: "nvidia/*", rule: "nvidia/z-ai/glm5.1", expectedRevision: "garbage" } },
+      { method: "DELETE", body: { value: "DeepSeek/deepseek-chat" } },
+      { method: "DELETE", body: { value: "DeepSeek/deepseek-chat", expectedRevision: 42 } }
+    ];
+    for (const item of cases) {
+      const { response, json } = await jsonRequest(app, "/api/model-policy/rules", {
+        method: item.method,
+        body: JSON.stringify(item.body)
+      });
+      expect(response.status).toBe(400);
+      expect(String(json.error)).toContain("expectedRevision must be");
+    }
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+    const { json: backupsJson } = await jsonRequest(app, "/api/backups");
+    expect((backupsJson.backups as unknown[]).length).toBe(0);
+  });
+
+  test("过期 expectedRevision → 409 policy-revision-conflict，配置与 env 字节不变且无新备份", async () => {
+    const ws = policyEditWorkspace();
+    const app = policyEditApp(ws);
+    writeFileSync(ws.paths.envPath, "TEST_KEY=value\n");
+    const staleRevision = revisionFromDisk(ws);
+
+    // 先经既有端点改变 policy（产生一个合法备份），旧 revision 随即过期
+    const add = await jsonRequest(app, "/api/model-policy/rules", {
+      method: "POST",
+      body: JSON.stringify({ rule: "new-provider/model" })
+    });
+    expect(add.response.status).toBe(200);
+    const configBefore = readFileSync(ws.paths.openclawPath, "utf8");
+    const envBefore = readFileSync(ws.paths.envPath, "utf8");
+
+    for (const method of ["PATCH", "DELETE"]) {
+      const { response, json } = await jsonRequest(app, "/api/model-policy/rules", {
+        method,
+        body: JSON.stringify(
+          method === "PATCH"
+            ? { value: "nvidia/*", rule: "nvidia/z-ai/glm5.1", expectedRevision: staleRevision }
+            : { value: "DeepSeek/deepseek-chat", expectedRevision: staleRevision }
+        )
+      });
+      expect(response.status).toBe(409);
+      expect(json.code).toBe("policy-revision-conflict");
+    }
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(configBefore);
+    expect(readFileSync(ws.paths.envPath, "utf8")).toBe(envBefore);
+    const { json: backupsJson } = await jsonRequest(app, "/api/backups");
+    expect((backupsJson.backups as unknown[]).length).toBe(1);
+  });
+
+  test("PATCH 守卫失败 400：primary 保护 / 非法格式 / unchanged / 旧值不存在，均不写盘", async () => {
+    const ws = policyEditWorkspace({
+      allow: ["nvidia/*", "DeepSeek/deepseek-chat"],
+      model: "nvidia/z-ai/glm5.1"
+    });
+    const app = policyEditApp(ws);
+    const before = readFileSync(ws.paths.openclawPath, "utf8");
+
+    const cases: Array<{ body: Record<string, unknown>; code: string }> = [
+      // 替换为不覆盖 primary 的规则
+      { body: { value: "nvidia/*", rule: "other/x", expectedRevision: revisionFromDisk(ws) }, code: "primary-model-referenced" },
+      // 新规则非法格式
+      { body: { value: "nvidia/*", rule: "not-a-ref", expectedRevision: revisionFromDisk(ws) }, code: "invalid-rule-format" },
+      // 归一后与旧值相同
+      { body: { value: "nvidia/*", rule: " nvidia/* ", expectedRevision: revisionFromDisk(ws) }, code: "unchanged-rule" },
+      // 旧值不存在
+      { body: { value: "openai/*", rule: "openai/x", expectedRevision: revisionFromDisk(ws) }, code: "policy-rule-not-found" }
+    ];
+    for (const item of cases) {
+      const { response, json } = await jsonRequest(app, "/api/model-policy/rules", {
+        method: "PATCH",
+        body: JSON.stringify(item.body)
+      });
+      expect(response.status).toBe(400);
+      expect(json.code).toBe(item.code);
+    }
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+  });
+
+  test("DELETE 守卫失败 400：last-rule-removal 与 fallback 保护，均不写盘、无备份", async () => {
+    const sole = policyEditWorkspace({ allow: ["nvidia/*"] });
+    const soleApp = policyEditApp(sole);
+    const soleBefore = readFileSync(sole.paths.openclawPath, "utf8");
+    const soleResult = await jsonRequest(soleApp, "/api/model-policy/rules", {
+      method: "DELETE",
+      body: JSON.stringify({ value: "nvidia/*", expectedRevision: revisionFromDisk(sole) })
+    });
+    expect(soleResult.response.status).toBe(400);
+    expect(soleResult.json.code).toBe("last-rule-removal");
+    expect(readFileSync(sole.paths.openclawPath, "utf8")).toBe(soleBefore);
+
+    const fb = policyEditWorkspace({
+      allow: ["nvidia/*", "minimax-portal/MiniMax-M3"],
+      model: { primary: "minimax-portal/MiniMax-M3", fallbacks: ["nvidia/z-ai/glm5.1"] }
+    });
+    const fbApp = policyEditApp(fb);
+    const fbBefore = readFileSync(fb.paths.openclawPath, "utf8");
+    const fbResult = await jsonRequest(fbApp, "/api/model-policy/rules", {
+      method: "DELETE",
+      body: JSON.stringify({ value: "nvidia/*", expectedRevision: revisionFromDisk(fb) })
+    });
+    expect(fbResult.response.status).toBe(400);
+    expect(fbResult.json.code).toBe("fallback-referenced");
+    expect(readFileSync(fb.paths.openclawPath, "utf8")).toBe(fbBefore);
+    const { json: backupsJson } = await jsonRequest(fbApp, "/api/backups");
+    expect((backupsJson.backups as unknown[]).length).toBe(0);
+  });
+
+  test("预检期间 policy 被外部修改：prepare 重做不能绕过旧 expectedRevision（409，无写入、外部状态保留）", async () => {
+    const ws = policyEditWorkspace();
+    const base = policyEditRuntimeProvider();
+    let fired = false;
+    // 注入缝：第一次探测时模拟外部进程改写 policy（事务预检会检测到文件变化并重做一次）
+    const provider: RuntimeModelCatalogProvider = async (paths) => {
+      if (!fired) {
+        fired = true;
+        const current = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+        current.agents!.defaults!.modelPolicy!.allow!.push("external/added-rule");
+        writeFileSync(ws.paths.openclawPath, `${JSON.stringify(current, null, 2)}\n`);
+      }
+      return base(paths);
+    };
+    const app = createTestApp(ws, undefined, { runtimeModelCatalogProvider: provider });
+    const staleRevision = revisionFromDisk(ws);
+
+    const { response, json } = await jsonRequest(app, "/api/model-policy/rules", {
+      method: "PATCH",
+      body: JSON.stringify({ value: "nvidia/*", rule: "nvidia/z-ai/glm5.1", expectedRevision: staleRevision })
+    });
+
+    expect(response.status).toBe(409);
+    expect(json.code).toBe("policy-revision-conflict");
+    // 外部新状态被保留，请求的旧值替换没有落盘
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    expect(config.agents!.defaults!.modelPolicy!.allow).toContain("external/added-rule");
+    expect(config.agents!.defaults!.modelPolicy!.allow).toContain("nvidia/*");
+    const { json: backupsJson } = await jsonRequest(app, "/api/backups");
+    expect((backupsJson.backups as unknown[]).length).toBe(0);
+  });
+
+  test("预检期间无关变化（primary 切换）：revision 不变但保护按事务内最新 config 判定（400，无写入）", async () => {
+    const ws = policyEditWorkspace({ allow: ["nvidia/*", "minimax-portal/MiniMax-M3"] });
+    const base = policyEditRuntimeProvider();
+    let fired = false;
+    // 注入缝：外部只切换主模型到仅由 nvidia/* 覆盖的模型（不触碰 policy → revision 不变）
+    const provider: RuntimeModelCatalogProvider = async (paths) => {
+      if (!fired) {
+        fired = true;
+        const current = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+        current.agents!.defaults!.model = "nvidia/z-ai/glm5.1";
+        writeFileSync(ws.paths.openclawPath, `${JSON.stringify(current, null, 2)}\n`);
+      }
+      return base(paths);
+    };
+    const app = createTestApp(ws, undefined, { runtimeModelCatalogProvider: provider });
+    // revision 在无关变化前后保持一致（primary 不参与 policy 指纹）
+    const revision = revisionFromDisk(ws);
+
+    const { response, json } = await jsonRequest(app, "/api/model-policy/rules", {
+      method: "PATCH",
+      body: JSON.stringify({
+        value: "nvidia/*",
+        rule: "nvidia/deepseek-ai/deepseek-v4-flash",
+        expectedRevision: revision
+      })
+    });
+
+    // 第一次预检（旧 config）可通过；重做后按最新 primary 判定 → 覆盖保护拒绝
+    expect(response.status).toBe(400);
+    expect(json.code).toBe("primary-model-referenced");
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    // 外部的 primary 切换被保留，policy 未被请求改写
+    expect(config.agents!.defaults!.model).toBe("nvidia/z-ai/glm5.1");
+    expect(config.agents!.defaults!.modelPolicy!.allow).toContain("nvidia/*");
+    const { json: backupsJson } = await jsonRequest(app, "/api/backups");
+    expect((backupsJson.backups as unknown[]).length).toBe(0);
+  });
+
+  test("PATCH 写后探测失败：配置已保存仍返回 ok:true、runtimeConfirmed:false", async () => {
+    const ws = policyEditWorkspace();
+    const base = policyEditRuntimeProvider();
+    let probeCount = 0;
+    // 第一次探测（mutate 前置读取）完整；写入后的确认探测降级为抛错
+    const provider: RuntimeModelCatalogProvider = (paths) => {
+      probeCount += 1;
+      if (probeCount > 1) throw new Error("post-write probe failed");
+      return base(paths);
+    };
+    const app = createTestApp(ws, undefined, { runtimeModelCatalogProvider: provider });
+
+    const { response, json } = await jsonRequest(app, "/api/model-policy/rules", {
+      method: "PATCH",
+      body: JSON.stringify({
+        value: "nvidia/*",
+        rule: "nvidia/z-ai/glm5.1",
+        expectedRevision: revisionFromDisk(ws)
+      })
+    });
+
+    expect(response.status).toBe(200);
+    // 写入已完成：不得伪装整体失败
+    expect(json.ok).toBe(true);
+    expect(json.replacedCount).toBe(1);
+    expect(json.backupId).toBeTruthy();
+    expect(json.runtimeConfirmed).toBe(false);
+    expect(Array.isArray(json.diagnostics)).toBe(true);
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
+    expect(config.agents!.defaults!.modelPolicy!.allow).toContain("nvidia/z-ai/glm5.1");
   });
 });
 
