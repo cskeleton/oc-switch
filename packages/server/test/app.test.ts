@@ -1543,6 +1543,37 @@ describe("server write endpoints", () => {
     }
   });
 
+  test("GET /api/config-status 在 .env 权限含 group/other 位时返回 permissions-too-open warning", async () => {
+    if (process.platform === "win32") return;
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, "TEST=1\n");
+    chmodSync(ws.paths.envPath, 0o644);
+    const app = createTestApp(ws);
+
+    try {
+      const { response, json } = await jsonRequest(app, "/api/config-status", { method: "GET" });
+      expect(response.status).toBe(200);
+      const report = json as {
+        issues: Array<{ id: string; severity: string; source: string; detail?: string; action?: string }>;
+      };
+      const envIssue = report.issues.find((issue) => issue.id === "paths:permissions-too-open:env");
+      expect(envIssue).toMatchObject({ severity: "warning", source: "paths" });
+      expect(envIssue?.detail).toContain("0644");
+      expect(envIssue?.detail).toContain(ws.paths.envPath);
+      expect(envIssue?.action).toBe(`chmod 600 ${ws.paths.envPath}`);
+
+      // chmod 600 后同一端点不再报 env 权限 issue（openclaw.json fixture 仍为 0644，不受本用例干扰）
+      chmodSync(ws.paths.envPath, 0o600);
+      const after = await jsonRequest(app, "/api/config-status", { method: "GET" });
+      const afterReport = after.json as { issues: Array<{ id: string }> };
+      expect(
+        afterReport.issues.some((issue) => issue.id === "paths:permissions-too-open:env")
+      ).toBe(false);
+    } finally {
+      chmodSync(ws.paths.envPath, 0o644);
+    }
+  });
+
   test("POST /api/providers/merge-case-duplicates/preview 返回 diff", async () => {
     const ws = workspace();
     const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));

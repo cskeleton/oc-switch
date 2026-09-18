@@ -62,6 +62,10 @@ describe("inspectConfigStatus", () => {
     const config: OpenClawConfig = { models: { providers: { idle: { apiKey: { source: "env", provider: "default", id: "IDLE_KEY" }, models: [{ id: "one", name: "One" }] } } },
       agents: { defaults: { modelPolicy: { allow: ["active/main"] }, models: { "idle/one": {} } } } };
     upsertDisabledProviderState(paths.stateDir, { providerId: "idle", openclawPath: paths.openclawPath, disabledAt: "2026-09-11", allowlistEntries: {} });
+    if (process.platform !== "win32") {
+      chmodSync(paths.openclawPath, 0o600);
+      chmodSync(paths.envPath, 0o600);
+    }
     const report = inspect(paths, { config, envContent: "export RESERVED_API_KEY=reserved-for-later\n" });
     expect(report.issues).toEqual([]);
     expect(report.summary.disabledProviderCount).toBe(1);
@@ -81,6 +85,10 @@ describe("inspectConfigStatus", () => {
       agents: { defaults: { model: "test/m", models: { "test/m": {} } } }
     };
     writeFileSync(paths.envPath, "TEST_KEY=secret\n");
+    if (process.platform !== "win32") {
+      chmodSync(paths.openclawPath, 0o600);
+      chmodSync(paths.envPath, 0o600);
+    }
     const report = inspect(paths, { config, envContent: "TEST_KEY=secret\n" });
     expect(report.issues).toEqual([]);
     expect(report.summary.issueCount).toBe(0);
@@ -215,6 +223,56 @@ describe("inspectConfigStatus", () => {
     } else {
       expect(existsSync(paths.envPath)).toBe(true);
     }
+  });
+
+  test("openclaw.json 与 .env 权限含 group/other 位时产生 paths:permissions-too-open warning（含八进制权限位）", () => {
+    const { paths } = workspace();
+    writeFileSync(paths.envPath, "TEST=1\n");
+    if (process.platform !== "win32") {
+      chmodSync(paths.openclawPath, 0o644);
+      chmodSync(paths.envPath, 0o640);
+      const config = JSON.parse(readFileSync(paths.openclawPath, "utf8")) as OpenClawConfig;
+      const report = inspect(paths, { config, envContent: "TEST=1\n" });
+      const openclawIssue = report.issues.find((i) => i.id === "paths:permissions-too-open:openclaw");
+      expect(openclawIssue).toMatchObject({ severity: "warning", source: "paths" });
+      expect(openclawIssue?.detail).toContain("0644");
+      expect(openclawIssue?.detail).toContain(paths.openclawPath);
+      expect(openclawIssue?.action).toBe(`chmod 600 ${paths.openclawPath}`);
+      const envIssue = report.issues.find((i) => i.id === "paths:permissions-too-open:env");
+      expect(envIssue).toMatchObject({ severity: "warning", source: "paths" });
+      expect(envIssue?.detail).toContain("0640");
+      expect(envIssue?.action).toBe(`chmod 600 ${paths.envPath}`);
+      chmodSync(paths.openclawPath, 0o600);
+      chmodSync(paths.envPath, 0o600);
+    } else {
+      expect(existsSync(paths.envPath)).toBe(true);
+    }
+  });
+
+  test("openclaw.json 与 .env 均为 0600 时不产生 paths:permissions-too-open issue", () => {
+    const { paths } = workspace();
+    writeFileSync(paths.envPath, "TEST=1\n");
+    if (process.platform !== "win32") {
+      chmodSync(paths.openclawPath, 0o600);
+      chmodSync(paths.envPath, 0o600);
+      const config = JSON.parse(readFileSync(paths.openclawPath, "utf8")) as OpenClawConfig;
+      const report = inspect(paths, { config, envContent: "TEST=1\n" });
+      expect(report.issues.some((i) => i.id.startsWith("paths:permissions-too-open:"))).toBe(false);
+      chmodSync(paths.openclawPath, 0o644);
+      chmodSync(paths.envPath, 0o644);
+    } else {
+      expect(existsSync(paths.envPath)).toBe(true);
+    }
+  });
+
+  test(".env 不存在时不重复报权限问题（仅 missing warning）", () => {
+    const { paths } = workspace();
+    const config = JSON.parse(readFileSync(paths.openclawPath, "utf8")) as OpenClawConfig;
+    chmodSync(paths.openclawPath, 0o600);
+    const report = inspect(paths, { config, envContent: "" });
+    expect(report.issues.some((i) => i.id === "paths:missing:env")).toBe(true);
+    expect(report.issues.some((i) => i.id.startsWith("paths:permissions-too-open:"))).toBe(false);
+    chmodSync(paths.openclawPath, 0o644);
   });
 
   test("modelPolicy.allow 非空且未覆盖已启用模型时产生 model-policy-not-covered warning", () => {

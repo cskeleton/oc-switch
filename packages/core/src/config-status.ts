@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync } from "node:fs";
+import { accessSync, constants, existsSync, statSync } from "node:fs";
 import type { ConfigHealthReport } from "./config-health";
 import { inspectConfigHealth } from "./config-health";
 import { inspectEnvFile, listProviderEnvRefs } from "./env-inspector";
@@ -114,6 +114,33 @@ function canWrite(path: string): boolean {
   }
 }
 
+/**
+ * 配置文件权限过宽（group/other 可读）检查：读时只读提示，不自动 chmod。
+ * win32 跳过（mode 语义不可靠）；stat 失败（不存在/不可读）由既有 missing/unreadable 分支覆盖，不重复报。
+ */
+function permissionsTooOpenIssue(
+  path: string,
+  subject: "openclaw" | "env",
+  fileLabel: string
+): ConfigStatusIssue | null {
+  if (process.platform === "win32") return null;
+  let mode: number;
+  try {
+    mode = statSync(path).mode & 0o777;
+  } catch {
+    return null;
+  }
+  if ((mode & 0o077) === 0) return null;
+  return {
+    id: issueId("paths", "permissions-too-open", subject),
+    severity: "warning",
+    source: "paths",
+    title: `${fileLabel} 权限过宽`,
+    detail: `当前权限 ${mode.toString(8).padStart(4, "0")}，group/other 可读：${path}`,
+    action: `chmod 600 ${path}`
+  };
+}
+
 function buildPathIssues(
   paths: OcSwitchPaths,
   configReadError?: string
@@ -160,6 +187,8 @@ function buildPathIssues(
         action: "检查文件权限"
       });
     }
+    const openclawPerm = permissionsTooOpenIssue(paths.openclawPath, "openclaw", "openclaw.json");
+    if (openclawPerm) issues.push(openclawPerm);
   }
 
   const envExists = existsSync(paths.envPath);
@@ -192,6 +221,8 @@ function buildPathIssues(
         action: "检查文件权限"
       });
     }
+    const envPerm = permissionsTooOpenIssue(paths.envPath, "env", ".env");
+    if (envPerm) issues.push(envPerm);
   }
 
   return issues;

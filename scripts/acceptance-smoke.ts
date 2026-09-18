@@ -2048,6 +2048,9 @@ async function main(): Promise<void> {
     // 悬空策略引用批量清理验收（预览 → --yes 批量删除 → stale 归零；primary 指向未知 Provider 的守卫）
     await assertStalePolicyRefsCleanupAcceptance(dir, outputs);
 
+    // 配置文件权限警告验收（.env 0644 → warning → 600 → 消失；CLI health 输出 chmod 建议）
+    await assertPermissionWarningAcceptance(dir, outputs);
+
     // 汇总扫描所有输出
     for (const text of outputs) {
       assertNoSecrets(text, "acceptance");

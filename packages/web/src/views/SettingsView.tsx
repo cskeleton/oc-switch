@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type {
   ApiClient,
+  ConfigStatusIssue,
   EnvIndexResponse,
   EnvVariableSummary,
   EnvWriteVerification,
@@ -54,6 +55,8 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
   const [settings, setSettings] = useState<SettingsResponse | null>(null);
   const [pathSettings, setPathSettings] = useState<PathSettingsResponse | null>(null);
   const [envIndex, setEnvIndex] = useState<EnvIndexResponse | null>(null);
+  /** config-status 的权限过宽 issues（chmod 警告 spec §4）；失败静默置 null，不弹 toast */
+  const [configStatusIssues, setConfigStatusIssues] = useState<ConfigStatusIssue[] | null>(null);
   const [selectedOpenClawPath, setSelectedOpenClawPath] = useState("");
   const [selectedEnvPath, setSelectedEnvPath] = useState("");
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
@@ -99,6 +102,14 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载失败");
     }
+    // 与三件套解耦：config-status 拉取失败静默（不弹 toast、不影响页面其余部分）；
+    // load() 在挂载与路径切换/保存后都会触发，此处一并完成重取
+    try {
+      const status = await client.getConfigStatus();
+      setConfigStatusIssues(Array.isArray(status.issues) ? status.issues : []);
+    } catch {
+      setConfigStatusIssues(null);
+    }
   }, [client]);
 
   useEffect(() => {
@@ -107,6 +118,11 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
 
   const providerVars = envIndex?.variables.filter((item) => item.providerRef) ?? [];
   const extraVars = envIndex?.variables.filter((item) => item.extraManaged || (item.managed && !item.providerRef)) ?? [];
+
+  /** chmod 警告（spec §4）：只展示 paths 源、permissions-too-open 开头的 issue */
+  const permissionIssues = (configStatusIssues ?? []).filter(
+    (issue) => issue.source === "paths" && issue.id.startsWith("paths:permissions-too-open:")
+  );
 
   function setInputValue(envVar: string, value: string) {
     setValueInputs((prev) => ({ ...prev, [envVar]: value }));
@@ -601,6 +617,22 @@ export function SettingsView({ baseUrl, client }: SettingsViewProps) {
                         );
                       })}
                     </div>
+                  </div>
+                ) : null}
+
+                {permissionIssues.length > 0 ? (
+                  <div role="alert" className="mb-4 space-y-3 rounded-lg border border-warning/50 bg-warning/10 p-4">
+                    {permissionIssues.map((issue) => (
+                      <div key={issue.id} className="space-y-1">
+                        <p className="text-sm font-medium text-warning">{issue.title}</p>
+                        {issue.detail ? (
+                          <p className="break-all text-sm text-muted-foreground">{issue.detail}</p>
+                        ) : null}
+                        {issue.action ? (
+                          <p className="break-all font-mono text-xs text-muted-foreground">{issue.action}</p>
+                        ) : null}
+                      </div>
+                    ))}
                   </div>
                 ) : null}
 

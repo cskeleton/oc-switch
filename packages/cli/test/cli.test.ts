@@ -142,6 +142,53 @@ describe("cli read commands", () => {
     expect(result.stdout).toContain("Allowlist models: 4");
   });
 
+  test("health 输出配置文件权限过宽警告与 chmod 建议；0600 时输出与现状一致", async () => {
+    if (process.platform === "win32") return;
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "openclaw.json");
+    const config: OpenClawConfig = {
+      models: {
+        providers: {
+          test: {
+            baseUrl: "https://api.test/v1",
+            apiKey: { source: "env", provider: "default", id: "TEST_KEY" },
+            models: [{ id: "m", name: "Model M" }]
+          }
+        }
+      },
+      agents: { defaults: { model: "test/m", models: { "test/m": {} } } }
+    };
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    // runCli 的 settings fixture 固定 envPath = $HOME/.openclaw/.env
+    const envPath = join(dir, ".openclaw", ".env");
+    mkdirSync(join(dir, ".openclaw"), { recursive: true });
+    writeFileSync(envPath, "TEST_KEY=secret\n");
+
+    chmodSync(configPath, 0o644);
+    chmodSync(envPath, 0o644);
+    const wide = await runCli(["health"], { OPENCLAW_CONFIG_PATH: configPath, HOME: dir });
+    expect(wide.code).toBe(0);
+    expect(wide.stdout).toContain("权限过宽");
+    expect(wide.stdout).toContain("0644");
+    expect(wide.stdout).toContain(`chmod 600 ${configPath}`);
+    expect(wide.stdout).toContain(`chmod 600 ${envPath}`);
+
+    const wideJson = await runCli(["health", "--json"], { OPENCLAW_CONFIG_PATH: configPath, HOME: dir });
+    expect(wideJson.code).toBe(0);
+    const parsed = JSON.parse(wideJson.stdout) as { issues: Array<{ id: string; severity: string }> };
+    expect(parsed.issues.some((i) => i.id === "paths:permissions-too-open:openclaw" && i.severity === "warning")).toBe(true);
+    expect(parsed.issues.some((i) => i.id === "paths:permissions-too-open:env" && i.severity === "warning")).toBe(true);
+
+    chmodSync(configPath, 0o600);
+    chmodSync(envPath, 0o600);
+    const clean = await runCli(["health"], { OPENCLAW_CONFIG_PATH: configPath, HOME: dir });
+    expect(clean.code).toBe(0);
+    expect(clean.stdout).not.toContain("权限过宽");
+    expect(clean.stdout).not.toContain("配置问题");
+    expect(clean.stdout).toContain("未发现 Provider 大小写重复");
+  });
+
   test("prints providers with status column", async () => {
     const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-"));
     const configPath = join(dir, "openclaw.json");
