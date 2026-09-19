@@ -311,6 +311,18 @@ describe("全协议（隔离 fixture 走完整流程）", () => {
     expect(findSecretViolations(text)).toEqual([]);
   });
 
+  test("场景 3 回归：目标 Provider 规则原在 allow 中间时往返仍指纹等价", async () => {
+    // 回归锁定（2026-09-19 真实执行发现）：恢复曾把规则追加到 allow 末尾导致顺序漂移；
+    // 修复后停用快照带 policyBefore，无改动时位置保真复原。
+    const f = fixture(FIXTURE_A.replace('"allow": ["anthropic/*"]', '"allow": ["zeta/*", "anthropic/*"]'));
+    const originalBytes = readFileSync(f.configPath);
+    const report: string[] = [];
+    const code = await runRealConfigE2E(baseOptions(f, { log: (line) => report.push(line) }));
+    expect(code).toBe(EXIT_OK);
+    expect(report.join("\n")).toContain("场景 3 Provider 停用/恢复往返: PASS");
+    expect(readFileSync(f.configPath).equals(originalBytes)).toBe(true);
+  });
+
   test("skip 路径：legacy 模式跳过场景 2、全被引用跳过场景 3，仍退出 0", async () => {
     const f = fixture(FIXTURE_B);
     const originalBytes = readFileSync(f.configPath);

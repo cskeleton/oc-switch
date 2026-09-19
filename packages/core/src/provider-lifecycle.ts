@@ -9,6 +9,8 @@ export interface DisableProviderResult extends OperationResult {
     providerId: string;
     allowlistEntries: Record<string, AllowlistEntry>;
     policyEntries: string[];
+    /** restricted 模式停用前的完整 modelPolicy.allow（位置保真恢复用）。 */
+    policyBefore?: string[] | undefined;
   };
 }
 
@@ -47,7 +49,7 @@ export function disableProvider(config: OpenClawConfig, providerId: string, opti
   return {
     config,
     warnings: [],
-    disabledState: { providerId: normalizeProviderId(resolvedProviderId), allowlistEntries, policyEntries: suspended.policyEntries }
+    disabledState: { providerId: normalizeProviderId(resolvedProviderId), allowlistEntries, policyEntries: suspended.policyEntries, policyBefore: suspended.policyBefore }
   };
 }
 
@@ -55,7 +57,8 @@ export function restoreDisabledProvider(
   config: OpenClawConfig,
   providerId: string,
   allowlistEntries: Record<string, AllowlistEntry>,
-  policyEntries?: string[]
+  policyEntries?: string[],
+  policyBefore?: string[]
 ): OperationResult {
   const resolvedProviderId = resolveProviderId(config, providerId);
   if (!resolvedProviderId || !config.models!.providers![resolvedProviderId]) {
@@ -76,5 +79,5 @@ export function restoreDisabledProvider(
     config.agents!.defaults!.models![restoredRef] ??= structuredClone(entry);
   }
 
-  return { config: restoreModelProviderSelection(config, policyEntries ?? Object.keys(allowlistEntries), { providerIds: [providerId] }), warnings: [] };
+  return { config: restoreModelProviderSelection(config, policyEntries ?? Object.keys(allowlistEntries), { providerIds: [providerId], policyBefore }), warnings: [] };
 }

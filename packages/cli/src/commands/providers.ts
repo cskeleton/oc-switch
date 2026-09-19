@@ -295,7 +295,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
     .option("--cleanup-metadata", "同时清理别名和模型参数，保留 .env 密钥")
     .action(async (name: string, options: { cleanupMetadata?: boolean }) => {
       const paths = context.activePaths();
-      let disabledState: { allowlistEntries: Record<string, unknown>; policyEntries: string[] } | undefined;
+      let disabledState: { allowlistEntries: Record<string, unknown>; policyEntries: string[]; policyBefore?: string[] | undefined } | undefined;
       await writeOpenClawTransaction({
         ...paths,
         runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
@@ -312,7 +312,8 @@ export function registerProviderCommands(program: Command, context: CommandConte
           disabledState = {
             ...result.disabledState,
             allowlistEntries: { ...previous?.allowlistEntries, ...result.disabledState.allowlistEntries },
-            policyEntries: mergeModelSelectionEntries(previous?.policyEntries ?? Object.keys(previous?.allowlistEntries ?? {}), result.disabledState.policyEntries)
+            policyEntries: mergeModelSelectionEntries(previous?.policyEntries ?? Object.keys(previous?.allowlistEntries ?? {}), result.disabledState.policyEntries),
+            policyBefore: previous?.policyBefore ?? result.disabledState.policyBefore
           };
           return result.config;
         },
@@ -323,6 +324,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
             openclawPath: paths.openclawPath,
             disabledAt: new Date().toISOString(),
             policyEntries: disabledState.policyEntries,
+            policyBefore: disabledState.policyBefore,
             allowlistEntries: disabledState.allowlistEntries as never
           });
         }
@@ -344,7 +346,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
         runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
         reason: `enable provider ${name}`,
         async mutate(config) {
-          return restoreDisabledProvider(config, name, snapshot.allowlistEntries, snapshot.policyEntries).config;
+          return restoreDisabledProvider(config, name, snapshot.allowlistEntries, snapshot.policyEntries, snapshot.policyBefore).config;
         },
         afterWrite() {
           removeDisabledProviderState(paths.stateDir, name);

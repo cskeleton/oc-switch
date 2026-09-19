@@ -139,6 +139,18 @@ describe("modelPolicy.allow 双向同步", () => {
     expect(config.agents!.defaults!.models?.["cpa/policy-only"]).toBeUndefined();
   });
 
+  test("disable/enable 往返位置保真：受限模式无改动时规则回到原位置", () => {
+    const config = migratedConfig();
+    config.agents!.defaults!.modelPolicy!.allow = ["other/o1", "cpa/*", "zzz/last"];
+
+    const disabled = disableProvider(config, "cpa");
+    expect(readModelPolicyAllow(disabled.config)).toEqual(["other/o1", "zzz/last"]);
+    expect(disabled.disabledState.policyBefore).toEqual(["other/o1", "cpa/*", "zzz/last"]);
+
+    const restored = restoreDisabledProvider(disabled.config, "cpa", disabled.disabledState.allowlistEntries, disabled.disabledState.policyEntries, disabled.disabledState.policyBefore);
+    expect(readModelPolicyAllow(restored.config)).toEqual(["other/o1", "cpa/*", "zzz/last"]);
+  });
+
   test("恢复到当前 unrestricted policy 时不写 policy", () => {
     const config = migratedConfig();
     config.agents!.defaults!.modelPolicy!.allow = [];

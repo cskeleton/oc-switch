@@ -4,12 +4,15 @@ import { readFallbackModelRefs, readPrimaryModelRef } from "./primary-model";
 import type { OpenClawConfig } from "./types";
 import { readJsonState, writeJsonState } from "./json-state-store";
 
-interface PluginSelectionState { openclawPath: string; policyEntries: string[] }
+interface PluginSelectionState { openclawPath: string; policyEntries: string[]; policyBefore?: string[] | undefined }
 const STATE_FILE = "plugin-selection-states.json";
 export function readPluginSelectionState(stateDir: string, pluginId: string, openclawPath: string): PluginSelectionState | undefined {
   const state = readJsonState<Record<string, PluginSelectionState>>({ stateDir, filename: STATE_FILE, fallback: () => ({}), invalidJson: "throw" })[pluginId];
   if (state && state.openclawPath !== openclawPath) throw new Error(`Plugin ${pluginId} snapshot belongs to another OpenClaw config`);
-  if (state) validateSelectionEntries(state.policyEntries);
+  if (state) {
+    validateSelectionEntries(state.policyEntries);
+    if (state.policyBefore !== undefined) validateSelectionEntries(state.policyBefore);
+  }
   return state;
 }
 
@@ -106,11 +109,30 @@ export function suspendModelProviders(config: OpenClawConfig, providerIds: strin
   if (options.cleanupMetadata) {
     for (const ref of Object.keys(defaults.models ?? {})) if (matches(ref)) delete defaults.models![ref];
   }
-  return { config: next, policyEntries };
+  // 仅 restricted 模式快照停用前完整 allow 数组（全字符串已经过校验），供位置保真恢复；
+  // legacy/unrestricted 原本没有 allow 可回退到，恢复快照无意义。
+  return { config: next, policyEntries, policyBefore: mode === "restricted" ? [...before] : undefined };
 }
 
-/** 恢复只追加保存的目标规则，不覆盖用户在停用期间编辑的其他规则。 */
-export function restoreModelProviderSelection(config: OpenClawConfig, policyEntries: string[], options: { providerIds?: string[]; blockedProviderIds?: string[] } = {}): OpenClawConfig {
+/** 计数感知地从 before 去掉 entries 的对应出现次数（保持剩余条目顺序）。 */
+function minusSelectionEntries(before: string[], entries: string[]): string[] {
+  const remaining = new Map<string, number>();
+  for (const entry of entries) remaining.set(entry, (remaining.get(entry) ?? 0) + 1);
+  const out: string[] = [];
+  for (const entry of before) {
+    const count = remaining.get(entry) ?? 0;
+    if (count > 0) remaining.set(entry, count - 1);
+    else out.push(entry);
+  }
+  return out;
+}
+
+/**
+ * 恢复保存的目标规则，不覆盖用户在停用期间编辑的其他规则。
+ * 位置保真：快照含 policyBefore（停用前完整 allow）且当前数组与之计数感知地只差保存规则
+ * （即停用期间用户未改动）时，精确写回原数组，规则回到原位置；否则追加兜底。
+ */
+export function restoreModelProviderSelection(config: OpenClawConfig, policyEntries: string[], options: { providerIds?: string[]; blockedProviderIds?: string[]; policyBefore?: string[] | undefined } = {}): OpenClawConfig {
   validateSelectionEntries(policyEntries);
   const expected = options.providerIds?.map(normalizeProviderId);
   const blocked = options.blockedProviderIds?.map(normalizeProviderId) ?? [];
@@ -122,6 +144,13 @@ export function restoreModelProviderSelection(config: OpenClawConfig, policyEntr
   const next = structuredClone(config);
   if (getModelPolicyMode(next) !== "restricted" || policyEntries.length === 0) return next;
   const allow = readModelPolicyAllowRaw(next)!;
+  if (options.policyBefore !== undefined) {
+    const restored = minusSelectionEntries(options.policyBefore, policyEntries);
+    if (allow.length === restored.length && allow.every((entry, index) => entry === restored[index])) {
+      next.agents!.defaults!.modelPolicy!.allow = [...options.policyBefore];
+      return next;
+    }
+  }
   // 非字符串历史条目原样保留，补齐规则时只计数合法字符串。
   const merged = mergeModelSelectionEntries(allow.filter((entry): entry is string => typeof entry === "string"), policyEntries);
   allow.push(...merged.slice(allow.filter(entry => typeof entry === "string").length));

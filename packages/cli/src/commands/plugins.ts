@@ -66,6 +66,7 @@ async function changePluginState(
 
     let warnings: string[] = [];
     let policyEntries: string[] = [];
+    let policyBefore: string[] | undefined;
     const result = await writeOpenClawTransaction({
       ...paths,
       runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
@@ -76,17 +77,18 @@ async function changePluginState(
         const operation = setModelPluginEnabled(config, descriptor, enabled);
         warnings = operation.warnings.filter(warning => warning.includes("non-model capabilities"));
         const saved = config.plugins?.entries?.[pluginId]?.enabled === false ? readPluginSelectionState(paths.stateDir, pluginId, paths.openclawPath) : undefined;
-        if (enabled) return restoreModelProviderSelection(operation.config, saved?.policyEntries ?? [], { providerIds: descriptor.providerIds, blockedProviderIds: Object.values(readProviderStates(paths.stateDir).disabledProviders).filter(state => state.openclawPath === paths.openclawPath && !!config.models?.providers?.[state.providerId]).map(state => state.providerId) });
+        if (enabled) return restoreModelProviderSelection(operation.config, saved?.policyEntries ?? [], { providerIds: descriptor.providerIds, policyBefore: saved?.policyBefore, blockedProviderIds: Object.values(readProviderStates(paths.stateDir).disabledProviders).filter(state => state.openclawPath === paths.openclawPath && !!config.models?.providers?.[state.providerId]).map(state => state.providerId) });
         const inventory = await context.buildInventory({ config, paths });
         const suspended = suspendModelProviders(operation.config, descriptor.providerIds, {
           cleanupMetadata: options.cleanupMetadata === true,
           ...(inventory.pickerSource === "gateway" ? { visibleRefs: inventory.models.filter(model => model.pickerVisible).map(model => model.ref) } : {})
         });
         policyEntries = mergeModelSelectionEntries(saved?.policyEntries ?? [], suspended.policyEntries);
+        policyBefore = saved?.policyBefore ?? suspended.policyBefore;
         return suspended.config;
       },
       afterWrite() {
-        savePluginSelectionState(paths.stateDir, pluginId, enabled ? undefined : { openclawPath: paths.openclawPath, policyEntries });
+        savePluginSelectionState(paths.stateDir, pluginId, enabled ? undefined : { openclawPath: paths.openclawPath, policyEntries, policyBefore });
       }
     });
 

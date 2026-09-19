@@ -9,6 +9,8 @@ export interface DisabledProviderState {
   allowlistEntries: Record<string, AllowlistEntry>;
   /** 2026.9 停用时从 OpenClaw 选择器移出的 exact/wildcard 规则。 */
   policyEntries?: string[];
+  /** restricted 模式停用前的完整 modelPolicy.allow（位置保真恢复用；旧快照无此字段则追加兜底）。 */
+  policyBefore?: string[] | undefined;
 }
 
 export interface ProviderStatesFile {

@@ -474,7 +474,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
 
       if (body.cleanupMetadata !== undefined && typeof body.cleanupMetadata !== "boolean") throw new Error("cleanupMetadata must be boolean");
       if (!enabled) {
-        let disabledState: { providerId: string; allowlistEntries: Record<string, unknown>; policyEntries: string[] } | undefined;
+        let disabledState: { providerId: string; allowlistEntries: Record<string, unknown>; policyEntries: string[]; policyBefore?: string[] | undefined } | undefined;
         const result = await writeOpenClawTransaction({
           ...paths,
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
@@ -491,7 +491,8 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
             disabledState = {
               ...disabled.disabledState,
               allowlistEntries: { ...previous?.allowlistEntries, ...disabled.disabledState.allowlistEntries },
-              policyEntries: mergeModelSelectionEntries(previous?.policyEntries ?? Object.keys(previous?.allowlistEntries ?? {}), disabled.disabledState.policyEntries)
+              policyEntries: mergeModelSelectionEntries(previous?.policyEntries ?? Object.keys(previous?.allowlistEntries ?? {}), disabled.disabledState.policyEntries),
+              policyBefore: previous?.policyBefore ?? disabled.disabledState.policyBefore
             };
             return disabled.config;
           },
@@ -502,6 +503,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
               openclawPath: paths.openclawPath,
               disabledAt: new Date().toISOString(),
               policyEntries: disabledState.policyEntries,
+              policyBefore: disabledState.policyBefore,
               allowlistEntries: disabledState.allowlistEntries as never
             });
           }
@@ -528,7 +530,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
         reason: `enable provider ${providerId}`,
         normalizeConfig: false,
         async mutate(config) {
-          return restoreDisabledProvider(config, providerId, snapshot.allowlistEntries, snapshot.policyEntries).config;
+          return restoreDisabledProvider(config, providerId, snapshot.allowlistEntries, snapshot.policyEntries, snapshot.policyBefore).config;
         },
         afterWrite() {
           removeDisabledProviderState(paths.stateDir, providerId);

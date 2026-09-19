@@ -45,3 +45,44 @@ test("其他 Agent 的开放策略和 image/utility 依赖阻止假停用；畸�
   }
   expect(() => suspension.suspendModelProviders({ agents: { defaults: { modelPolicy: { allow: "broken" as never } } } }, ["idle"], { visibleRefs: ["active/main"] })).toThrow("invalid");
 });
+
+test("受限模式快照 policyBefore：停用期间无改动时恢复精确回到原位置", () => {
+  const before = config();
+  before.agents.defaults.modelPolicy.allow = ["active/main", "idle/*", "other/*", "idle/exact"];
+  const off = suspension.suspendModelProviders(before, ["idle"]);
+  expect(off.policyBefore).toEqual(["active/main", "idle/*", "other/*", "idle/exact"]);
+  expect(off.config.agents?.defaults?.modelPolicy?.allow).toEqual(["active/main", "other/*"]);
+  const restored = suspension.restoreModelProviderSelection(off.config, off.policyEntries, { policyBefore: off.policyBefore });
+  expect(restored.agents?.defaults?.modelPolicy?.allow).toEqual(["active/main", "idle/*", "other/*", "idle/exact"]);
+});
+
+test("停用期间用户改动 allow 或无 policyBefore 快照时回退追加", () => {
+  const before = config();
+  before.agents.defaults.modelPolicy.allow = ["active/main", "idle/*", "other/*", "idle/exact"];
+  const off = suspension.suspendModelProviders(before, ["idle"]);
+  off.config.agents!.defaults!.modelPolicy!.allow!.push("user/added");
+  const restored = suspension.restoreModelProviderSelection(off.config, off.policyEntries, { policyBefore: off.policyBefore });
+  expect(restored.agents?.defaults?.modelPolicy?.allow).toEqual(["active/main", "other/*", "user/added", "idle/*", "idle/exact"]);
+  // 旧快照没有 policyBefore → 维持追加（与历史行为一致）
+  const legacyOff = suspension.suspendModelProviders(config(), ["idle"]);
+  expect(suspension.restoreModelProviderSelection(legacyOff.config, legacyOff.policyEntries).agents?.defaults?.modelPolicy?.allow).toEqual(["active/main", "other/*", "idle/*", "idle/exact"]);
+});
+
+test("重复规则按出现次数复原位置", () => {
+  const before = config();
+  before.agents.defaults.modelPolicy.allow = ["idle/*", "active/main", "idle/*", "other/*"];
+  const off = suspension.suspendModelProviders(before, ["idle"]);
+  expect(off.policyEntries).toEqual(["idle/*", "idle/*"]);
+  expect(off.config.agents?.defaults?.modelPolicy?.allow).toEqual(["active/main", "other/*"]);
+  const restored = suspension.restoreModelProviderSelection(off.config, off.policyEntries, { policyBefore: off.policyBefore });
+  expect(restored.agents?.defaults?.modelPolicy?.allow).toEqual(["idle/*", "active/main", "idle/*", "other/*"]);
+});
+
+test("legacy/unrestricted 停用不产生 policyBefore 快照", () => {
+  const open = config();
+  open.agents.defaults.modelPolicy.allow = [];
+  expect(suspension.suspendModelProviders(open, ["idle"], { visibleRefs: ["active/main", "idle/one", "other/two"] }).policyBefore).toBeUndefined();
+  const legacy = config();
+  delete (legacy.agents.defaults as Record<string, unknown>).modelPolicy;
+  expect(suspension.suspendModelProviders(legacy, ["idle"]).policyBefore).toBeUndefined();
+});

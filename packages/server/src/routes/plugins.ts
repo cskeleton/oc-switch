@@ -30,6 +30,7 @@ export function registerPluginRoutes(app: Hono, runtime: AppRuntime): void {
       let capturedWarnings: string[] = [];
       let affectedProviderIds: string[] = [];
       let policyEntries: string[] = [];
+      let policyBefore: string[] | undefined;
 
       const result = await writeOpenClawTransaction({
         ...paths,
@@ -47,17 +48,18 @@ export function registerPluginRoutes(app: Hono, runtime: AppRuntime): void {
           affectedProviderIds = [...new Set(descriptor.providerIds)].sort();
           capturedWarnings = operation.warnings.filter(warning => warning.includes("non-model capabilities"));
           const saved = config.plugins?.entries?.[pluginId]?.enabled === false ? readPluginSelectionState(paths.stateDir, pluginId, paths.openclawPath) : undefined;
-          if (enabled) return restoreModelProviderSelection(operation.config, saved?.policyEntries ?? [], { providerIds: descriptor.providerIds, blockedProviderIds: readDisabledProviderIds(paths).filter(id => !!config.models?.providers?.[id]) });
+          if (enabled) return restoreModelProviderSelection(operation.config, saved?.policyEntries ?? [], { providerIds: descriptor.providerIds, policyBefore: saved?.policyBefore, blockedProviderIds: readDisabledProviderIds(paths).filter(id => !!config.models?.providers?.[id]) });
           const inventory = await runtime.buildCurrentInventory({ config, paths });
           const suspended = suspendModelProviders(operation.config, descriptor.providerIds, {
             cleanupMetadata: body.cleanupMetadata === true,
             ...(inventory.pickerSource === "gateway" ? { visibleRefs: inventory.models.filter(model => model.pickerVisible).map(model => model.ref) } : {})
           });
           policyEntries = mergeModelSelectionEntries(saved?.policyEntries ?? [], suspended.policyEntries);
+          policyBefore = saved?.policyBefore ?? suspended.policyBefore;
           return suspended.config;
         },
         afterWrite() {
-          savePluginSelectionState(paths.stateDir, pluginId, enabled ? undefined : { openclawPath: paths.openclawPath, policyEntries });
+          savePluginSelectionState(paths.stateDir, pluginId, enabled ? undefined : { openclawPath: paths.openclawPath, policyEntries, policyBefore });
         }
       });
 
