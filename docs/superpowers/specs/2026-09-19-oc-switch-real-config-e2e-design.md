@@ -1,7 +1,7 @@
 # 真实配置写 E2E
 
 - 日期：2026-09-19
-- 状态：草案（待评审与授权）。执行涉及真实 `~/.openclaw` 写操作，实施与首次运行都需用户显式确认目标机与场景范围。
+- 状态：脚本与单测已实施（2026-09-19）；首次真实执行待用户在场授权。实现要点：`scripts/e2e-real-config.ts`（三重门：env var + `--config` 路径校验（含 fixture 模式/临时目录拒绝，tmpDir 参数化供测试）+ TTY 确认；三场景经 CLI 子进程往返；还原为写前 `createBackup` 安全网 + 旁路字节写回 + 语义指纹/字节/`.env`/`provider-states.json` 不变四重断言，恢复原权限位；退出码 1 场景失败 / 2 还原失败 / 3 门禁拒绝；备份创建失败按门禁拒绝处理；场景失败即停止防级联；Gateway 只读对账 best-effort）；`scripts/e2e-real-config.test.ts` 18 用例全临时 fixture（全协议用例走真实 CLI 子进程 + PATH 前置假 openclaw 回放，还原失败经 restoreFile 注入），`package.json` test glob 纳入 `scripts`；`bun run check` 与 `bun run acceptance` 全绿。
 - 基线：`AGENTS.md:12`（真实配置优先只读、写后须还原）；runtime spec「真实写入验证只在用户明确授权后执行」；现有隔离 E2E/acceptance 基础设施。
 - 配套计划：暂无（评审通过后编写）。
 
@@ -24,7 +24,7 @@
 2. **Policy 规则往返**（restricted 时）：添加一条**已被现有 wildcard 覆盖的冗余 exact**（不改变有效选择范围，命中既有「冗余提示」语义）→ 断言存在 → 用批量/单条删除移除 → 断言消失。无 wildcard 可用时降级为「添加指向目录已有模型的 exact → 删除」，仍零有效变化。非 restricted 模式该场景跳过并报告。
 3. **Provider 停用/恢复一对**：选一个**不贡献主模型/fallback** 的 config Provider → disable → 断言 `provider-states.json` 快照与目录保留 → enable 恢复 → 断言。若所有 Provider 都被 primary/fallback 引用则跳过并报告。
 
-每个场景统一骨架：写前语义指纹 → 操作 → 生效断言 → 还原 → 语义等价 + 字节一致双断言。
+每个场景统一骨架：写前语义指纹 → 操作 → 生效断言 → 逆向操作还原；全部场景结束后统一字节写回 + 四重断言（字节一致、语义指纹等价、`.env` 不变、provider-states 不变）。
 
 **明确不做（第一阶段）**：
 
