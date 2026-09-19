@@ -6,7 +6,7 @@
     "packages/*"
   ],
   "scripts": {
-    "test": "bun test packages/core packages/cli packages/server && bun test --preload ./packages/web/src/test-setup.ts packages/web/src",
+    "test": "bun test packages/core packages/cli packages/server scripts && bun test --preload ./packages/web/src/test-setup.ts packages/web/src",
     "typecheck": "bunx tsc -b packages/core packages/cli packages/server packages/web",
     "cli": "bun run packages/cli/src/index.ts",
     "build": "bun run --cwd packages/web build",
