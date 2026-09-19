@@ -1,7 +1,7 @@
 # 真实配置写 E2E
 
 - 日期：2026-09-19
-- 状态：脚本与单测已实施（2026-09-19）；首次真实执行待用户在场授权。实现要点：`scripts/e2e-real-config.ts`（三重门：env var + `--config` 路径校验（含 fixture 模式/临时目录拒绝，tmpDir 参数化供测试）+ TTY 确认；三场景经 CLI 子进程往返；还原为写前 `createBackup` 安全网 + 旁路字节写回 + 语义指纹/字节/`.env`/`provider-states.json` 不变四重断言，恢复原权限位；退出码 1 场景失败 / 2 还原失败 / 3 门禁拒绝；备份创建失败按门禁拒绝处理；场景失败即停止防级联；Gateway 只读对账 best-effort）；`scripts/e2e-real-config.test.ts` 18 用例全临时 fixture（全协议用例走真实 CLI 子进程 + PATH 前置假 openclaw 回放，还原失败经 restoreFile 注入），`package.json` test glob 纳入 `scripts`；`bun run check` 与 `bun run acceptance` 全绿。
+- 状态：脚本与单测已实施（2026-09-19）；首次真实执行待用户在场授权。实现要点：`scripts/e2e-real-config.ts`（三重门：env var + `--config` 路径校验（含 fixture 模式/临时目录拒绝，tmpDir 参数化供测试）+ TTY 确认；三场景经 CLI 子进程往返；还原为写前 `createBackup` 安全网 + 旁路字节写回 + 语义指纹/字节/`.env`/`provider-states.json` 不变四重断言，恢复原权限位；退出码 1 场景失败 / 2 还原失败 / 3 门禁拒绝；备份创建失败按门禁拒绝处理；场景失败即停止防级联；Gateway 只读对账 best-effort）；`scripts/e2e-real-config.test.ts` 19 用例全临时 fixture（全协议用例走真实 CLI 子进程 + PATH 前置假 openclaw 回放，还原失败经 restoreFile 注入；含「规则原在 allow 中间」的往返回归锁定），`package.json` test glob 纳入 `scripts`；`bun run check` 与 `bun run acceptance` 全绿。验收（2026-09-19 真实执行，exit 1）：场景 1/2 PASS；场景 3 FAIL——根因定位为 core 恢复语义：`restoreModelProviderSelection` 把停用保存的规则**追加到 `modelPolicy.allow` 末尾**而非原位置，规则原不在末尾时数组顺序漂移、语义指纹不等价（OpenClaw 按集合匹配，功能不受影响）；还原四重断言全部通过，真实配置字节级无损；Gateway 只读对账 warning（`config.get` exit 1，best-effort 不阻断）。修复（2026-09-19）：停用快照加存 `policyBefore`（仅 restricted 模式，全字符串已校验），恢复时若停用期间用户未改动 allow（当前数组与原数组计数感知地只差保存规则）则按原数组位置保真复原，否则追加兜底；旧快照无该字段自动走追加，插件启停同享。复跑验收（2026-09-19，exit 0）：三场景全部 PASS（场景 3 openrouter 停用/恢复后语义指纹等价），还原四重断言通过——真实执行验收通过。
 - 基线：`AGENTS.md:12`（真实配置优先只读、写后须还原）；runtime spec「真实写入验证只在用户明确授权后执行」；现有隔离 E2E/acceptance 基础设施。
 - 配套计划：暂无（评审通过后编写）。
 

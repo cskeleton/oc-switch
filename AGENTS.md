@@ -72,7 +72,7 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 - 日常 Web Provider/模型选项使用 Gateway `models.list` 的 default 视图；`config.get` 仅校验所选配置路径及已应用版本，原始配置/认证内容不返回、不缓存。CLI `models list` 和 `--all` 是目录证据，不能冒充 IM 选择器。`pickerSource="inferred"` 必须明确提示未确认在线 IM 一致性。
 - `models.providers` 是目录，`agents.defaults.models` 是别名/参数，`modelPolicy.allow` 是策略。`meta.migrations.modelPolicyAllowlist=true` 或已有空 policy 对象时，不再把 metadata 当 legacy 限制；尚未迁移且有旧 model map 时保留 legacy 行为。
 - `pickerVisible`、`inactive`、`needsAttention` 由 Core 计算。只有正在选择/保护的模型出现可用性问题才进入待处理。未启用插件不展开未引用的模型；未被 policy 覆盖的 metadata、主动停用状态、保留备用 Key 不产生全局待办。真正的配置语法/结构错误仍须报告。
-- **明确 Provider/插件级停用是 wildcard 写入纪律的限定例外**：通过 `suspendModelProviders` 移出该目标的 exact/wildcard 规则，不改其他规则的大小写、顺序和重复次数；恢复只补保存的目标规则。开放策略必须取得可靠当前选择器后收窄为其他可见模型，禁止清成 `[]`。单模型 disable/rename/batch 仍拒绝 wildcard。
+- **明确 Provider/插件级停用是 wildcard 写入纪律的限定例外**：通过 `suspendModelProviders` 移出该目标的 exact/wildcard 规则，不改其他规则的大小写、顺序和重复次数；恢复时 restricted 模式快照 `policyBefore`（停用前完整 allow）在停用期间无用户改动则位置保真复原原数组，否则只补保存的目标规则（追加兜底，旧快照无 `policyBefore` 同）。开放策略必须取得可靠当前选择器后收窄为其他可见模型，禁止清成 `[]`。单模型 disable/rename/batch 仍拒绝 wildcard。
 - `.env` 原样保留；目录默认保留，`cleanupMetadata` / CLI `--cleanup-metadata` 可选清理别名与模型参数。完整 Provider 目录清理走已有删除入口，密钥仍不自动删除。插件停用同时写 `plugins.entries.<id>.enabled=false`；低层 `setModelPluginEnabled` 只写开关，CLI/API 必须组合 selection suspension。旧 Provider 快照可重复应用真实停用并保留恢复资料；插件恢复不能越过另一个独立 Provider 停用。
 - 精确引用主动移除只收窄选择范围，不依赖 availability；unknown 仍不得启用、设主模型或物化目录。primary/fallback/wildcard/最后一条规则保护仍生效。Provider/插件停用还检查其他 Agent 显式模型/策略及 image/pdf/utility 依赖；不静默改其他 Agent。
 - Server/CLI 使用异步有界探测：并行命令、30 秒缓存、同 scope 并发去重；config/env 路径和文件版本变化、写后均失效。事务 `mutate` 支持 Promise，保留文件变化重读/重做一次的保护。`provider-states.json` 只对同路径、仍存在的 config Provider 生效，旧孤立记录不能锁死插件。
