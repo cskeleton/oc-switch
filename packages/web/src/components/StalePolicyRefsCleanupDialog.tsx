@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ApiRequestError, isPolicyRevisionConflict, type ApiClient } from "../api";
+import { ApiRequestError, inventoryFromWriteResponse, isPolicyRevisionConflict, type ApiClient, type ModelInventory } from "../api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DataTable, type Column } from "./DataTable";
 import { useToast } from "./Toast";
@@ -27,8 +27,8 @@ interface StalePolicyRefsCleanupDialogProps {
   policyRevision: string | undefined;
   client: ApiClient;
   onCancel: () => void;
-  /** 清理成功后由调用方刷新 inventory 与 config-status */
-  onChanged: () => void;
+  /** 清理成功后调用：写响应带有效 inventory 时透传给调用方消费（避免再 GET）；未取得则为 undefined */
+  onChanged: (nextInventory?: ModelInventory) => void;
 }
 
 function reasonPill(reason: StalePolicyRef["reason"]) {
@@ -84,7 +84,8 @@ export function StalePolicyRefsCleanupDialog({ open, refs, policyRevision, clien
       toast.success(`已清理 ${result.removedCount} 条悬空规则（只改 modelPolicy.allow）`);
       for (const warning of result.warnings ?? []) toast.warning(warning);
       if (result.runtimeConfirmed === false) toast.warning("配置已保存，运行时未确认");
-      onChanged();
+      // 写响应带有效 inventory 时透传调用方直接消费；{}（确认失败）透传 undefined，不自动重试
+      onChanged(inventoryFromWriteResponse(result) ?? undefined);
       onCancel();
     } catch (err) {
       if (isPolicyRevisionConflict(err)) {

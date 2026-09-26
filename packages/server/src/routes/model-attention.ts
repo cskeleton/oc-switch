@@ -14,8 +14,10 @@ export function registerModelAttentionRoutes(app: Hono, runtime: AppRuntime): vo
   }
   async function current(refresh = false) {
     const paths = runtime.currentPaths();
-    const inventory = await runtime.buildCurrentInventory({ paths, refresh });
+    // 同一份 config 对象同时供 inventory / attention / config-status 计算，
+    // 消除同请求内两次 JSON5 解析与不同配置对象混用。
     const config = readConfig(paths);
+    const inventory = await runtime.buildCurrentInventory({ paths, refresh, config });
     const issues = buildModelAttention(config, inventory);
     // 无法加载的配置问题不能被闲置/忽略规则吞掉，沿用现有健康检查事实。
     const blocking = inspectConfigStatus({ config, paths, envContent: readEnvContent(paths) ?? "", pluginProviders: await runtime.currentPluginProviders({ paths }) }).issues.filter(issue => issue.severity === "blocking");

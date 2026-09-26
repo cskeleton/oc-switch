@@ -1,7 +1,7 @@
 import { ModelAttentionPanel } from "../components/ModelAttentionPanel";
 import { Box, Cpu, ListChecks, RefreshCw, Star } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
-import type { ApiClient, CaseDuplicateGroup, ConfigDiffSummary, ConfigHealthReport, StatusResponse, ModelInventory } from "../api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { ApiClient, CaseDuplicateGroup, ConfigDiffSummary, ConfigHealthReport, ModelAttentionReport, StatusResponse, ModelInventory } from "../api";
 import { countDiffChangelogEntries, DiffChangelog } from "../components/DiffChangelog";
 import { MergeCaseDuplicateDialog } from "../components/MergeCaseDuplicateDialog";
 import { PageHeader } from "../components/PageHeader";
@@ -28,21 +28,28 @@ export function Dashboard({ client, onConfigureProvider }: DashboardProps) {
   const [diff, setDiff] = useState<ConfigDiffSummary | null>(null);
   const [diffUnavailable, setDiffUnavailable] = useState(false);
   const [health, setHealth] = useState<ConfigHealthReport | null>(null);
+  const [attention, setAttention] = useState<ModelAttentionReport>({ pending: [], ignored: [] });
+  const [attentionError, setAttentionError] = useState<string | null>(null);
   const [mergeTarget, setMergeTarget] = useState<CaseDuplicateGroup | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
+  /** 每轮携带递增序号，迟到的旧响应不得覆盖更新的页面结果 */
+  const loadSeq = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
     setError(null);
     setDiffUnavailable(false);
     try {
-      const [statusResult, diffResult, healthResult, inventoryResult] = await Promise.allSettled([
+      const [statusResult, diffResult, healthResult, inventoryResult, attentionResult] = await Promise.allSettled([
         client.getStatus(),
         client.getDiff(),
         client.getHealth(),
-        client.getModelInventory()
+        client.getModelInventory(),
+        client.getModelAttention()
       ]);
+      if (seq !== loadSeq.current) return;
       if (statusResult.status === "fulfilled") {
         setStatus(statusResult.value);
       } else {
@@ -57,10 +64,20 @@ export function Dashboard({ client, onConfigureProvider }: DashboardProps) {
       if (inventoryResult.status === "fulfilled") setInventory(inventoryResult.value);
       else setError(inventoryResult.reason instanceof Error ? inventoryResult.reason.message : "模型状态未确认");
       setHealth(healthResult.status === "fulfilled" ? healthResult.value : null);
+      // 问题列表与 inventory 同轮并行读取；attention 每轮只读一次
+      if (attentionResult.status === "fulfilled" && isAttentionReport(attentionResult.value)) {
+        setAttention(attentionResult.value);
+        setAttentionError(null);
+      } else if (attentionResult.status === "fulfilled") {
+        setAttentionError("提醒协议不兼容，请重启服务。");
+      } else {
+        setAttentionError(attentionResult.reason instanceof Error ? attentionResult.reason.message : "无法读取问题状态");
+      }
     } catch (err) {
+      if (seq !== loadSeq.current) return;
       setError(err instanceof Error ? err.message : "加载失败");
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   }, [client]);
 
@@ -91,7 +108,7 @@ export function Dashboard({ client, onConfigureProvider }: DashboardProps) {
       ) : null}
       {error ? <p className="text-sm font-medium text-destructive">{error}</p> : null}
 
-      <div className="mb-4"><ModelAttentionPanel client={client} inventory={inventory} onChanged={load} onConfigure={onConfigureProvider} /></div>
+      <div className="mb-4"><ModelAttentionPanel client={client} inventory={inventory} report={attention} loadError={attentionError} onChanged={load} onConfigure={onConfigureProvider} /></div>
       {status ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {/* 主模型独占首行，四个统计卡在第二行 */}
@@ -176,6 +193,13 @@ function isConfigDiffSummary(value: unknown): value is ConfigDiffSummary {
     Array.isArray(diff.providerStateChanges) &&
     Array.isArray(diff.providerFieldChanges) &&
     (diff.primaryChanged === null || diff.primaryChanged === undefined || typeof diff.primaryChanged === "object");
+}
+
+/** attention 报告形状校验：pending/ignored 必须为数组，否则按协议不兼容处理 */
+function isAttentionReport(value: unknown): value is ModelAttentionReport {
+  if (!value || typeof value !== "object") return false;
+  const report = value as Partial<ModelAttentionReport>;
+  return Array.isArray(report.pending) && Array.isArray(report.ignored);
 }
 
 function HealthCard({ diff, unavailable, className }: { diff: ConfigDiffSummary | null; unavailable: boolean; className?: string }) {

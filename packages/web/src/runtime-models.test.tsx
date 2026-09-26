@@ -1,6 +1,6 @@
 import "./test-setup";
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   ApiRequestError,
@@ -29,7 +29,7 @@ afterEach(() => {
 // 显式给定 Core 能力，不在 fixture 中重新实现 policy / runtime 协调算法。
 function model(ref: string, overrides: Partial<ModelInventoryEntry> = {}): ModelInventoryEntry {
   const slash = ref.indexOf("/");
-  return {
+  const base: ModelInventoryEntry = {
     ref,
     providerId: ref.slice(0, slash),
     modelId: ref.slice(slash + 1),
@@ -49,6 +49,24 @@ function model(ref: string, overrides: Partial<ModelInventoryEntry> = {}): Model
       canRemovePolicyExactRef: false
     },
     ...overrides
+  };
+  // core 推导（model-inventory.ts）：inactive = 无 primary/fallback 依赖且未选用/停用；
+  // pickerVisible = !inactive && (受保护 || policy-exact || (policyAllowed && available))；
+  // needsAttention = !inactive && (policyAllowed || 受保护) && !available。
+  // fixture 缺省时按 core 规则补齐 v2 必填布尔，显式覆盖优先。
+  const protectedRef = base.referenceSources.includes("primary") || base.referenceSources.includes("fallback");
+  const inactive = !protectedRef && !base.policyAllowed;
+  const derived = {
+    inactive,
+    pickerVisible: !inactive && (protectedRef || base.referenceSources.includes("policy-exact") || (base.policyAllowed && base.availability === "available")),
+    needsAttention: !inactive && (base.policyAllowed || protectedRef) && base.availability !== "available"
+  };
+  return {
+    ...derived,
+    ...base,
+    inactive: base.inactive ?? derived.inactive,
+    pickerVisible: base.pickerVisible ?? derived.pickerVisible,
+    needsAttention: base.needsAttention ?? derived.needsAttention
   };
 }
 
@@ -100,6 +118,7 @@ function clientFor(data: ModelInventory, overrides: Partial<ApiClient> = {}): Ap
     getModelInventory: async () => data,
     refreshModelInventory: async () => data,
     getProviders: async () => ({ providers: [providerSummary({ id: "local" })] }),
+    getModelAttention: async () => ({ pending: [], ignored: [] }),
     ...overrides
   };
 }
@@ -271,6 +290,8 @@ describe("runtime Web review regressions", () => {
     });
     const setPrimary = mock(async (ref: string) => ({ ok: true, ref }));
     const view = renderModels(data, { getModelInventory: async () => data, patchModel, setPrimary });
+    // core 语义：策略未允许的 runtime-only 行不在 IM 选项（pickerVisible=false），须在管理目录视图启用
+    await userEvent.click(await view.findByRole("button", { name: "管理配置目录" }));
     const toggle = await view.findByRole("switch", { name: "启用 local/runtime-only" });
     expect(toggle.getAttribute("aria-checked")).toBe("false");
     await userEvent.click(toggle);
@@ -530,12 +551,12 @@ describe("runtime Web review regressions", () => {
       expect(view.getAllByText("版本不支持").length).toBe(2);
     });
 
-    test("添加规则对话框：提交 exact 成功后 toast 展示 warnings 并重新加载", async () => {
+    test("添加规则对话框：提交 exact 成功后 toast 展示 warnings 并应用写响应 inventory（不再 GET）", async () => {
       const data = inventory([], { policyMode: "restricted", policyRules: editableRules });
       const warning = "已被通配 local/* 覆盖，该精确规则当前冗余";
       const addRule = mock(async (rule: string) => ({
         ok: true as const, rule, kind: "exact" as const, backupId: "fixture-backup",
-        warnings: [warning], runtimeConfirmed: true
+        warnings: [warning], runtimeConfirmed: true, inventory: data
       }));
       const loadInventory = mock(async () => data);
       const view = renderModels(data, { addModelPolicyRule: addRule, getModelInventory: loadInventory });
@@ -550,7 +571,29 @@ describe("runtime Web review regressions", () => {
       await waitFor(() => expect(addRule).toHaveBeenCalledWith("local/new-model"));
       expect(await view.findByText(/已添加精确规则 local\/new-model/)).toBeTruthy();
       expect(await view.findByText(warning)).toBeTruthy();
-      await waitFor(() => expect(loadInventory.mock.calls.length).toBeGreaterThanOrEqual(2));
+      // O3：正常规则写后不再 GET inventory——写响应中的有效 v2 视图被直接消费
+      await waitFor(() => expect(loadInventory).toHaveBeenCalledTimes(1));
+    });
+
+    test("规则写后确认失败（inventory 为 {}）：提示保存成功、未取得新视图，不自动重试写入", async () => {
+      const data = inventory([], { policyMode: "restricted", policyRules: editableRules });
+      const addRule = mock(async (rule: string) => ({
+        ok: true as const, rule, kind: "exact" as const, backupId: "fixture-backup",
+        warnings: [], runtimeConfirmed: false, diagnostics: [], inventory: {}
+      }));
+      const loadInventory = mock(async () => data);
+      const view = renderModels(data, { addModelPolicyRule: addRule, getModelInventory: loadInventory });
+
+      await userEvent.click(await view.findByRole("button", { name: "展开 Policy 规则" }));
+      await userEvent.click(view.getByRole("button", { name: "添加规则" }));
+      const dialog = within(view.getByRole("dialog"));
+      await userEvent.type(dialog.getByLabelText("规则"), "local/new-model");
+      await userEvent.click(dialog.getByRole("button", { name: "添加规则" }));
+      await waitFor(() => expect(addRule).toHaveBeenCalledTimes(1));
+      expect(await view.findByText("配置已保存，未取得最新视图；请点击「刷新」重试。")).toBeTruthy();
+      // 不自动重试写入，也不自动 GET inventory；后续读取交给用户手动刷新
+      expect(addRule).toHaveBeenCalledTimes(1);
+      expect(loadInventory).toHaveBeenCalledTimes(1);
     });
 
     test("添加规则被服务端拒绝时错误内联展示，对话框保持打开", async () => {
@@ -569,7 +612,7 @@ describe("runtime Web review regressions", () => {
       expect(addRule).toHaveBeenCalledTimes(1);
     });
 
-    test("删除 wildcard：确认框展示命中计数与影响文案，确认后携带 revision 调用 API、toast warnings 并重新加载", async () => {
+    test("删除 wildcard：确认框展示命中计数与影响文案，确认后携带 revision 调用 API、toast warnings 并应用写响应 inventory", async () => {
       const data = inventory([], {
         policyMode: "restricted",
         policyRevision: "v1:fixture",
@@ -577,7 +620,7 @@ describe("runtime Web review regressions", () => {
       });
       const warning = "删除后 2 个模型将失去策略放行";
       const remove = mock(async (value: string, expectedRevision: string) => ({
-        ok: true as const, value, removedCount: 1, backupId: "fixture-backup", warnings: [warning], runtimeConfirmed: true
+        ok: true as const, value, removedCount: 1, backupId: "fixture-backup", warnings: [warning], runtimeConfirmed: true, inventory: data
       }));
       const loadInventory = mock(async () => data);
       const view = renderModels(data, { removeModelPolicyRule: remove, getModelInventory: loadInventory });
@@ -592,7 +635,8 @@ describe("runtime Web review regressions", () => {
       await waitFor(() => expect(remove).toHaveBeenCalledWith("local/*", "v1:fixture"));
       expect(await view.findByText(/已删除规则 local\/\*/)).toBeTruthy();
       expect(await view.findByText(warning)).toBeTruthy();
-      await waitFor(() => expect(loadInventory.mock.calls.length).toBeGreaterThanOrEqual(2));
+      // O3：写后不再 GET inventory——写响应中的有效 v2 视图被直接消费
+      await waitFor(() => expect(loadInventory).toHaveBeenCalledTimes(1));
     });
 
     test("删除规则确认前重查 removable：规则变为不可删时禁用确认按钮", async () => {
@@ -742,6 +786,28 @@ describe("runtime Web review regressions", () => {
     reject(new Error("Inventory unavailable"));
     expect(await view.findByText("Inventory unavailable")).toBeTruthy();
     expect(view.queryByText("全部可用") === null).toBe(true);
+  });
+
+  test("乱序响应不能覆盖更新的页面结果：慢一轮的迟到 inventory 被丢弃", async () => {
+    const slowData = inventory([model("local/slow", { availability: "available", availabilityReasons: [] })]);
+    const fastData = inventory([model("local/fast", { availability: "available", availabilityReasons: [] })]);
+    let resolveSlow!: (data: ModelInventory) => void;
+    let calls = 0;
+    const getModelInventory = mock(() => {
+      calls += 1;
+      if (calls === 1) return new Promise<ModelInventory>((resolve) => { resolveSlow = resolve; });
+      return Promise.resolve(fastData);
+    });
+    const view = renderModels(inventory(), { getModelInventory });
+    // 首屏慢请求挂起；触发新一轮读取（快），先落地
+    await view.findByRole("button", { name: "刷新" });
+    await userEvent.click(view.getByRole("button", { name: "刷新" }));
+    expect(await view.findByText("local/fast")).toBeTruthy();
+    // 迟到的慢响应不得覆盖新一轮结果
+    resolveSlow(slowData);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    expect(view.queryByText("local/slow") === null).toBe(true);
+    expect(view.getByText("local/fast")).toBeTruthy();
   });
 
   test("状态徽章保留全部目录来源，策略允许不等于插件开启或运行可用", () => {

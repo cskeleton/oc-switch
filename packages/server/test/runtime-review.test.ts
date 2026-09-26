@@ -2,6 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import JSON5 from "json5";
 import { Hono } from "hono";
 import { upsertDisabledProviderState, type OcSwitchPaths, type OpenClawConfig, type PluginCatalogResult, type RuntimeModelSnapshot } from "@oc-switch/core";
 import { createApp } from "../src/app";
@@ -81,6 +82,29 @@ test("问题忽略跨服务实例持久化，不能忽略主模型或提交过�
   const dependency = (await request(restarted, "/api/model-attention")).json.pending.find((i: any) => i.ownerId === "ghost/gone");
   expect(dependency.canIgnore).toBe(false);
   expect((await request(restarted, "/api/model-attention/decision", "PATCH", { issueId: dependency.id, revision: dependency.revision, ignored: true })).response.status).toBe(400);
+});
+
+test("model-attention 每轮只解析一次 config（同请求消除两次 JSON5 解析）", async () => {
+  const ws = fixture();
+  const app = createApp(appOptions(ws.paths));
+  // context.ts 的 readConfig 以 JSON5.parse 属性调用解析 config；同模块单例 spy 可拦截。
+  // 用 config 内容特征（"providers" + "cpa/main"）计数，排除 state 文件解析。
+  const parseSpy = spyOn(JSON5, "parse");
+  const configParseCount = () =>
+    parseSpy.mock.calls.filter((call) => typeof call[0] === "string" && call[0].includes("\"providers\"") && call[0].includes("cpa/main")).length;
+  try {
+    const getBefore = configParseCount();
+    const report = (await request(app, "/api/model-attention")).json;
+    expect(configParseCount() - getBefore).toBe(1);
+    const ghost = report.pending.find((i: any) => i.ownerId === "ghost/gone");
+
+    const patchBefore = configParseCount();
+    const saved = await request(app, "/api/model-attention/decision", "PATCH", { issueId: ghost.id, revision: ghost.revision, ignored: true });
+    expect(saved.response.status).toBe(200);
+    expect(configParseCount() - patchBefore).toBe(1);
+  } finally {
+    parseSpy.mockRestore();
+  }
 });
 
 test("并发 inventory 共享异步探测，期间其他 HTTP 路由正常响应", async () => {

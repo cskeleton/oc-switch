@@ -144,6 +144,8 @@ describe("StalePolicyRefsCleanupDialog", () => {
 /** 完整真实形状的 ModelInventory fixture（AGENTS.md：不手搓缺字段 mock）。 */
 function cleanupInventoryFixture(): ModelInventory {
   return {
+    schemaVersion: 2,
+    pickerSource: "gateway",
     providers: [],
     models: [],
     plugins: [],
@@ -193,10 +195,10 @@ function configStatusFixture(): ConfigStatusReport {
 }
 
 describe("ModelsView 悬空引用清理入口（stale cleanup spec §6）", () => {
-  test("stale 集 ∩ exact 规则驱动入口；确认后单次批量调用并成功刷新 inventory 与 config-status", async () => {
+  test("stale 集 ∩ exact 规则驱动入口；确认后单次批量调用并应用写响应 inventory（不再 GET）", async () => {
     const getModelInventory = mock(async () => cleanupInventoryFixture());
     const getConfigStatus = mock(async () => configStatusFixture());
-    const batchRemoveModelPolicyRules = mock(async () => ({ ok: true as const, removedCount: 2, backupId: "b1", warnings: [] }));
+    const batchRemoveModelPolicyRules = mock(async () => ({ ok: true as const, removedCount: 2, backupId: "b1", warnings: [], inventory: cleanupInventoryFixture() }));
     const client = baseClient({ getModelInventory, getConfigStatus, batchRemoveModelPolicyRules });
 
     const { findByLabelText, findByRole, getByLabelText, queryByLabelText, getByText } = render(
@@ -218,9 +220,32 @@ describe("ModelsView 悬空引用清理入口（stale cleanup spec §6）", () =
     await userEvent.click(getByText("清理所选 (2)"));
 
     await waitFor(() => expect(batchRemoveModelPolicyRules).toHaveBeenCalledWith(["ghost/m1", "cpa/dangling"], "v1:cleanup"));
-    // 成功后双刷新：inventory 与 config-status 都被再次拉取（stale 集重算）
-    await waitFor(() => expect(getModelInventory).toHaveBeenCalledTimes(2));
-    expect(getConfigStatus.mock.calls.length).toBe(2);
+    // O3：写后不再 GET inventory（写响应中的有效 v2 视图被直接消费，GET 仍只有首屏一次）；
+    // config-status 被重算一次（stale 集来源，initial + 写后）
+    await waitFor(() => expect(getConfigStatus).toHaveBeenCalledTimes(2));
+    expect(getModelInventory).toHaveBeenCalledTimes(1);
+  });
+
+  test("批量清理写后确认失败（inventory 为 {}）：提示保存成功、未取得新视图，不自动 GET 重试", async () => {
+    const getModelInventory = mock(async () => cleanupInventoryFixture());
+    const getConfigStatus = mock(async () => configStatusFixture());
+    const batchRemoveModelPolicyRules = mock(async () => ({ ok: true as const, removedCount: 2, backupId: "b1", warnings: [], runtimeConfirmed: false, inventory: {} }));
+    const client = baseClient({ getModelInventory, getConfigStatus, batchRemoveModelPolicyRules });
+
+    const { findByLabelText, findByRole, findByText, getByText } = render(
+      <ToastProvider>
+        <ModelsView client={client} />
+      </ToastProvider>
+    );
+
+    await userEvent.click(await findByLabelText("展开 Policy 规则"));
+    await userEvent.click(await findByRole("button", { name: "清理悬空引用" }));
+    await userEvent.click(getByText("清理所选 (2)"));
+
+    await waitFor(() => expect(batchRemoveModelPolicyRules).toHaveBeenCalledTimes(1));
+    expect(await findByText("配置已保存，未取得最新视图；请点击「刷新」重试。")).toBeTruthy();
+    // 不自动 GET inventory：后续读取交给用户手动刷新
+    expect(getModelInventory).toHaveBeenCalledTimes(1);
   });
 
   test("stale 集为空时不显示清理入口", async () => {
@@ -244,5 +269,22 @@ describe("ModelsView 悬空引用清理入口（stale cleanup spec §6）", () =
     await userEvent.click(await findByLabelText("展开 Policy 规则"));
     await waitFor(() => expect(getConfigStatus).toHaveBeenCalled());
     expect(queryByRole("button", { name: /清理悬空引用/ })).toBeNull();
+  });
+
+  test("config-status 读取失败：明示「不可用」且不渲染清理入口（不伪装成没有悬空项）", async () => {
+    const getModelInventory = mock(async () => cleanupInventoryFixture());
+    const getConfigStatus = mock(async () => { throw new Error("config-status backend down"); });
+    const client = baseClient({ getModelInventory, getConfigStatus });
+
+    const { findByLabelText, findByText, queryByRole } = render(
+      <ToastProvider>
+        <ModelsView client={client} />
+      </ToastProvider>
+    );
+
+    await userEvent.click(await findByLabelText("展开 Policy 规则"));
+    // 明确「不可用」提示；清理入口保持禁写（不渲染），不回退逐条删除
+    expect(await findByText(/悬空引用检查不可用（config-status 读取失败）/)).toBeTruthy();
+    expect(queryByRole("button", { name: /清理悬空引用/ }) === null).toBe(true);
   });
 });

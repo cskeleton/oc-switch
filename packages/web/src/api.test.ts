@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ApiRequestError, createApiClient, isPolicyRevisionConflict } from "./api";
+import { ApiRequestError, createApiClient, inventoryFromWriteResponse, isPolicyRevisionConflict, parseModelInventory } from "./api";
 import type { ModelInventory } from "./api";
 
 describe("createApiClient", () => {
@@ -409,6 +409,7 @@ describe("插件 provider 字段透传", () => {
 function inventoryFixture(): ModelInventory {
   return {
     schemaVersion: 2,
+    pickerSource: "gateway",
     providers: [{
       providerId: "cpa",
       sources: ["config", "plugin-manifest"],
@@ -477,6 +478,26 @@ describe("runtime model inventory API client", () => {
   test("旧 inventory 协议不能恢复成逐模型假待办", async () => {
     const client = createApiClient({ baseUrl: "http://fixture", token: "fixture", fetchImpl: async () => new Response(JSON.stringify({ ...inventoryFixture(), schemaVersion: undefined })) });
     await expect(client.getModelInventory()).rejects.toThrow("版本不兼容");
+  });
+  test("pickerSource 缺失或非 gateway|inferred 视为版本不兼容", async () => {
+    // core 恒给出 pickerSource；缺失即旧后端/非法 DTO，不允许视图回退猜测
+    const missing = createApiClient({ baseUrl: "http://fixture", token: "fixture", fetchImpl: async () => new Response(JSON.stringify({ ...inventoryFixture(), pickerSource: undefined })) });
+    await expect(missing.getModelInventory()).rejects.toThrow("版本不兼容");
+    const bogus = createApiClient({ baseUrl: "http://fixture", token: "fixture", fetchImpl: async () => new Response(JSON.stringify({ ...inventoryFixture(), pickerSource: "picker" })) });
+    await expect(bogus.getModelInventory()).rejects.toThrow("版本不兼容");
+  });
+  test("parseModelInventory：行级 v2 布尔缺失即拒绝", () => {
+    const broken = { ...inventoryFixture(), models: inventoryFixture().models.map(m => ({ ...m, pickerVisible: undefined })) };
+    expect(() => parseModelInventory(broken)).toThrow("版本不兼容");
+  });
+  test("inventoryFromWriteResponse：确认失败回 {} / 缺字段 / 非法形状均识别为未取得（null），不抛错不自动重试", () => {
+    expect(inventoryFromWriteResponse({ inventory: {} })).toBeNull();
+    expect(inventoryFromWriteResponse({})).toBeNull();
+    expect(inventoryFromWriteResponse({ inventory: { schemaVersion: 1 } })).toBeNull();
+  });
+  test("inventoryFromWriteResponse：有效 v2 视图被消费", () => {
+    const next = inventoryFixture();
+    expect(inventoryFromWriteResponse({ inventory: next })?.summary.modelCount).toBe(1);
   });
   test("getModelInventory GET /api/model-inventory 并携带 Bearer", async () => {
     const calls: Request[] = [];

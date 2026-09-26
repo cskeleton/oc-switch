@@ -738,6 +738,41 @@ export interface RuntimeModelDiagnostic {
 /** GET /api/model-inventory 与 POST /api/model-inventory/refresh 的响应（inventory 本体，无包裹层）。 */
 export type ModelInventoryResponse = ModelInventory;
 
+/**
+ * v2 inventory 边界校验（GET / refresh / 写响应消费共用）。
+ * 行级 needsAttention / inactive / pickerVisible 必须为布尔，pickerSource 必须为 gateway | inferred
+ * （core 恒给出该字段）；非法 DTO 视为前后端版本不兼容，绝不回退为旧协议猜测。
+ */
+export function parseModelInventory(result: unknown): ModelInventory {
+  const inventory = result as Partial<ModelInventory> | null;
+  if (
+    !inventory ||
+    inventory.schemaVersion !== 2 ||
+    !Array.isArray(inventory.models) ||
+    inventory.models.some((row: ModelInventoryEntry) =>
+      !row || typeof row.needsAttention !== "boolean" || typeof row.inactive !== "boolean" || typeof row.pickerVisible !== "boolean"
+    ) ||
+    (inventory.pickerSource !== "gateway" && inventory.pickerSource !== "inferred")
+  ) {
+    throw new Error("前后端版本不兼容，请重启 oc-switch 后刷新；尚未根据旧数据生成待处理事项。");
+  }
+  return result as ModelInventory;
+}
+
+/**
+ * 从写响应取「写后确认 inventory」：仅当通过 v2 校验才视为有效新视图。
+ * 确认失败时服务端可能回 {} 或非法形状——写入已保存，此处返回 null（不抛错、不自动重试写入），
+ * 由调用方提示「保存成功、未取得最新视图」，后续读取交给用户手动刷新。
+ */
+export function inventoryFromWriteResponse(result: { inventory?: unknown }): ModelInventory | null {
+  if (result.inventory === undefined || result.inventory === null) return null;
+  try {
+    return parseModelInventory(result.inventory);
+  } catch {
+    return null;
+  }
+}
+
 export interface ModelInventory {
   schemaVersion?: 2;
   pickerSource?: "gateway" | "inferred";
@@ -764,6 +799,8 @@ export interface MutationResult {
   ok: true;
   backupId: string;
   diagnostics?: RuntimeModelDiagnostic[];
+  /** 写后确认得到的刷新 inventory；确认失败时服务端可能回 {}（由 inventoryFromWriteResponse 识别为未取得）。 */
+  inventory?: unknown;
 }
 
 /** PATCH /api/plugins/:pluginId/state 的响应：写入成功但运行时确认失败时 runtimeConfirmed=false（非 HTTP 失败）。 */
@@ -816,6 +853,8 @@ export interface BatchRemoveModelPolicyRulesResult {
   backupId: string | null;
   warnings: string[];
   runtimeConfirmed?: boolean;
+  /** 写后确认得到的刷新 inventory；确认失败时服务端可能回 {}（由 inventoryFromWriteResponse 识别为未取得）。 */
+  inventory?: unknown;
 }
 
 /** 结构化错误详情：批量删除守卫失败时 details.refs 携带触发违规的规则字符串。 */
@@ -879,9 +918,8 @@ export function createApiClient(options: ApiClientOptions) {
     }
     const result = await response.json();
     if (path === "/api/model-inventory" || path === "/api/model-inventory/refresh") {
-      if (result.schemaVersion !== 2 || !Array.isArray(result.models) || result.models.some((row: ModelInventoryEntry) => typeof row.needsAttention !== "boolean" || typeof row.inactive !== "boolean" || typeof row.pickerVisible !== "boolean")) {
-        throw new Error("前后端版本不兼容，请重启 oc-switch 后刷新；尚未根据旧数据生成待处理事项。");
-      }
+      // GET/refresh 与写响应消费同一校验：非法 DTO 视为版本不兼容，不得回退为旧告警逻辑
+      parseModelInventory(result);
     }
     return result as T;
   }

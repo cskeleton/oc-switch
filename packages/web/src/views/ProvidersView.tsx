@@ -1,6 +1,6 @@
 import { ModelAttentionPanel } from "../components/ModelAttentionPanel";
 import { Cpu, Edit3, KeyRound, ListChecks, MoreHorizontal, Plus, Power, PowerOff, RefreshCw, Search, Sparkles, Star, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GatewayApplyBanner } from "../components/GatewayApplyBanner";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { CustomProviderDialog } from "../components/CustomProviderDialog";
@@ -40,6 +40,7 @@ import type {
   CaseDuplicateGroup,
   EnvWriteVerification,
   GatewayEnvSyncResult,
+  ModelAttentionReport,
   ModelInventory,
   ModelSummary,
   ProviderSecretRefMigrationBlocker,
@@ -66,7 +67,6 @@ const PLUGIN_STATE_HINT = "插件启停由 OpenClaw 的 plugins.entries 控制�
 
 interface ProvidersViewProps {
   client: ApiClient;
-  onRefresh?: () => void;
   onOpenSettings?: () => void;
   onOpenModels?: () => void;
   requestedProviderId?: string | undefined;
@@ -74,7 +74,7 @@ interface ProvidersViewProps {
 }
 
 /** Provider 列表与管理：搜索 + 排序（已关闭沉底）+ 操作收敛为 2+1；插件 Provider 按插件分组展示 */
-export function ProvidersView({ client, onRefresh, onOpenSettings, onOpenModels, requestedProviderId, onRequestHandled }: ProvidersViewProps) {
+export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedProviderId, onRequestHandled }: ProvidersViewProps) {
   const toast = useToast();
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
   /** 统一 inventory 是状态事实来源；请求失败明确报错，不回落为旧插件语义。 */
@@ -125,21 +125,44 @@ export function ProvidersView({ client, onRefresh, onOpenSettings, onOpenModels,
   const [pluginKeyTarget, setPluginKeyTarget] = useState<ProviderSummary | null>(null);
   const [pluginKeyValue, setPluginKeyValue] = useState("");
   const [pluginKeyError, setPluginKeyError] = useState<string | null>(null);
+  /** 问题报告由本页统一读取（每轮一次），面板只消费 report 与事件回调 */
+  const [attention, setAttention] = useState<ModelAttentionReport>({ pending: [], ignored: [] });
+  const [attentionError, setAttentionError] = useState<string | null>(null);
+  /** 可选辅助读取（健康检查 / SecretRef 迁移预览 / 参数确认队列）失败信息：独立展示「未取得」，不假装成 0 项 */
+  const [auxErrors, setAuxErrors] = useState<{ health?: string; migrations?: string; queue?: string }>({});
 
-  const load = useCallback(async (propagateError = false) => {
+  /**
+   * 本页是写后刷新的唯一责任方：一轮并行读取全部必要端点。
+   * presetInventory 用于消费「写响应 / 显式重探测」已取得的 inventory，避免重复 GET。
+   * 每轮携带递增序号，迟到的旧响应不得覆盖更新的页面结果。
+   */
+  const loadSeq = useRef(0);
+  const load = useCallback(async (propagateError = false, presetInventory?: ModelInventory) => {
+    const seq = ++loadSeq.current;
     setError(null);
+    setAuxErrors({});
     try {
-      const [{ providers: list }, health, migrationPreview, queue, inventoryResult] = await Promise.all([
+      const [list, health, migrationPreview, queue, inventoryResult, attentionResult] = await Promise.all([
         client.getProviders().then(result => { setProviders(result.providers); return result; }),
-        client.getHealth().catch(() => null),
-        client.getProviderSecretRefMigrations().catch(() => null),
+        client.getHealth().catch((err: unknown) => { setAuxErrors(prev => ({ ...prev, health: err instanceof Error ? err.message : "读取失败" })); return null; }),
+        client.getProviderSecretRefMigrations().catch((err: unknown) => { setAuxErrors(prev => ({ ...prev, migrations: err instanceof Error ? err.message : "读取失败" })); return null; }),
         // 队列计数失败不阻塞主列表
-        client.getModelMetadataSyncQueue().catch(() => null),
+        client.getModelMetadataSyncQueue().catch((err: unknown) => { setAuxErrors(prev => ({ ...prev, queue: err instanceof Error ? err.message : "读取失败" })); return null; }),
         // 新读路径不可用时明确报错，不能以旧 config-only 列表冒充完整 inventory。
-        client.getModelInventory().then(result => { setInventory(result); return result; })
+        presetInventory ? Promise.resolve(presetInventory) : client.getModelInventory().then(result => { setInventory(result); return result; }),
+        client.getModelAttention().catch((err: unknown) => { setAttentionError(err instanceof Error ? err.message : "无法读取问题状态"); return null; })
       ]);
-      setProviders(list);
+      if (seq !== loadSeq.current) return;
+      setProviders(list.providers);
       setInventory(inventoryResult);
+      if (attentionResult) {
+        if (Array.isArray(attentionResult.pending) && Array.isArray(attentionResult.ignored)) {
+          setAttention(attentionResult);
+          setAttentionError(null);
+        } else {
+          setAttentionError("提醒协议不兼容，请重启服务。");
+        }
+      }
       setDuplicateGroups(health?.caseDuplicateGroups ?? []);
       setSecretRefMigrations(
         migrationPreview?.summary && Array.isArray(migrationPreview.candidates)
@@ -157,6 +180,7 @@ export function ProvidersView({ client, onRefresh, onOpenSettings, onOpenModels,
       }
       setQueueCounts(counts);
     } catch (err) {
+      if (seq !== loadSeq.current) return;
       setError(err instanceof Error ? err.message : "加载失败");
       // 写后刷新失败保留上次视图和插件写入结果；让调用方单独报告刷新失败。
       if (propagateError) throw err;
@@ -269,7 +293,6 @@ export function ProvidersView({ client, onRefresh, onOpenSettings, onOpenModels,
       toast.success(`Provider ${deleteTarget.id} 已删除`);
       for (const warning of result.warnings ?? []) toast.warning(warning);
       await load();
-      onRefresh?.();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "删除失败");
       setDeleteTarget(null);
@@ -325,7 +348,6 @@ export function ProvidersView({ client, onRefresh, onOpenSettings, onOpenModels,
       toast.success(`Provider ${providerId} 已更新`);
     }
     await load();
-    onRefresh?.();
   }
 
   async function confirmEdit() {
@@ -401,7 +423,6 @@ export function ProvidersView({ client, onRefresh, onOpenSettings, onOpenModels,
       const result = await client.syncProviderModelMetadata(row.id, {});
       toast.success(`已回填 ${result.updated.length}，待确认 ${result.queued.length}，未匹配 ${result.unmatched.length}，齐全跳过 ${result.skipped.length}`);
       await load();
-      onRefresh?.();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "同步参数失败");
     }
@@ -417,7 +438,6 @@ export function ProvidersView({ client, onRefresh, onOpenSettings, onOpenModels,
       setStateTarget(null);
       toast.success(stateTarget.disabled ? `Provider ${stateTarget.id} 已恢复` : `Provider ${stateTarget.id} 已关闭`);
       await load();
-      onRefresh?.();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "更新 Provider 状态失败");
       setStateTarget(null);
@@ -478,7 +498,6 @@ export function ProvidersView({ client, onRefresh, onOpenSettings, onOpenModels,
       }));
       showGatewayApply(result);
       await load();
-      onRefresh?.();
     } catch (err) {
       // 迁移确认分支失败时必须一并关掉确认框，否则错误被盖在弹窗下面看不到
       setPendingEnvConfirm(null);
@@ -499,7 +518,6 @@ export function ProvidersView({ client, onRefresh, onOpenSettings, onOpenModels,
         `已将 ${result.migratedProviderIds.length} 个 Provider API Key 引用迁移为 SecretRef；请重启 Gateway 使运行时快照生效。`
       );
       await load();
-      onRefresh?.();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "SecretRef 迁移失败");
       setShowSecretRefMigration(false);
@@ -645,6 +663,21 @@ export function ProvidersView({ client, onRefresh, onOpenSettings, onOpenModels,
 
       {error ? <p role="alert" className="mb-3 text-sm text-destructive">{error}</p> : null}
       {stateNotice ? <p role="status" className="mb-3 text-sm text-warning">{stateNotice}</p> : null}
+      {/* 可选辅助读取失败：明示「未取得」并提供重试，不阻塞主列表、不假装成 0 项 */}
+      {Object.keys(auxErrors).length > 0 ? (
+        <div role="status" className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-warning/30 bg-warning/[0.06] px-3 py-2 text-xs text-warning">
+          <span>
+            部分信息未取得：
+            {[
+              auxErrors.health ? "Provider 健康检查" : null,
+              auxErrors.migrations ? "SecretRef 迁移预览" : null,
+              auxErrors.queue ? "参数确认队列" : null
+            ].filter(Boolean).join("、")}
+            ，相关计数与提示暂不可用。
+          </span>
+          <Button variant="outline" size="sm" aria-label="重试辅助信息" onClick={() => void load()}>重试</Button>
+        </div>
+      ) : null}
       {/* 范围分段控件：当前使用 / 已停用 / 全部配置 */}
       <div role="tablist" aria-label="Provider 范围" className="mb-4 inline-flex w-full items-center gap-1 rounded-lg bg-muted p-1 sm:w-auto">
         {([['active', '当前使用'], ['disabled', `已停用 (${disabledCount})`], ['all', '全部配置']] as const).map(([value, label]) => (
@@ -665,7 +698,7 @@ export function ProvidersView({ client, onRefresh, onOpenSettings, onOpenModels,
           </button>
         ))}
       </div>
-      <div className="mb-3"><ModelAttentionPanel client={client} inventory={inventory} onChanged={() => load()} onConfigure={configureProvider} /></div>
+      <div className="mb-3"><ModelAttentionPanel client={client} inventory={inventory} report={attention} loadError={attentionError} onChanged={(next) => load(false, next)} onConfigure={configureProvider} /></div>
       {gatewayApply ? (
         <GatewayApplyBanner
           client={client}
@@ -771,7 +804,7 @@ export function ProvidersView({ client, onRefresh, onOpenSettings, onOpenModels,
             align: "right",
             wrap: "nowrap",
             className: "hidden md:table-cell",
-            render: (row) => manageCatalog || inventory?.pickerSource === undefined ? inventoryProviders.get(row.id.toLowerCase())?.policyAllowedModelCount ?? row.enabledModelCount : (inventory?.models ?? []).filter(model => model.pickerVisible && model.policyAllowed && model.providerId.toLowerCase() === row.id.toLowerCase()).length
+            render: (row) => manageCatalog ? inventoryProviders.get(row.id.toLowerCase())?.policyAllowedModelCount ?? row.enabledModelCount : (inventory?.models ?? []).filter(model => model.pickerVisible && model.policyAllowed && model.providerId.toLowerCase() === row.id.toLowerCase()).length
           },
           {
             key: "status",
@@ -814,7 +847,6 @@ export function ProvidersView({ client, onRefresh, onOpenSettings, onOpenModels,
               onSetPluginState={client.setPluginState}
               onMutated={async () => {
                 await load(true);
-                onRefresh?.();
               }}
               forceExpanded={focusedPlugin === plugin.id}
               renderProviderActions={(provider) => {
@@ -875,7 +907,6 @@ export function ProvidersView({ client, onRefresh, onOpenSettings, onOpenModels,
         onCancel={() => setModelTarget(null)}
         onChanged={() => {
           void load();
-          onRefresh?.();
         }}
       />
 
@@ -892,7 +923,6 @@ export function ProvidersView({ client, onRefresh, onOpenSettings, onOpenModels,
               : `已添加 ${addedCount} 个模型`
           );
           void load();
-          onRefresh?.();
         }}
       />
 
@@ -904,7 +934,6 @@ export function ProvidersView({ client, onRefresh, onOpenSettings, onOpenModels,
         onChanged={() => {
           // 只刷新数据不关框：对话框内已连续处理多项，关框只走 onClose
           void load();
-          onRefresh?.();
         }}
       />
 
@@ -924,7 +953,6 @@ export function ProvidersView({ client, onRefresh, onOpenSettings, onOpenModels,
           }));
           showGatewayApply(result);
           void load();
-          onRefresh?.();
         }}
       />
 

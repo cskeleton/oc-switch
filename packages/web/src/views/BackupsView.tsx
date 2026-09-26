@@ -9,11 +9,10 @@ import type { ApiClient, BackupEntry } from "../api";
 
 interface BackupsViewProps {
   client: ApiClient;
-  onRefresh?: () => void;
 }
 
 /** 备份时间线与回滚（默认按时间倒序） */
-export function BackupsView({ client, onRefresh }: BackupsViewProps) {
+export function BackupsView({ client }: BackupsViewProps) {
   const toast = useToast();
   const [backups, setBackups] = useState<BackupEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -44,7 +43,6 @@ export function BackupsView({ client, onRefresh }: BackupsViewProps) {
         ? "备份已恢复，Gateway 环境已同步；请重启 Gateway 使运行中进程加载恢复后的密钥。"
         : "备份已恢复。");
       await load();
-      onRefresh?.();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "恢复失败");
       setRestoreTarget(null);

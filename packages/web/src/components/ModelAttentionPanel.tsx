@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import type { ApiClient, ModelAttentionIssue, ModelAttentionReport, ModelInventory } from "../api";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
@@ -8,13 +8,20 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 interface Props {
   client: ApiClient;
   inventory: ModelInventory | null;
-  onChanged?: () => void | Promise<void>;
+  /** 父页面取得的同一轮问题报告；面板不再自行请求 attention（每轮只读一次由父页面保证） */
+  report: ModelAttentionReport;
+  /** 父页面读取 attention 失败的展示信息（可选） */
+  loadError?: string | null;
+  /**
+   * 面板动作完成后由父页面统一刷新一轮（inventory + attention + 必要 config-status）。
+   * 显式「重新探测」会把 refresh 返回的 inventory 透传进来，父页面直接消费、不再 GET。
+   */
+  onChanged?: (refreshedInventory?: ModelInventory) => void | Promise<void>;
   onConfigure?: ((providerId: string) => void) | undefined;
 }
 
 /** 三个页面共享同一问题源与操作器；不会从 availability 猜测待办。 */
-export function ModelAttentionPanel({ client, inventory, onChanged, onConfigure }: Props) {
-  const [report, setReport] = useState<ModelAttentionReport>({ pending: [], ignored: [] });
+export function ModelAttentionPanel({ client, inventory, report, loadError, onChanged, onConfigure }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [showIgnored, setShowIgnored] = useState(false);
   const [target, setTarget] = useState<ModelAttentionIssue | null>(null);
@@ -23,15 +30,6 @@ export function ModelAttentionPanel({ client, inventory, onChanged, onConfigure 
   const [busy, setBusy] = useState(false);
   const [cleanupMetadata, setCleanupMetadata] = useState(false);
   const [replacement, setReplacement] = useState("");
-  const load = useCallback(async () => {
-    if (inventory?.schemaVersion !== 2) return;
-    try {
-      const next = await client.getModelAttention();
-      if (!Array.isArray(next.pending) || !Array.isArray(next.ignored)) throw new Error("提醒协议不兼容，请重启服务。");
-      setReport(next); setError(null);
-    } catch (err) { setError(err instanceof Error ? err.message : "无法读取问题状态"); }
-  }, [client, inventory]);
-  useEffect(() => { void load(); }, [load]);
   if (inventory?.schemaVersion !== 2) return null;
 
   const ignored = target ? report.ignored.some(i => i.id === target.id) : false;
@@ -44,19 +42,25 @@ export function ModelAttentionPanel({ client, inventory, onChanged, onConfigure 
     setBusy(true); setError(null); setNotice(null);
     try {
       if (action === "ignore" || action === "restore") {
-        setReport(await client.setAttentionIgnored(target, action === "ignore"));
+        await client.setAttentionIgnored(target, action === "ignore");
+        setTarget(null);
+        // 决定只改提醒状态：由父页面统一重取一轮报告
+        await onChanged?.();
+      } else if (action === "retry") {
+        const next = await client.refreshModelInventory();
+        setTarget(null);
+        // 重探测已返回刷新后的 inventory：透传给父页面消费，避免再发一次 GET
+        await onChanged?.(next);
       } else {
         let confirmation: boolean | undefined;
-        if (action === "retry") await client.refreshModelInventory();
-        else if (action === "replace") { if (!replacement) throw new Error("请选择新的主模型"); await client.setPrimary(replacement); }
+        if (action === "replace") { if (!replacement) throw new Error("请选择新的主模型"); await client.setPrimary(replacement); }
         else if (target.ownerType === "plugin") confirmation = (await client.setPluginState(target.ownerId, false, cleanupMetadata)).runtimeConfirmed;
         else if (target.ownerType === "provider") confirmation = (await client.patchProviderState(target.ownerId, false, cleanupMetadata)).runtimeConfirmed;
         else await client.removeModelPolicyExactRef(target.refs[0]!, cleanupMetadata);
         if (confirmation === false) setNotice("配置已保存，等待 Gateway 应用/核验；请稍后刷新。API Key 已保留。");
-        await load();
+        setTarget(null);
+        await onChanged?.();
       }
-      setTarget(null);
-      await onChanged?.();
     } catch (err) { setError(err instanceof Error ? err.message : "操作失败"); }
     finally { setBusy(false); }
   }
@@ -84,10 +88,10 @@ export function ModelAttentionPanel({ client, inventory, onChanged, onConfigure 
           )}
         >已忽略 {report.ignored.length}</button>
       </div>
-      {report.pending.length === 0 && !error ? <span className="text-xs text-muted-foreground">没有需要处理的模型问题</span> : null}
+      {report.pending.length === 0 && !loadError ? <span className="text-xs text-muted-foreground">没有需要处理的模型问题</span> : null}
     </div>
     {notice ? <p role="status" className="text-sm text-warning">{notice}</p> : null}
-    {error && !target ? <p role="alert" className="text-sm text-danger">{error}</p> : null}
+    {loadError && !target ? <p role="alert" className="text-sm text-danger">{loadError}</p> : null}
     {expanded ? <div className="divide-y divide-border rounded-md border border-border">
       {(showIgnored ? report.ignored : report.pending).map(issue => <div key={issue.id} className="flex items-center justify-between gap-3 px-3 py-2">
         <div className="min-w-0"><p className="break-words text-sm font-medium">{issue.title}</p><p className="text-xs text-muted-foreground">{issue.refs.length ? `影响 ${issue.refs.length} 个模型选项` : "运行探测"}{showIgnored ? " · 仅停止提醒，IM 未改变" : ""}</p></div>

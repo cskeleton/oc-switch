@@ -13,11 +13,10 @@ import type { ApiClient, ConfigDiffSummary, EnvPreview, PresetEntry } from "../a
 
 interface PresetsViewProps {
   client: ApiClient;
-  onRefresh?: () => void;
 }
 
 /** 预设管理：从预设添加 Provider、导入/导出 */
-export function PresetsView({ client, onRefresh }: PresetsViewProps) {
+export function PresetsView({ client }: PresetsViewProps) {
   const toast = useToast();
   const [presets, setPresets] = useState<PresetEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -48,7 +47,6 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
       await client.importPresets();
       toast.success("当前配置已导入为自定义预设。");
       await load();
-      onRefresh?.();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "导入失败");
     }
@@ -95,7 +93,6 @@ export function PresetsView({ client, onRefresh }: PresetsViewProps) {
         fallback: `Provider ${selectedPreset} 已添加`
       }));
       await load();
-      onRefresh?.();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "添加失败");
     }

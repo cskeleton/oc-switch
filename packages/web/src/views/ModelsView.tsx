@@ -1,7 +1,7 @@
 import { ModelAttentionPanel } from "../components/ModelAttentionPanel";
 import { StalePolicyRefsCleanupDialog, type StalePolicyRef } from "../components/StalePolicyRefsCleanupDialog";
 import { Edit3, Inbox, Plus, RefreshCw, Search, Star, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useState, useMemo } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { DataTable } from "../components/DataTable";
 import { EmptyState } from "../components/EmptyState";
 import { ModelDialog } from "../components/ModelDialog";
@@ -27,9 +27,11 @@ import { Pill } from "../components/ui/pill";
 import { Switch } from "../components/ui/switch";
 import { cn } from "../lib/utils";
 import {
+  inventoryFromWriteResponse,
   isPolicyRevisionConflict,
   type ApiClient,
   type ConfigStatusReport,
+  type ModelAttentionReport,
   type ModelInventory,
   type ModelInventoryEntry,
   type ModelPolicyRuleEntry,
@@ -115,6 +117,11 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
   const [showPolicyRules, setShowPolicyRules] = useState(false);
   /** config-status 报告：悬空策略引用清理（stale cleanup spec §6）的 stale 集来源 */
   const [configStatus, setConfigStatus] = useState<ConfigStatusReport | null>(null);
+  /** config-status 读取失败：清理入口保持禁写并明示「不可用」，不伪装成「没有悬空项」 */
+  const [configStatusUnavailable, setConfigStatusUnavailable] = useState(false);
+  /** 问题报告由本页统一读取（每轮一次），面板只消费 report 与事件回调 */
+  const [attention, setAttention] = useState<ModelAttentionReport>({ pending: [], ignored: [] });
+  const [attentionError, setAttentionError] = useState<string | null>(null);
   /** 「清理悬空引用」对话框开关 */
   const [staleCleanupOpen, setStaleCleanupOpen] = useState(false);
   const [removeMetadata, setRemoveMetadata] = useState(false);
@@ -122,38 +129,77 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
   /** 添加 policy 规则对话框的受控输入（格式由服务端权威校验） */
   const [policyRuleInput, setPolicyRuleInput] = useState("");
 
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      const next = await client.getModelInventory();
-      setInventory(next);
-      // 悬空引用清理入口仅在 restricted 且有规则时需要 config-status；失败安全回退为隐藏入口
-      if (next.policyMode === "restricted" && next.policyRules.length > 0) {
-        try {
-          setConfigStatus(await client.getConfigStatus());
-        } catch {
-          setConfigStatus(null);
-        }
-      } else {
+  /** config-status 只按当前 inventory 的需要读取；失败标记为不可用（保留禁写，不伪装成无悬空项） */
+  const configStatusSeq = useRef(0);
+  const refreshConfigStatus = useCallback(async (next: ModelInventory) => {
+    const seq = ++configStatusSeq.current;
+    if (next.policyMode === "restricted" && next.policyRules.length > 0) {
+      try {
+        const report = await client.getConfigStatus();
+        // 乱序响应：新一轮已启动时，旧 config-status 不得覆盖
+        if (seq !== configStatusSeq.current) return;
+        setConfigStatus(report);
+        setConfigStatusUnavailable(false);
+      } catch {
+        if (seq !== configStatusSeq.current) return;
         setConfigStatus(null);
+        setConfigStatusUnavailable(true);
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "加载失败");
+    } else {
+      setConfigStatus(null);
+      setConfigStatusUnavailable(false);
     }
   }, [client]);
+
+  /** 写后已取得有效新视图时应用：刷新 config-status（stale 集来源），不再 GET inventory */
+  const applyWriteInventory = useCallback(async (next: ModelInventory) => {
+    setInventory(next);
+    await refreshConfigStatus(next);
+  }, [refreshConfigStatus]);
+
+  /**
+   * 本页是刷新的唯一责任方：一轮并行读取 inventory + attention，再按需读 config-status。
+   * presetInventory 用于消费「写响应 / 显式重探测」已取得的 inventory，避免重复 GET。
+   * 每轮携带递增序号，迟到的旧响应不得覆盖更新的页面结果。
+   */
+  const loadSeq = useRef(0);
+  const load = useCallback(async (presetInventory?: ModelInventory) => {
+    const seq = ++loadSeq.current;
+    setError(null);
+    try {
+      const [next, attentionResult] = await Promise.all([
+        presetInventory ? Promise.resolve(presetInventory) : client.getModelInventory(),
+        client.getModelAttention().catch((err: unknown) => { setAttentionError(err instanceof Error ? err.message : "无法读取问题状态"); return null; })
+      ]);
+      if (seq !== loadSeq.current) return;
+      setInventory(next);
+      if (attentionResult) {
+        if (Array.isArray(attentionResult.pending) && Array.isArray(attentionResult.ignored)) {
+          setAttention(attentionResult);
+          setAttentionError(null);
+        } else {
+          setAttentionError("提醒协议不兼容，请重启服务。");
+        }
+      }
+      await refreshConfigStatus(next);
+    } catch (err) {
+      if (seq !== loadSeq.current) return;
+      setError(err instanceof Error ? err.message : "加载失败");
+    }
+  }, [client, refreshConfigStatus]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  /** 强制重探测：POST /api/model-inventory/refresh 返回刷新后的完整 inventory */
+  /** 强制重探测：POST /api/model-inventory/refresh 返回刷新后的完整 inventory，一轮内顺带刷新 attention/config-status */
   async function refreshProbe() {
     if (refreshing || busy) return;
     setRefreshing(true);
     setError(null);
     try {
       const next = await client.refreshModelInventory();
-      setInventory(next);
+      await load(next);
       if (next.diagnostics.length === 0 && next.summary.unknownCount === 0) toast.success("已重新探测运行时模型状态");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "刷新失败");
@@ -304,10 +350,13 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
     setActionError(null);
     const cleanMetadata = removeMetadata && pendingEntry?.referenceSources.includes("legacy-metadata") === true;
     try {
-      await client.removeModelPolicyExactRef(pendingAction.ref, cleanMetadata);
+      const result = await client.removeModelPolicyExactRef(pendingAction.ref, cleanMetadata);
       setPendingAction(null);
       toast.success(`已删除 ${pendingAction.ref} 的 policy 引用（legacy metadata ${cleanMetadata ? "已清理" : "保留"}）`);
-      await load();
+      // 写响应带有效 inventory 时直接消费；确认失败仅提示「保存成功、未取得新视图」，不自动重试
+      const next = inventoryFromWriteResponse(result);
+      if (next) await applyWriteInventory(next);
+      else toast.warning("配置已保存，未取得最新视图；请点击「刷新」重试。");
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "删除引用失败");
     } finally {
@@ -315,7 +364,7 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
     }
   }
 
-  /** 添加 policy 规则：exact/wildcard 由服务端权威识别；错误内联，成功 toast 并刷新 */
+  /** 添加 policy 规则：exact/wildcard 由服务端权威识别；错误内联，成功 toast 并应用写响应 inventory */
   async function confirmAddPolicyRule() {
     if (pendingAction?.kind !== "add-policy-rule" || busy) return;
     const rule = policyRuleInput.trim();
@@ -327,7 +376,9 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
       setPendingAction(null);
       toast.success(`已添加${result.kind === "wildcard" ? "通配" : "精确"}规则 ${result.rule}（只改 modelPolicy.allow）`);
       for (const warning of result.warnings ?? []) toast.warning(warning);
-      await load();
+      const next = inventoryFromWriteResponse(result);
+      if (next) await applyWriteInventory(next);
+      else toast.warning("配置已保存，未取得最新视图；请点击「刷新」重试。");
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "添加规则失败");
     } finally {
@@ -369,7 +420,9 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
       toast.success(`已删除${result.removedCount > 1 ? ` ${result.removedCount} 条相同` : ""}规则 ${value}（只改 modelPolicy.allow）`);
       for (const warning of result.warnings ?? []) toast.warning(warning);
       if (result.runtimeConfirmed === false) toast.warning("配置已保存，运行时未确认");
-      await load();
+      const next = inventoryFromWriteResponse(result);
+      if (next) await applyWriteInventory(next);
+      else toast.warning("配置已保存，未取得最新视图；请点击「刷新」重试。");
     } catch (err) {
       setActionError(isPolicyRevisionConflict(err)
         ? "策略已变化，请刷新后重新核对规则再试。"
@@ -393,7 +446,9 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
       toast.success(`已把规则 ${pendingAction.ref} 替换为 ${result.rule}（只改 modelPolicy.allow）`);
       for (const warning of result.warnings ?? []) toast.warning(warning);
       if (result.runtimeConfirmed === false) toast.warning("配置已保存，运行时未确认");
-      await load();
+      const next = inventoryFromWriteResponse(result);
+      if (next) await applyWriteInventory(next);
+      else toast.warning("配置已保存，未取得最新视图；请点击「刷新」重试。");
     } catch (err) {
       setActionError(isPolicyRevisionConflict(err)
         ? "策略已变化，请刷新后重新核对规则再试。"
@@ -408,10 +463,12 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
     setBusy(pendingEntry.ref);
     setActionError(null);
     try {
-      await client.materializeRuntimeModel(pendingEntry.ref, { id: pendingEntry.modelId, enabled: false });
+      const result = await client.materializeRuntimeModel(pendingEntry.ref, { id: pendingEntry.modelId, enabled: false });
       setPendingAction(null);
       toast.success(`已把 ${pendingEntry.ref} 补入 Provider ${pendingEntry.providerId} 的本地目录`);
-      await load();
+      const next = inventoryFromWriteResponse(result);
+      if (next) await applyWriteInventory(next);
+      else toast.warning("配置已保存，未取得最新视图；请点击「刷新」重试。");
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "补全配置失败");
     } finally {
@@ -442,9 +499,10 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
     }
   }
 
-  // 左侧 Provider 导航：未关闭在前、已关闭沉底，组内按 id localeCompare
+  // 左侧 Provider 导航：未关闭在前、已关闭沉底，组内按 id localeCompare。
+  // pickerVisible 为 v2 必填布尔（API 边界已校验），不再回退猜测。
   const providerIds = useMemo(() => {
-    const providers = (inventory?.providers ?? []).filter(provider => manageCatalog || inventory?.pickerSource === undefined || (inventory?.models ?? []).some(model => model.providerId.toLowerCase() === provider.providerId.toLowerCase() && (model.pickerVisible ?? true)));
+    const providers = (inventory?.providers ?? []).filter(provider => manageCatalog || (inventory?.models ?? []).some(model => model.providerId.toLowerCase() === provider.providerId.toLowerCase() && model.pickerVisible));
     const disabledIds = new Set(providers.filter((p) => p.disabled).map((p) => p.providerId));
     const enabled = providers.filter((p) => !disabledIds.has(p.providerId)).map((p) => p.providerId).sort((a, b) => a.localeCompare(b));
     const disabled = providers.filter((p) => disabledIds.has(p.providerId)).map((p) => p.providerId).sort((a, b) => a.localeCompare(b));
@@ -461,10 +519,10 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
     return providerIds.filter((pId) => pId.toLowerCase().includes(normalized));
   }, [providerIds, providerQuery]);
 
-  /** 默认完整呈现选择器选项；管理视图另外显示闲置目录，问题行集中在待处理区。 */
+  /** 默认完整呈现选择器选项（pickerVisible 为 v2 必填布尔，非法 DTO 已在 API 边界拒绝）；管理视图另外显示闲置目录，问题行集中在待处理区。 */
   const selectableModels = useMemo(() => {
     const models = inventory?.models ?? [];
-    return models.filter((model) => manageCatalog ? !model.needsAttention : (model.pickerVisible ?? model.availability === "available"));
+    return models.filter((model) => manageCatalog ? !model.needsAttention : model.pickerVisible);
   }, [inventory, manageCatalog]);
 
   const providerCounts = useMemo(() => {
@@ -671,7 +729,7 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
           </>
         }
       />
-      <ModelAttentionPanel client={client} inventory={inventory} onChanged={load} onConfigure={onOpenProviders ? id => onOpenProviders(id) : undefined} />
+      <ModelAttentionPanel client={client} inventory={inventory} report={attention} loadError={attentionError} onChanged={(next) => load(next)} onConfigure={onOpenProviders ? id => onOpenProviders(id) : undefined} />
       {/* 主体：左 Provider 导航 + 右模型区段 */}
       <div className="flex flex-col md:flex-row gap-6">
         {/* Left Column: Provider List */}
@@ -854,6 +912,12 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
               staleRefs={staleRefs}
               onCleanupStaleRefs={() => setStaleCleanupOpen(true)}
             />
+            {/* config-status 读取失败：清理入口保持禁写并明示不可用，不伪装成「没有悬空项」，也不回退逐条删除 */}
+            {configStatusUnavailable ? (
+              <p role="status" className="mt-2 text-xs text-warning">
+                悬空引用检查不可用（config-status 读取失败）；「清理悬空引用」入口已禁用，请点击「刷新」重试。
+              </p>
+            ) : null}
           </div>
         ) : null}
       </section>
@@ -1002,14 +1066,17 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
         </DialogContent>
       </Dialog>
 
-      {/* 悬空策略引用批量清理（stale cleanup spec §6）：确认冻结 revision 单次批量调用；成功刷新 inventory 与 config-status */}
+      {/* 悬空策略引用批量清理（stale cleanup spec §6）：确认冻结 revision 单次批量调用；成功应用写响应 inventory 并重算 config-status */}
       <StalePolicyRefsCleanupDialog
         open={staleCleanupOpen}
         refs={staleRefs}
         policyRevision={inventory?.policyRevision}
         client={client}
         onCancel={() => setStaleCleanupOpen(false)}
-        onChanged={() => void load()}
+        onChanged={(next) => {
+          if (next) void applyWriteInventory(next);
+          else toast.warning("配置已保存，未取得最新视图；请点击「刷新」重试。");
+        }}
       />
 
       <ConfirmDialog

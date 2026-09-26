@@ -2,7 +2,7 @@ import "./test-setup.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "./App";
 import { DiffSummary } from "./components/DiffSummary";
@@ -39,7 +39,12 @@ function mockClient(overrides: Partial<ApiClient> = {}): ApiClient {
     token: "test",
     fetchImpl: async () => new Response(JSON.stringify({ ok: true }), { status: 200 })
   });
-  return { ...base, getModelInventory: async () => inventoryFixture(), ...overrides };
+  return {
+    ...base,
+    getModelInventory: async () => inventoryFixture(),
+    getModelAttention: async () => ({ pending: [], ignored: [] }),
+    ...overrides
+  };
 }
 
 /** ProvidersView 的操作反馈走 toast（useToast 需要 ToastProvider），测试统一包裹 */
@@ -305,6 +310,8 @@ describe("ModelsView", () => {
     searchView.unmount();
 
     const filterView = renderModelsView(client);
+    // 已停用的非保护模型不在 IM 选项（pickerVisible=false，core 语义）；管理目录视图保留全部目录行
+    await userEvent.click(await filterView.findByRole("button", { name: "管理配置目录" }));
     await userEvent.click(await filterView.findAllByText(/^nvidia/).then((nodes) => nodes.find((node) => node.closest("nav"))!));
     expect(await filterView.findByText("nvidia/llama-3")).toBeTruthy();
     await userEvent.click(await filterView.findAllByText(/^minimax-portal/).then((nodes) => nodes.find((node) => node.closest("nav"))!));
@@ -341,6 +348,8 @@ describe("ModelsView", () => {
 
     const { findByLabelText, findByRole, findByText, getByText } = renderModelsView(mockClient({ getModelInventory: async () => inventory, getModels: async () => ({ models: [] }), createModel }));
 
+    // 空目录的 Provider 不在 IM 选项导航（pickerVisible 无命中）；管理目录视图保留全部 config Provider
+    await userEvent.click(await findByText("管理配置目录"));
     await userEvent.click(await findByText("添加模型"));
     await userEvent.selectOptions(await findByLabelText("Provider"), "nvidia");
     await userEvent.type(await findByLabelText("Model ID"), "deepseek-ai/deepseek-v4-pro");
@@ -488,6 +497,8 @@ describe("ModelsView", () => {
 
     const { findByLabelText, findByText, getByText } = renderModelsView(mockClient({ getModelInventory: async () => inventory, getModels: async () => ({ models: [] }), createModel }));
 
+    // 空目录的 Provider 不在 IM 选项导航；管理目录视图保留全部 config Provider
+    await userEvent.click(await findByText("管理配置目录"));
     await userEvent.click(await findByText("添加模型"));
     await userEvent.type(await findByLabelText("Model ID"), "bad-window");
     await userEvent.type(await findByLabelText("原生上下文窗口"), "abc");
@@ -512,8 +523,10 @@ describe("ModelsView", () => {
       ]
     });
 
-    const { findByLabelText, findAllByText } = renderModelsView(mockClient({ getModelInventory: async () => inventory, getModels: async () => ({ models: [] }) }));
+    const { findByLabelText, findAllByText, findByRole } = renderModelsView(mockClient({ getModelInventory: async () => inventory, getModels: async () => ({ models: [] }) }));
 
+    // 已关闭 Provider 不在 IM 选项导航；管理目录视图显示「已关闭」后缀，添加模型入口禁用
+    await userEvent.click(await findByRole("button", { name: "管理配置目录" }));
     expect((await findAllByText(/已关闭/)).length).toBeGreaterThan(0);
     // Provider 已关闭：capability 拒绝普通开关（不渲染），添加模型入口禁用
     expect(await findByLabelText("添加模型", { selector: "button" })).toBeTruthy();
@@ -531,9 +544,11 @@ describe("ModelsView", () => {
         })]
       });
 
-      const { queryByLabelText, findByLabelText, findByText } = renderModelsView(mockClient({ getModelInventory: async () => inventory, getModels: async () => ({ models: [] }) }));
+      const { queryByLabelText, findByLabelText, findByRole, findByText } = renderModelsView(mockClient({ getModelInventory: async () => inventory, getModels: async () => ({ models: [] }) }));
 
-      // disabled Provider 下：capability 拒绝 → 普通启停开关一律不渲染；添加模型入口禁用
+      // disabled Provider 下：capability 拒绝 → 普通启停开关一律不渲染；添加模型入口禁用。
+      // 已停用模型不在 IM 选项（pickerVisible=false），须在管理目录视图查看行级提示
+      await userEvent.click(await findByRole("button", { name: "管理配置目录" }));
       expect(queryByLabelText(/启用 cpa\/m2/)).toBeNull();
       expect((await findByLabelText("添加模型") as HTMLButtonElement).disabled).toBe(true);
       if (selectionSource === "policy-wildcard") {
@@ -602,6 +617,11 @@ describe("ProvidersView", () => {
                 containsPrimary: true
               })
             ]
+          }),
+          // 完整 v2 inventory：策略允许列按 pickerVisible && policyAllowed 的模型行计数（=1）
+          getModelInventory: async () => legacyAsInventory({
+            providers: [providerSummary({ id: "nvidia", modelCount: 2, containsPrimary: true })],
+            models: [modelSummary({ ref: "nvidia/deepseek-ai/deepseek-v4-flash" })]
           })
         }));
 
@@ -1515,6 +1535,34 @@ describe("ProvidersView", () => {
     await userEvent.click(await findByLabelText("同步参数 nvidia"));
     await waitFor(() => expect(syncProviderModelMetadata).toHaveBeenCalledWith("nvidia", {}));
     await findByText(/已回填 1/);
+  });
+
+  test("辅助读取失败独立展示「未取得」与重试，不阻塞主列表也不假装成 0 项", async () => {
+    const getProviders = mock(async () => ({ providers: [providerSummary({ id: "nvidia" })] }));
+    let healthy = false;
+    const getHealth = mock(async () => {
+      if (!healthy) throw new Error("health backend down");
+      return { caseDuplicateGroups: [], summary: { duplicateGroupCount: 0, affectedProviderCount: 0, affectedAllowlistCount: 0 } };
+    });
+    const getModelMetadataSyncQueue = mock(async () => {
+      if (!healthy) throw new Error("queue backend down");
+      return { items: [] };
+    });
+    const client = mockClient({ getProviders, getHealth, getModelMetadataSyncQueue });
+    const { findByText, queryByText, getByRole } = renderProvidersView(client);
+
+    // 主列表照常渲染；失败区域明示「未取得」，列出受影响区块
+    expect(await findByText("nvidia", { exact: true })).toBeTruthy();
+    const banner = await findByText(/部分信息未取得：/);
+    expect(banner.textContent).toContain("Provider 健康检查");
+    expect(banner.textContent).toContain("参数确认队列");
+    expect(banner.textContent).not.toContain("SecretRef 迁移预览");
+
+    // 重试：后端恢复后 banner 消失，主列表仍在
+    healthy = true;
+    await userEvent.click(getByRole("button", { name: "重试辅助信息" }));
+    await waitFor(() => expect(queryByText(/部分信息未取得：/) === null).toBe(true));
+    expect(await findByText("nvidia", { exact: true })).toBeTruthy();
   });
 
   test("providers view shows pending queue count and opens queue dialog; accept applies candidate and keeps dialog open", async () => {
@@ -2504,6 +2552,76 @@ describe("App shell", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  test("Provider 写后每端点至多请求一次，业务刷新不发 /api/meta（真实 App 组合计数）", async () => {
+    const counts: Record<string, number> = {};
+    const flags = { nvidiaDisabled: false };
+    globalThis.fetch = countingFetchRouter(counts, flags) as unknown as typeof fetch;
+    try {
+      window.sessionStorage.setItem("oc-switch-token", "token");
+      const app = render(<App />);
+      await app.findByTestId("dashboard-view");
+      // 桌面侧栏与移动端 tab 同名，取侧栏导航
+      await userEvent.click(app.getAllByRole("button", { name: "服务商" }).find((button) => button.closest("aside"))!);
+      await app.findByLabelText("关闭 Provider nvidia");
+      // 切到「全部配置」：关闭后行仍留在列表（状态翻转为「恢复」），作为写后刷新轮落地的信号
+      await userEvent.click(app.getByRole("tab", { name: "全部配置" }));
+      await app.findByLabelText("关闭 Provider nvidia");
+
+      // Providers 页挂载完成后的请求基线（含 Dashboard 首屏读取）
+      const baseline = { ...counts };
+
+      await userEvent.click(app.getByLabelText("关闭 Provider nvidia"));
+      await userEvent.click(await app.findByRole("button", { name: "确认" }));
+      await app.findByText("Provider nvidia 已关闭");
+      // 等写后刷新轮真正落地（状态行变为「恢复」）再计数，避免在刷新完成前断言
+      await app.findByLabelText("恢复 Provider nvidia");
+      // 再等一拍：旧实现会在此刻重建 client、重跑 /api/meta 并整页重挂载触发第二轮读取，
+      // 需要给这些 effect 落定时间，计数断言才能区分「一轮刷新」与「重复刷新」
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 200)); });
+
+      // O1：写后由页面自行刷新一轮——/api/meta 不得再次请求（不重建连接、不重跑握手）；
+      // 每个必要读端点相对基线至多新增一次（一轮刷新），不得出现第二轮重复读取
+      expect(counts["/api/meta"]).toBe(baseline["/api/meta"]);
+      for (const endpoint of Object.keys(counts)) {
+        expect(counts[endpoint]).toBeLessThanOrEqual((baseline[endpoint] ?? 0) + 1);
+      }
+      // 写只发生一次
+      expect(counts["/api/providers/nvidia/state"]).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("旧协议阻断页面，显式重试只重跑握手、通过后进入页面", async () => {
+    const counts: Record<string, number> = {};
+    let protocolVersion = 1;
+    const router = countingFetchRouter(counts);
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const response = await router(input, init);
+      // 首次握手返回旧协议
+      if (String(input).includes("/api/meta") && protocolVersion === 1) {
+        return new Response(JSON.stringify({ protocolVersion: 1, instanceId: "old", startedAt: "t" }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return response;
+    }) as unknown as typeof fetch;
+    try {
+      window.sessionStorage.setItem("oc-switch-token", "token");
+      const app = render(<App />);
+      // 旧协议：页面被门禁阻断，提示无法确认服务版本（不渲染任何业务页面）
+      expect(await app.findByText("无法确认服务版本。请重启 oc-switch 后刷新；依赖新版状态的操作暂不可用。")).toBeTruthy();
+      expect(app.queryByTestId("dashboard-view")).toBeNull();
+      const metaBefore = counts["/api/meta"] ?? 0;
+
+      // 显式重试：只重跑连接握手（不重建 client、不刷新业务数据）
+      protocolVersion = 2;
+      await userEvent.click(app.getByRole("button", { name: "重试" }));
+      await app.findByTestId("dashboard-view");
+      expect(counts["/api/meta"]).toBe(metaBefore + 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
 
 /** 预置「记住密码 + 自动登录」的持久化登录态（模拟新的浏览器会话） */
@@ -2527,6 +2645,49 @@ function okStatusFetch() {
       { headers: { "content-type": "application/json" } }
     )
   );
+}
+
+/**
+ * 按路由回放的计数 fetch mock（O1 组合测试用）：
+ * 每个端点返回真实形状的最小载荷，并按 pathname 计数。
+ * flags.nvidiaDisabled 由 PATCH /api/providers/nvidia/state 置位，模拟写后状态变化。
+ */
+function countingFetchRouter(counts: Record<string, number>, flags: { nvidiaDisabled: boolean } = { nvidiaDisabled: false }) {
+  const bump = (pathname: string) => { counts[pathname] = (counts[pathname] ?? 0) + 1; };
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  return mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    bump(url.pathname);
+    switch (url.pathname) {
+      case "/api/meta":
+        return json({ protocolVersion: 2, instanceId: "fixture", startedAt: "2026-09-26T00:00:00Z" });
+      case "/api/status":
+        return json({ ok: true, primaryModel: "nvidia/m", providerCount: 1, providerModelCount: 1, allowlistModelCount: 1, modelPolicyMode: "restricted", effectiveModelCount: 1 });
+      case "/api/diff":
+        return json({ providersAdded: [], providersRemoved: [], providersChanged: [], modelsEnabled: [], modelsDisabled: [], primaryChanged: null, credentialsChanged: [], providerStateChanges: [], providerFieldChanges: [] });
+      case "/api/health":
+        return json({ caseDuplicateGroups: [], summary: { duplicateGroupCount: 0, affectedProviderCount: 0, affectedAllowlistCount: 0 } });
+      case "/api/model-inventory":
+        return json(legacyAsInventory({
+          providers: [providerSummary({ id: "nvidia", disabled: flags.nvidiaDisabled })],
+          models: [modelSummary({ ref: "nvidia/m" })]
+        }));
+      case "/api/model-attention":
+        return json({ pending: [], ignored: [] });
+      case "/api/providers":
+        return json({ providers: [providerSummary({ id: "nvidia", disabled: flags.nvidiaDisabled })] });
+      case "/api/providers/secret-ref-migrations":
+        return json({ candidates: [], summary: { candidateCount: 0, readyCount: 0, blockedCount: 0 } });
+      case "/api/model-metadata/sync-queue":
+        return json({ items: [] });
+      case "/api/providers/nvidia/state":
+        flags.nvidiaDisabled = true;
+        return json({ ok: true, providerId: "nvidia", enabled: false });
+      default:
+        return json({ error: `unexpected request: ${url.pathname}` }, 500);
+    }
+  });
 }
 
 function singleSuggestionResponse(overrides: Partial<ModelMetadataSuggestionsResponse> = {}): ModelMetadataSuggestionsResponse {
@@ -3014,8 +3175,10 @@ describe("ModelDialog 参考参数建议", () => {
       models: []
     });
 
-    const { findByLabelText, findByText } = renderModelsView(mockClient({ getModelInventory: async () => inventory, getModels: async () => ({ models: [] }), getModelMetadataSuggestions }));
+    const { findByLabelText, findByText, findByRole } = renderModelsView(mockClient({ getModelInventory: async () => inventory, getModels: async () => ({ models: [] }), getModelMetadataSuggestions }));
 
+    // 空目录的 Provider 不在 IM 选项导航；管理目录视图保留全部 config Provider
+    await userEvent.click(await findByRole("button", { name: "管理配置目录" }));
     await userEvent.click(await findByText("添加模型"));
     await userEvent.type(await findByLabelText("Model ID"), "openai/gpt-5.2");
     await userEvent.click(await findByLabelText("查询参考参数"));
@@ -3415,8 +3578,10 @@ describe("插件 Provider 的 Web 呈现", () => {
       providers: [providerSummary({ id: "opencode", source: "plugin" })],
       models: [modelSummary({ ref: "opencode/hy3", enabled: false })]
     });
-    const { findByLabelText, findByText } = renderModelsView(mockClient({ getModelInventory: async () => inventory, getModels: async () => ({ models: [] }) }));
+    const { findByLabelText, findByRole, findByText } = renderModelsView(mockClient({ getModelInventory: async () => inventory, getModels: async () => ({ models: [] }) }));
 
+    // 插件 Provider 的模型未启用时不在 IM 选项导航；管理目录视图显示目录只读说明
+    await userEvent.click(await findByRole("button", { name: "管理配置目录" }));
     expect(((await findByLabelText("添加模型")) as HTMLButtonElement).disabled).toBe(true);
     expect(await findByText(/模型目录由 OpenClaw 插件提供，只读/)).toBeTruthy();
   });
@@ -3443,10 +3608,10 @@ describe("插件 Provider 的 Web 呈现", () => {
 
 // ---------- 运行时模型状态组件（Task 7） ----------
 
-/** ModelInventoryEntry fixture：capabilities 全量显式给出，避免漏字段 */
+/** ModelInventoryEntry fixture：capabilities 全量显式给出，避免漏字段；v2 布尔按 core 规则推导（显式覆盖优先） */
 function inventoryModelEntry({ ref, ...overrides }: Partial<ModelInventoryEntry> & Pick<ModelInventoryEntry, "ref">): ModelInventoryEntry {
   const slash = ref.indexOf("/");
-  return {
+  const base: ModelInventoryEntry = {
     ref,
     providerId: ref.slice(0, slash),
     modelId: ref.slice(slash + 1),
@@ -3465,6 +3630,20 @@ function inventoryModelEntry({ ref, ...overrides }: Partial<ModelInventoryEntry>
       canRemovePolicyExactRef: false
     },
     ...overrides
+  };
+  const protectedRef = base.referenceSources.includes("primary") || base.referenceSources.includes("fallback");
+  const inactive = !protectedRef && !base.policyAllowed;
+  const derived = {
+    inactive,
+    pickerVisible: !inactive && (protectedRef || base.referenceSources.includes("policy-exact") || (base.policyAllowed && base.availability === "available")),
+    needsAttention: !inactive && (base.policyAllowed || protectedRef) && base.availability !== "available"
+  };
+  return {
+    ...derived,
+    ...base,
+    inactive: base.inactive ?? derived.inactive,
+    pickerVisible: base.pickerVisible ?? derived.pickerVisible,
+    needsAttention: base.needsAttention ?? derived.needsAttention
   };
 }
 
@@ -3837,18 +4016,29 @@ function legacyAsInventory(input: {
     const availability: ModelAvailability = pluginProvider && provider?.disabled
       ? "unavailable"
       : "available";
+    const referenceSources: ModelInventoryEntry["referenceSources"] = model.isPrimary
+      ? ["primary"]
+      : wildcardSelected
+        ? ["policy-wildcard"]
+        : model.selectionSource === "policy-exact"
+          ? ["policy-exact"]
+          : ["legacy-metadata"];
+    // core 布尔推导（model-inventory.ts）：inactive = 无 primary/fallback 依赖且未选用；
+    // pickerVisible = !inactive && (受保护 || policy-exact || (policyAllowed && available))；
+    // needsAttention = !inactive && (policyAllowed || 受保护) && !available
+    const protectedRef = model.isPrimary === true;
+    const inactive = !protectedRef && !model.enabled;
+    const pickerVisible = !inactive && (protectedRef || referenceSources.includes("policy-exact") || (model.enabled && availability === "available"));
+    const needsAttention = !inactive && (model.enabled || protectedRef) && availability !== "available";
     return {
       ref: model.ref,
       providerId: model.providerId,
       modelId: model.modelId,
       catalogSources: [pluginProvider ? "plugin-manifest" : "config"],
-      referenceSources: model.isPrimary
-        ? ["primary"]
-        : wildcardSelected
-          ? ["policy-wildcard"]
-          : model.selectionSource === "policy-exact"
-            ? ["policy-exact"]
-            : ["legacy-metadata"],
+      referenceSources,
+      pickerVisible,
+      inactive,
+      needsAttention,
       policyMode: "restricted",
       ...(model.selectionSource ? { selectionSource: model.selectionSource } : {}),
       policyAllowed: model.enabled,
@@ -3888,6 +4078,8 @@ function legacyAsInventory(input: {
     };
   });
   return {
+    schemaVersion: 2,
+    pickerSource: "gateway",
     providers,
     models,
     plugins: [],
