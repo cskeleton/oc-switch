@@ -424,3 +424,48 @@ O2 的 DTO 逐字段一致由复合 fixture golden 比对与随机交叉验证�
 ### 未验证边界
 
 未测量真实用户配置下的端到端页面耗时；未做生产 profiler、内存长测、远端部署验证。性能数字为合成输入 CPU 耗时，不外推为用户界面提速倍数。
+
+## 9. 独立审查修复与终审验收（2026-09-26）
+
+独立审查（`/tmp/oc-switch-review-J3tKEG/REVIEW.md`，对照基线 `354ec49..3a74f3a`）在 §8 实施基础上判 **O1/O3/O4 PARTIAL**，列出 5 组 P2 与 2 项方案缺口。本轮全部修复并验收；原 §8 证据与审查结论保持原样，不做回溯性改写。
+
+### 修复逐项（审查编号 → 处置 → 证据）
+
+1. **异步 runner 把 stderr 拼入 stdout**：`runDefaultAsyncProcessProbe` 改为 stdout/stderr 独立累加；stderr 只排空防背压、有界、不回显，绝不进入机器 JSON 通道。harness `STDERR_NOISE`：sync 36ms resolved/confirmed，async 32ms resolved/confirmed（修前 async 为 `gateway-detected-path-unresolved / cli-status-invalid`）。回归：`path-discovery.test.ts`「stderr 噪声不污染 CLI status 的机器 JSON 通道」（PATH 伪 CLI）。
+2. **超时只发 SIGTERM、等 close、误判成功**：超时在发出终止信号时即刻按 `timedOut: true` 结算（子进程随后捕获/忽略 SIGTERM 再 exit 0 亦不冒充未超时）；结算与子进程收尾分离——SIGTERM 宽限 250ms 后升级 SIGKILL 必然回收顽固进程，`close` 为唯一清理全部定时器的收尾点。harness `IGNORES_SIGTERM`：elapsed 1520ms、`cli-status-timeout`（修前 2421ms 并误判 confirmed）。回归含「伪 CLI 的 PID 在宽限后确实退出」断言（复审补充的结算≠回收缺陷一并修复）。
+3. **Models 消费写响应后不更新待处理**：`applyWriteInventory` 推进统一代次，attention 与 config-status 由父页面同轮并行刷新一次（内部保留 configStatusSeq 乱序保护，消除旧 config-status 在 attention 等待期间回写的窗口），不补发 inventory GET；写后刷新接管 loading 收尾（修复后被证明会导致刷新图标长转的缺陷一并消除）。回归：`runtime-models.test.tsx`「纯规则写后同步待处理列表」。
+4. **乱序保护覆盖不全**：Models 写响应推进 `loadSeq`；Models/Providers 的 load 把全部成功/失败状态更新（含辅助读取、attention 错误）移到代次检查之后统一应用，迟到的旧轮一律作废。回归：两个「迟到的旧读取不得覆盖」用例（规则复活、旧 URL 盖回各一），复审 `repros-postfix`（含用户可见 spinner 断言）5/5 通过。
+5. **异步 discovery 无条件等待可能不需要的 CLI status**：改两段解析——第一段不发起 CLI status；流水线确因路径缺口/证据冲突需要时才异步补充并重做一次。已解析目标 CLI status 计数 0（与同步一致），缺证据时同步/异步各 1 次且结果 DTO 等价；旧「并发起跑」测试改写为按需语义。回归：`path-discovery.test.ts` 两案 + 复审 repro 案 5。
+6. **O1 登录握手未合并**：手动/自动登录与版本重试共用一次受认证 `/api/meta`（认证+协议校验），成功后按 client 身份（baseUrl+token）经 `verifiedServiceKey` 复用，effect 不再对同一身份补发 meta；身份变化、显式重试仍重新握手；401/版本不兼容/连接变更门禁不变。Dashboard 只读取其需要的一次 `/api/status`。登录计数 meta=1 / status=1（修前 status=2 / meta=1）。回归：`views.test.tsx` 登录计数用例。
+7. **Dashboard 丢弃 attention 面板回传**：`Dashboard.load(presetInventory?)` 复用回传的刷新后 inventory，该端点本轮不再 GET；attention 仍每轮一次。回归：Dashboard 组合用例（重探测后 `getModelInventory` 仍为 1 次）。
+
+回归用例全部纳入正式测试文件（`path-discovery.test.ts` +3、`runtime-models.test.tsx` +2、`views.test.tsx` +3），并保留「还原旧代码必失败」的判别性证据（审查方 repros/repros-postfix/harness 在修复前后各自一轮）。
+
+### 终审验证汇总
+
+| 验证 | 结果 |
+| --- | --- |
+| 审查复现（repros.test.tsx 5 案） | 5 pass / 0 fail（修前 0 pass / 5 fail） |
+| 复审复现（repros-postfix.test.tsx 5 案，含 spinner 断言） | 5 pass / 0 fail（修前 4 pass / 1 fail） |
+| 进程复现（discovery-harness.py 两案） | stderr 案 sync/async 均 resolved/confirmed；超时案 1520ms + cli-status-timeout |
+| `bun run test` | 完整日志：Core/CLI/Server/scripts **1261 pass / 0 fail** + Web **258 pass / 0 fail**（合计 1519）；此前一轮仅留 tail 输出的全量曾显示 1 fail，失败用例名未留存、无法断定其与 stderr 用例无关，不作归因；其后分段与全量重跑均绿 |
+| `bun run typecheck` | exit 0 |
+| 等效 production 构建 | 输出至 `/tmp/ocs-web-dist-review`，常驻 `packages/web/dist` 未动 |
+| `bun run acceptance` | ✓ |
+| 隔离浏览器 E2E（18420/16173，临时 config，用后已删除） | 46 passed（desktop+mobile） |
+| 语义差分（基线 354ec49 对比当前） | 600 组 / 11988 次比较 / 0 差异 |
+| Core 微基准复测（附录 A 同脚本同机） | 100 exact 0.72ms（−78%）、500 3.20ms（−95%）、1000 5.41ms（−98%）、2000 11.19ms（−99%）、2000/20 wildcard 8.67ms（−68%）、attention 2000 1.40ms（−99%），优化收益未退回 |
+
+### 未验证边界（终审）
+
+真实用户配置的端到端页面耗时未测；全量套件首轮那个孤立 flaky 未定位（三轮重跑皆绿）；真实 OpenClaw/Gateway/远端实例未用于任何测试（全部 PATH 伪 CLI 与注入 fixture）；进程残留检查只覆盖伪 CLI（`sleep 5` 结束前被 SIGKILL 回收）。本轮未提交任何改动，未部署、未重启常驻实例。
+
+### 9.1 新增回归测试的偶发失败：根因与修复
+
+**现象。**`path-discovery.test.ts` 的 stderr 噪声用例在全新 Bun 进程中偶发 `expected resolved, received gateway-detected-path-unresolved`(诊断 `service-metadata-missing`);独立复核与本机各自遇到一次，多次重跑才转绿。
+
+**根因（实测固定，机制未确认）。已观测**新建可执行文件首次执行存在冷启动延迟：实测新建脚本第一次执行中位 ~248ms(sh shebang)/ ~262ms(bun shebang),P90 超 300ms；同一文件再次执行回落到 ~4ms。根操作系统层的机制（安全评估/缓存等）未得到系统级证据，按现象记录，不做机制断言。测试夹具的伪 `systemctl` 恰好是 250ms 预算的 show 探测，首次执行时超时概率性触发 → unit 元数据缺失 → confidence 无法提升 confirmed → 状态未解析。`SYSTEMCTL_SHOW` 250ms 预算未做任何放宽，也不应放宽。
+
+**修复（仅夹具）。**`installFakeCli` 创建伪命令后先在独立的 10s 夹具准备预算内 `spawnSync` 预热一次吸收首次执行延迟；超时用例的伪 CLI（故意捕获 SIGTERM 并 sleep）不预热——其首次执行落在 1500ms CLI 预算内仍有 ≥1.2s 余量，语义不变。PATH 注入收敛为**仅含伪 bin 目录**(finally 恢复原 PATH)：命令未命中伪 CLI 时 spawn 必然 ENOENT 失败，不会回落系统 `openclaw`/`systemctl`；超时脚本的 `sleep` 用绝对路径 `/bin/sleep`，其余均为 sh 内建命令。
+
+**验证。**固定 fixture 循环复现先行（无预热时 iteration #0 复现 `service-metadata-missing` 失败）；预热修复后该文件经 8 个全新 Bun 进程连续运行 **27 pass / 0 fail（每次 76 断言）**,`tsc -b` exit 0。未改动任何生产实现与超时常量。
