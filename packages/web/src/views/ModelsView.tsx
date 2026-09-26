@@ -4,6 +4,7 @@ import { Edit3, Inbox, Plus, RefreshCw, Search, Star, Trash2 } from "lucide-reac
 import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { DataTable } from "../components/DataTable";
 import { EmptyState } from "../components/EmptyState";
+import { LoadingNotice } from "../components/LoadingNotice";
 import { ModelDialog } from "../components/ModelDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { CustomProviderDialog } from "../components/CustomProviderDialog";
@@ -105,6 +106,8 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
   const [deleteLayers, setDeleteLayers] = useState({ metadata: false, policyExact: false });
   const [newPrimary, setNewPrimary] = useState("");
   const [error, setError] = useState<string | null>(null);
+  /** 一轮加载是否进行中；首轮（inventory 尚未取得）据此展示加载提示 */
+  const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState("");
@@ -166,6 +169,7 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
   const load = useCallback(async (presetInventory?: ModelInventory) => {
     const seq = ++loadSeq.current;
     setError(null);
+    setLoading(true);
     try {
       const [next, attentionResult] = await Promise.all([
         presetInventory ? Promise.resolve(presetInventory) : client.getModelInventory(),
@@ -185,6 +189,9 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
     } catch (err) {
       if (seq !== loadSeq.current) return;
       setError(err instanceof Error ? err.message : "加载失败");
+    } finally {
+      // 只由最新一轮收尾，迟到的旧轮不得提前解除加载态
+      if (seq === loadSeq.current) setLoading(false);
     }
   }, [client, refreshConfigStatus]);
 
@@ -721,10 +728,10 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
     <section data-testid="models-view" className="flex flex-col gap-6 min-h-[calc(100vh-4rem)]">
       <PageHeader
         title="模型"
-        description={manageCatalog ? "配置目录：保留参数不代表启用。" : inventory?.pickerSource === "gateway" ? "当前 Gateway 模型选项（默认 Agent）；独立策略的 Agent 可能不同。" : "本地推算的模型选项；尚未确认与运行中的 IM 一致。"}
+        description={inventory === null ? "正在读取模型配置与运行时状态…" : manageCatalog ? "配置目录：保留参数不代表启用。" : inventory?.pickerSource === "gateway" ? "当前 Gateway 模型选项（默认 Agent）；独立策略的 Agent 可能不同。" : "本地推算的模型选项；尚未确认与运行中的 IM 一致。"}
         actions={
           <>
-            <Button variant="outline" size="sm" aria-label="刷新探测" disabled={refreshing || busy !== null} onClick={() => void refreshProbe()}>刷新探测</Button>
+            <Button variant="outline" size="sm" aria-label="刷新探测" disabled={refreshing || busy !== null} onClick={() => void refreshProbe()}>{refreshing ? "正在刷新…" : "刷新探测"}</Button>
             <Button variant="outline" onClick={() => setManageCatalog(value => !value)}>{manageCatalog ? "返回 IM 模型选项" : "管理配置目录"}</Button>
           </>
         }
@@ -740,9 +747,10 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
               variant="outline"
               size="icon"
               aria-label="刷新"
+              title={loading ? "正在加载…" : undefined}
               onClick={() => void load()}
             >
-              <RefreshCw className="h-3.5 w-3.5" />
+              <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
             </Button>
           </div>
           <div className="relative mb-3">
@@ -756,7 +764,13 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
             />
           </div>
           <nav className="space-y-1">
-            {filteredProviderIds.map((pId) => {
+            {/* 加载中导航本体给提示,不显示空列表 */}
+            {inventory === null ? (
+              <div role="status" className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
+                <RefreshCw aria-hidden className="h-3.5 w-3.5 animate-spin text-brand" />
+                正在加载…
+              </div>
+            ) : filteredProviderIds.map((pId) => {
               const isSelected = pId === selectedProviderId;
               const navProvider = (inventory?.providers ?? []).find((provider) => provider.providerId === pId);
               const isDisabled = Boolean(navProvider?.disabled);
@@ -848,7 +862,15 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
             </p>
           ) : null}
 
-          {selectedProviderId ? (
+          {/* 首轮加载提示：inventory 未取得前不渲染空模型区，避免把「读取中」误显为空态 */}
+          {inventory === null ? (
+            error ? null : (
+              <LoadingNotice
+                title="正在加载模型…"
+                description="读取本地配置、插件目录与运行时模型状态；首次冷探测可能需要几秒。"
+              />
+            )
+          ) : selectedProviderId ? (
             <>
               {/* Search filter for selected Provider */}
               <div className="relative">

@@ -229,6 +229,23 @@ test("已停用插件的残留选择规则可整组移出，无需展开模型�
 });
 
 describe("runtime Web review regressions", () => {
+  test("首轮加载显示「正在加载模型…」,期间不渲染导航/空态,完成后切换为内容", async () => {
+    const data = inventory([model("local/main", { availability: "available", availabilityReasons: [] })]);
+    let release!: (value: ModelInventory) => void;
+    const gate = new Promise<ModelInventory>((resolve) => { release = resolve; });
+    const view = renderModels(data, { getModelInventory: () => gate });
+
+    expect(await view.findByText("正在加载模型…")).toBeTruthy();
+    // 加载中不渲染 Provider 导航项与模型空态,避免把「读取中」误显为空
+    expect(await view.findByText("正在加载…")).toBeTruthy();
+    expect(view.queryByText("请在左侧选择一个 Provider 进行管理。")).toBeNull();
+    expect(view.queryByText("没有匹配的模型")).toBeNull();
+
+    release(data);
+    await waitFor(() => expect(view.queryByText("正在加载模型…")).toBeNull());
+    expect(await view.findByText("local/main")).toBeTruthy();
+  });
+
   test("Provider 导航和目录编辑折叠 Provider 大小写，但不折叠 model ID", async () => {
     const upper = model("mixedvendor/Vendor/Model", { catalogSources: ["config"], availability: "available", availabilityReasons: [] });
     const lower = model("mixedvendor/vendor/model", { catalogSources: ["config"], availability: "available", availabilityReasons: [] });

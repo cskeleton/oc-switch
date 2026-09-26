@@ -563,6 +563,23 @@ describe("ModelsView", () => {
 });
 
 describe("ProvidersView", () => {
+  test("首轮加载显示「正在加载服务商…」,期间不渲染表格,完成后切换为内容", async () => {
+    let release!: (value: ModelInventory) => void;
+    const gate = new Promise<ModelInventory>((resolve) => { release = resolve; });
+    const getModelInventory = mock(() => gate);
+    const getProviders = mock(async () => ({ providers: [providerSummary({ id: "nvidia" })] }));
+    const { findByText, queryByText } = renderProvidersView(mockClient({ getModelInventory, getProviders }));
+
+    expect(await findByText("正在加载服务商…")).toBeTruthy();
+    // 加载中不渲染表格/空态,避免把「读取中」误显为「暂无 Provider」
+    expect(queryByText("暂无 Provider")).toBeNull();
+    expect(queryByText("nvidia")).toBeNull();
+
+    release(inventoryFixture());
+    await waitFor(() => expect(queryByText("正在加载服务商…")).toBeNull());
+    expect(await findByText("nvidia")).toBeTruthy();
+  });
+
   test("prompts for legacy env reference migration and submits only ready Providers", async () => {
     const getProviderSecretRefMigrations = mock(async () => ({
       candidates: [
@@ -4591,11 +4608,12 @@ describe("布局验证（Step 6）", () => {
   }
 
   test("长 ref / 多 badge 的模型行不产生 body 横向溢出（wrap 策略生效）", async () => {
-    const { getByTestId, findByLabelText } = renderModelsView(
+    const { getByTestId, findByLabelText, findByText } = renderModelsView(
       mockClient({ getModelInventory: async () => longRefInventoryFixture(), getModels: async () => ({ models: [] }) })
     );
 
-    // 页面渲染完成（待处理区段与刷新按钮就位）
+    // 页面渲染完成：直接等模型行内容出现（加载提示出现后表格才渲染，别用壳元素当就绪信号）
+    await findByText(/deepseek-v4-flash-with-a-very-long-model-name/);
     await findByLabelText("刷新探测");
     const section = getByTestId("models-view");
     // happy-dom 不做真实排版，但可断言结构性约束：

@@ -6,6 +6,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { CustomProviderDialog } from "../components/CustomProviderDialog";
 import { DataTable } from "../components/DataTable";
 import { EnvMigrationConfirmDialog } from "../components/EnvMigrationConfirmDialog";
+import { LoadingNotice } from "../components/LoadingNotice";
 import { MergeCaseDuplicateDialog } from "../components/MergeCaseDuplicateDialog";
 import { ModelMetadataQueueDialog } from "../components/ModelMetadataQueueDialog";
 import { PluginProviderGroup } from "../components/PluginProviderGroup";
@@ -82,6 +83,8 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
   const [duplicateGroups, setDuplicateGroups] = useState<CaseDuplicateGroup[]>([]);
   const [mergeTarget, setMergeTarget] = useState<CaseDuplicateGroup | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** 一轮加载是否进行中；首轮（inventory 尚未取得）据此展示加载提示 */
+  const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<"active" | "disabled" | "all">("active");
   const manageCatalog = scope === "all";
@@ -141,6 +144,7 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
     const seq = ++loadSeq.current;
     setError(null);
     setAuxErrors({});
+    setLoading(true);
     try {
       const [list, health, migrationPreview, queue, inventoryResult, attentionResult] = await Promise.all([
         client.getProviders().then(result => { setProviders(result.providers); return result; }),
@@ -184,6 +188,9 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
       setError(err instanceof Error ? err.message : "加载失败");
       // 写后刷新失败保留上次视图和插件写入结果；让调用方单独报告刷新失败。
       if (propagateError) throw err;
+    } finally {
+      // 只由最新一轮收尾，迟到的旧轮不得提前解除加载态
+      if (seq === loadSeq.current) setLoading(false);
     }
   }, [client]);
 
@@ -654,8 +661,8 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
               <Plus className="h-4 w-4" />
               添加 Provider
             </Button>
-            <Button variant="outline" size="icon" aria-label="刷新" onClick={() => void load()}>
-              <RefreshCw className="h-4 w-4" />
+            <Button variant="outline" size="icon" aria-label="刷新" title={loading ? "正在加载…" : undefined} onClick={() => void load()}>
+              <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
             </Button>
           </>
         }
@@ -726,6 +733,15 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
       {/* 自定义 Provider（config 来源）：连接信息 CRUD + 模型目录管理 */}
       <section aria-label="自定义 Provider">
         <h2 className="mb-2 text-xs font-semibold tracking-wider text-muted-foreground">自定义 Provider</h2>
+      {/* 首轮加载提示：inventory 未取得前不渲染空表格，避免把「读取中」误显为「暂无 Provider」 */}
+      {inventory === null ? (
+        error ? null : (
+          <LoadingNotice
+            title="正在加载服务商…"
+            description="读取本地配置、插件目录与运行时状态；首次冷探测可能需要几秒。"
+          />
+        )
+      ) : (
       <DataTable
         rows={filteredProviders}
         rowKey={(row) => row.id}
@@ -830,6 +846,7 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
           }
         ]}
       />
+      )}
       </section>
 
       {/* 插件 Provider 分组（spec §11.1 / §9.1）：pluginId 为 key，一组一个总开关。
