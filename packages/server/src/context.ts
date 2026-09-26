@@ -45,7 +45,7 @@ export interface AppOptions {
   port?: number;
   /** 测试注入：覆盖完整运行实例发现 */
   runtimeDiscoveryProvider?: RuntimeDiscoveryProvider;
-  /** 测试注入：覆盖异步运行实例发现（Server 读路径；默认真正异步的有界进程 runner） */
+  /** 测试注入：覆盖异步运行实例发现。未注入时回包同步 provider（若有）,否则才真正异步进程 runner */
   asyncRuntimeDiscoveryProvider?: () => Promise<RuntimeDiscoveryResult>;
   /** 测试注入：Gateway sync/restart */
   gatewayRouteOptions?: GatewayRouteOptions;
@@ -119,8 +119,13 @@ function incompleteSnapshotFromError(): RuntimeModelSnapshot {
 export function createAppRuntime(options: AppOptions): AppRuntime {
   const runtimeDiscoveryProvider =
     options.runtimeDiscoveryProvider ?? discoverOpenClawRuntime;
+  // 注入同步 provider 时必须同样驱动异步读路径，否则测试注入被旁路、真实探测会落到宿主机；
+  // 未注入时才是默认的真正异步有界 runner（不得用 Promise.resolve(sync) 伪装该默认）。
   const asyncRuntimeDiscoveryProvider =
-    options.asyncRuntimeDiscoveryProvider ?? (() => discoverOpenClawRuntimeAsync());
+    options.asyncRuntimeDiscoveryProvider ??
+    (options.runtimeDiscoveryProvider
+      ? () => Promise.resolve().then(() => runtimeDiscoveryProvider())
+      : () => discoverOpenClawRuntimeAsync());
   const pluginCatalogProvider = options.pluginCatalogProvider ?? ((paths: OcSwitchPaths) => discoverPluginCatalogAsync({ configPath: paths.openclawPath }));
   const runtimeModelCatalogProvider =
     options.runtimeModelCatalogProvider ?? ((paths: OcSwitchPaths) => discoverRuntimeModelCatalogAsync({ configPath: paths.openclawPath }));

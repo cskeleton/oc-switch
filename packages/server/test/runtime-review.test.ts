@@ -723,4 +723,18 @@ describe("O4/O5:按需 discovery 与刷新合并", () => {
     expect(third.response.status).toBe(200);
     expect(discoveryCalls).toBe(2);
   });
+
+  test("只注入同步 runtimeDiscoveryProvider 时,异步读路径复用同一事实(不旁路真实探测)", async () => {
+    const ws = fixture();
+    // 独特 diagnostics 标记:若旁路真实探测,结果必然不含该标记
+    const marker = {
+      status: "gateway-not-detected" as const,
+      instances: [], candidateGroups: [], diagnostics: ["sync-fixture-marker"]
+    };
+    const runtime = createAppRuntime(appOptions(ws.paths, {
+      runtimeDiscoveryProvider: () => marker,
+      asyncRuntimeDiscoveryProvider: undefined
+    }));
+    expect(await runtime.currentDiscovery()).toEqual(marker);
+  });
 });
