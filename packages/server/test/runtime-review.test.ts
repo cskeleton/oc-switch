@@ -726,15 +726,15 @@ describe("O4/O5:按需 discovery 与刷新合并", () => {
 
   test("只注入同步 runtimeDiscoveryProvider 时,异步读路径复用同一事实(不旁路真实探测)", async () => {
     const ws = fixture();
-    // 独特 diagnostics 标记:若旁路真实探测,结果必然不含该标记
+    // 独特 diagnostics 标记:若旁路真实探测,空实例结果不可能带上「路径证据冲突」码
     const marker = {
       status: "gateway-not-detected" as const,
-      instances: [], candidateGroups: [], diagnostics: ["sync-fixture-marker"]
+      instances: [], candidateGroups: [], diagnostics: ["path-evidence-conflict" as const]
     };
-    const runtime = createAppRuntime(appOptions(ws.paths, {
-      runtimeDiscoveryProvider: () => marker,
-      asyncRuntimeDiscoveryProvider: undefined
-    }));
+    const options = appOptions(ws.paths, { runtimeDiscoveryProvider: () => marker });
+    // 只注入同步 provider:删除异步注入缝,验证生产代码自动包装复用同步 provider
+    delete options.asyncRuntimeDiscoveryProvider;
+    const runtime = createAppRuntime(options);
     expect(await runtime.currentDiscovery()).toEqual(marker);
   });
 });
