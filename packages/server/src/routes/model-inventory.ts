@@ -278,7 +278,7 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
    * 批量纯规则删除（stale cleanup spec §4）：命名对齐 POST /api/providers/:id/models/batch-remove。
    * expectedRevision 必填，事务 mutate 内先比对再变更（冲突 409）；守卫失败 400 且
    * details.refs 透出触发违规的规则字符串；单事务原子，无部分提交。
-   * 空 values 为 no-op：跳过事务（无备份），removedCount 0。
+   * 空 values 为 no-op：跳过事务（无备份），inventory 直接读正常缓存，不强制写后重探测。
    */
   app.post("/api/model-policy/rules/batch-remove", async (c) => {
     try {
@@ -286,8 +286,19 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
       const parsed = requireBatchRemoveModelPolicyRulesInput(body);
       const paths = runtime.currentPaths();
       if (parsed.values.length === 0) {
-        const confirmation = await postWriteConfirmation(paths);
-        return c.json({ ok: true, removedCount: 0, backupId: null, warnings: [], ...confirmation });
+        // 空批量删除：no-op、无备份；需要 inventory 时读正常缓存（暖缓存下不新增探测）
+        const inventory = await runtime.buildCurrentInventory({ paths });
+        const snapshot = await runtime.currentRuntimeModelSnapshot({ paths });
+        return c.json({
+          ok: true,
+          removedCount: 0,
+          backupId: null,
+          warnings: [],
+          runtimeConfirmed: inventory.diagnostics.length === 0 &&
+            Object.values(snapshot.completeness).every(Boolean),
+          diagnostics: inventory.diagnostics.map((diagnostic) => ({ ...diagnostic })),
+          inventory: inventory as unknown as Record<string, unknown>
+        });
       }
       // warnings 在 mutate 内捕获后经闭包透出（事务只落盘 config）
       let capturedWarnings: string[] = [];

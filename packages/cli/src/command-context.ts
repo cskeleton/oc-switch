@@ -1,5 +1,7 @@
 import {
+  areRuntimeDiscoveryPathsExplicit,
   buildModelInventory,
+  defaultPaths,
   defaultPresetDirs,
   discoverOpenClawRuntime,
   discoverPluginCatalogAsync,
@@ -113,6 +115,11 @@ function parseAliasMap(value: string | undefined): Map<string, string> {
 
 export interface CommandContext {
   activePaths(): OcSwitchPaths;
+  /**
+   * 只解析 oc-switch stateDir 的短路径（不触发运行实例 discovery），
+   * 供 backup list / token rotate / lifecycle 等纯 state 命令使用。
+   */
+  stateOnlyPaths(): Pick<OcSwitchPaths, "stateDir">;
   readConfig(paths?: OcSwitchPaths): OpenClawConfig;
   readEnvContent(): string | undefined;
   assertProviderCanEnable(providerId: string, paths?: OcSwitchPaths): void;
@@ -121,17 +128,19 @@ export interface CommandContext {
   /** 未缓存 provider；写入事务须注入以便写后重新 discovery */
   runtimeDiscoveryProvider: RuntimeDiscoveryProvider;
   /**
-   * OpenClaw 运行时模型 snapshot（同一命令进程内惰性缓存一次）。
+   * OpenClaw 运行时模型 snapshot（同一命令进程内按代次复用；
+   * 并发读取共享在途 Promise，写成功/路径版本变化推进代次）。
    * 生产走 `discoverRuntimeModelCatalog`；`OC_SWITCH_MOCK_RUNTIME_MODELS` 测试缝注入假 runCommand。
    */
   runtimeModelSnapshot(paths?: OcSwitchPaths): Promise<RuntimeModelSnapshot>;
   /**
-   * 插件 catalog（providers + plugins descriptor；同一命令进程内惰性缓存一次）。
+   * 插件 catalog（providers + plugins descriptor；同一命令进程内按代次复用）。
    * 生产 shell-out `openclaw plugins list --json`；测试经 runCli 的 PATH 前置假 openclaw。
    */
   pluginCatalog(paths?: OcSwitchPaths): Promise<PluginCatalogResult>;
   /** 用当前 config + disabled providers + 插件 catalog + 运行时 snapshot 组装统一 inventory */
   buildInventory(options?: { refresh?: boolean; config?: OpenClawConfig; paths?: OcSwitchPaths }): Promise<ModelInventory>;
+  /** 统一失效入口：推进代次；旧代次完成后不得覆盖当前缓存 */
   invalidateCatalogCaches(): void;
   providerEnvVar: typeof providerEnvVar;
   presetDirs(): PresetDirs;
@@ -163,11 +172,22 @@ export function createCommandContext(
     cachedDiscovery ??= discoveryProvider();
     return cachedDiscovery;
   };
-  const activePaths = (): OcSwitchPaths => getActivePaths({
+  const pathOptions = {
     ...(options.env ? { env: options.env } : {}),
-    ...(options.stateDir ? { stateDir: options.stateDir } : {}),
-    runtimeDiscovery: runtimeDiscovery()
-  });
+    ...(options.stateDir ? { stateDir: options.stateDir } : {})
+  };
+  const activePaths = (): OcSwitchPaths => {
+    // config 与 env 两路径均已显式确定时跳过 discovery；
+    // 仅 config 已指定不得擅自推断 envPath（其仍可能来自运行实例候选）
+    if (areRuntimeDiscoveryPathsExplicit(pathOptions)) {
+      return getActivePaths(pathOptions);
+    }
+    return getActivePaths({ ...pathOptions, runtimeDiscovery: runtimeDiscovery() });
+  };
+  const stateOnlyPaths = (): Pick<OcSwitchPaths, "stateDir"> => {
+    const env = (options.env ?? process.env) as NodeJS.ProcessEnv;
+    return { stateDir: options.stateDir ?? defaultPaths(env).stateDir };
+  };
   const readConfig = (paths = activePaths()): OpenClawConfig => {
     return JSON5.parse(readFileSync(paths.openclawPath, "utf8")) as OpenClawConfig;
   };
@@ -192,12 +212,47 @@ export function createCommandContext(
       : discoverRuntimeModelCatalogAsync({ configPath: paths.openclawPath }));
   const pluginCatalogProvider = options.pluginCatalogProvider ?? ((paths: OcSwitchPaths) =>
     discoverPluginCatalogAsync({ configPath: paths.openclawPath }));
-  let cachedRuntimeModelSnapshot: Promise<RuntimeModelSnapshot> | undefined;
-  let cachedPluginCatalog: Promise<PluginCatalogResult> | undefined;
+
+  /** 代次缓存槽：已完成值与在途探测分开存;失效统一走 invalidateCatalogCaches */
+  interface CatalogSlot<T> {
+    completed: { value: T; generation: number } | undefined;
+    inflight: { promise: Promise<T>; generation: number } | undefined;
+  }
+  const runtimeModelSlot: CatalogSlot<RuntimeModelSnapshot> = { completed: undefined, inflight: undefined };
+  const pluginSlot: CatalogSlot<PluginCatalogResult> = { completed: undefined, inflight: undefined };
   let catalogScope: string | undefined;
+  let catalogGeneration = 0;
+  /** 统一失效入口：推进代次并清空已完成缓存与在途引用，旧代次完成后不得覆盖当前缓存 */
   const invalidateCatalogCaches = (): void => {
-    cachedRuntimeModelSnapshot = undefined;
-    cachedPluginCatalog = undefined;
+    catalogGeneration += 1;
+    runtimeModelSlot.completed = undefined;
+    runtimeModelSlot.inflight = undefined;
+    pluginSlot.completed = undefined;
+    pluginSlot.inflight = undefined;
+  };
+  /**
+   * 读取缓存槽：普通读复用同代次已完成值;refresh 不复用刷新前已完成的值;
+   * 同代次并发（含并发 refresh）共享一次在途探测。
+   */
+  const readSlot = <T>(slot: CatalogSlot<T>, refresh: boolean, probe: () => Promise<T>): Promise<T> => {
+    const generation = catalogGeneration;
+    if (!refresh && slot.completed?.generation === generation) {
+      return Promise.resolve(slot.completed.value);
+    }
+    if (slot.inflight?.generation === generation) {
+      return slot.inflight.promise;
+    }
+    const probeGeneration = catalogGeneration;
+    const promise = probe().then((value) => {
+      // 探测期间发生写成功/路径或文件版本变化（统一失效入口已推进代次）时不得落缓存
+      if (probeGeneration === catalogGeneration) {
+        slot.completed = { value, generation: probeGeneration };
+      }
+      if (slot.inflight?.promise === promise) slot.inflight = undefined;
+      return value;
+    });
+    slot.inflight = { promise, generation: probeGeneration };
+    return promise;
   };
   // 命令内仅复用同一路径/配置版本；探测期间固定本次写事务的路径。
   const ensureCatalogScope = (paths: OcSwitchPaths): void => {
@@ -210,26 +265,30 @@ export function createCommandContext(
       catalogScope = scope;
     }
   };
-  const runtimeModelSnapshot = (paths = activePaths()): Promise<RuntimeModelSnapshot> => {
+  const readRuntimeModel = (paths: OcSwitchPaths, refresh: boolean): Promise<RuntimeModelSnapshot> => {
     ensureCatalogScope(paths);
-    cachedRuntimeModelSnapshot ??= Promise.resolve().then(() => runtimeModelCatalogProvider(paths)).catch(() => ({
-      fallbackRefs: [], allowedRefs: [], configuredModels: [], allModels: [],
-      completeness: { status: false, configuredList: false, allList: false },
-      diagnostics: [{ command: "status", code: "invalid-shape", message: "runtime model catalog provider failed" }],
-      capturedAt: new Date().toISOString()
-    }));
-    return cachedRuntimeModelSnapshot;
+    return readSlot(runtimeModelSlot, refresh, () =>
+      Promise.resolve().then(() => runtimeModelCatalogProvider(paths)).catch(() => ({
+        fallbackRefs: [], allowedRefs: [], configuredModels: [], allModels: [],
+        completeness: { status: false, configuredList: false, allList: false },
+        diagnostics: [{ command: "status", code: "invalid-shape", message: "runtime model catalog provider failed" }],
+        capturedAt: new Date().toISOString()
+      })));
   };
-  const pluginCatalog = (paths = activePaths()): Promise<PluginCatalogResult> => {
+  const readPlugin = (paths: OcSwitchPaths, refresh: boolean): Promise<PluginCatalogResult> => {
     ensureCatalogScope(paths);
-    cachedPluginCatalog ??= Promise.resolve().then(() => pluginCatalogProvider(paths)).catch(() => ({ providers: [], plugins: [], diagnostics: ["plugin catalog discovery failed"] }));
-    return cachedPluginCatalog;
+    return readSlot(pluginSlot, refresh, () =>
+      Promise.resolve().then(() => pluginCatalogProvider(paths)).catch(() => ({ providers: [], plugins: [], diagnostics: ["plugin catalog discovery failed"] })));
   };
+  const runtimeModelSnapshot = (paths = activePaths()): Promise<RuntimeModelSnapshot> =>
+    readRuntimeModel(paths, false);
+  const pluginCatalog = (paths = activePaths()): Promise<PluginCatalogResult> =>
+    readPlugin(paths, false);
   const buildInventory = async (settings: { refresh?: boolean; config?: OpenClawConfig; paths?: OcSwitchPaths } = {}): Promise<ModelInventory> => {
-    if (settings.refresh) invalidateCatalogCaches();
     const paths = settings.paths ?? activePaths();
     const config = settings.config ?? context.readConfig(paths);
-    const [catalog, runtime] = await Promise.all([pluginCatalog(paths), runtimeModelSnapshot(paths)]);
+    const refresh = settings.refresh === true;
+    const [catalog, runtime] = await Promise.all([readPlugin(paths, refresh), readRuntimeModel(paths, refresh)]);
     return buildModelInventory({
       config,
       disabledProviderIds: Object.values(readProviderStates(paths.stateDir).disabledProviders).filter(state => state.openclawPath === paths.openclawPath).map(state => state.providerId),
@@ -242,6 +301,7 @@ export function createCommandContext(
 
   const context: CommandContext = {
     activePaths,
+    stateOnlyPaths,
     readConfig,
     readEnvContent,
     assertProviderCanEnable,

@@ -41,7 +41,10 @@ function snapshot(available = true): RuntimeModelSnapshot {
 
 function appOptions(paths: OcSwitchPaths, extra: Partial<AppOptions> = {}): AppOptions {
   return { token: "fixture-token", paths, runtimeDiscoveryProvider: discovery, pluginCatalogProvider: emptyPlugins,
-    runtimeModelCatalogProvider: () => snapshot(), ...extra };
+    runtimeModelCatalogProvider: () => snapshot(),
+    // 读路径走异步 discovery;测试注入与同步 provider 相同的事实,避免 shell-out 到本机
+    asyncRuntimeDiscoveryProvider: async () => discovery(),
+    ...extra };
 }
 
 async function request(app: ReturnType<typeof createApp>, url: string, method = "GET", body?: unknown) {
@@ -573,4 +576,127 @@ test("HTTP explicit catalog deletion remains available for confirmed unavailable
   const { response } = await request(app, "/api/models", "DELETE", { ref: "cpa/local" });
   expect(response.status).toBe(200);
   expect(JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")).models.providers.cpa.models.map((model: { id: string }) => model.id)).not.toContain("local");
+});
+
+describe("O4/O5:按需 discovery 与刷新合并", () => {
+  test("同代次并发 refresh:true 共享一次新探测,且不复用刷新前已完成的值", async () => {
+    const ws = fixture();
+    let calls = 0;
+    let pluginCalls = 0;
+    let gateRefresh = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const runtime = createAppRuntime(appOptions(ws.paths, {
+      runtimeModelCatalogProvider: (async () => {
+        calls += 1;
+        if (gateRefresh) await gate;
+        return snapshot();
+      }) as any,
+      pluginCatalogProvider: (async () => {
+        pluginCalls += 1;
+        if (gateRefresh) await gate;
+        return emptyPlugins();
+      }) as any
+    }));
+    // 暖缓存:普通读一次探测
+    await runtime.buildCurrentInventory();
+    expect(calls).toBe(1);
+    expect(pluginCalls).toBe(1);
+    // 同代次并发 refresh:共享一次新探测(总计 2 次,而非 3 次),且结果来自刷新而非旧缓存
+    gateRefresh = true;
+    const first = runtime.buildCurrentInventory({ refresh: true });
+    const second = runtime.buildCurrentInventory({ refresh: true });
+    release();
+    const [firstInventory, secondInventory] = await Promise.all([first, second]);
+    expect(calls).toBe(2);
+    expect(pluginCalls).toBe(2);
+    expect(firstInventory.models.some((row: any) => row.ref === "cpa/main")).toBe(true);
+    expect(secondInventory.models.some((row: any) => row.ref === "cpa/main")).toBe(true);
+  });
+
+  test("写成功推进代次:写后读取不加入写前在途探测,旧代次完成不得覆盖新缓存", async () => {
+    const ws = fixture();
+    let calls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const runtime = createAppRuntime(appOptions(ws.paths, {
+      runtimeModelCatalogProvider: (async () => {
+        calls += 1;
+        await gate;
+        return { ...snapshot(), openClawVersion: `v${calls}` };
+      }) as any
+    }));
+    // 写前在途探测(旧代次)
+    const stale = runtime.buildCurrentInventory({ refresh: true });
+    await Promise.resolve();
+    expect(calls).toBe(1);
+    // 写成功:统一失效入口推进代次
+    runtime.invalidateCatalogCaches();
+    // 写后读取不得加入写前启动的 Promise(同代次在途引用已清除)
+    const fresh = runtime.buildCurrentInventory();
+    await Promise.resolve();
+    expect(calls).toBe(2);
+    release();
+    await stale;
+    await fresh;
+    expect((await runtime.currentRuntimeModelSnapshot()).openClawVersion).toBe("v2");
+    // 旧代次(写前)完成后不得覆盖当前缓存
+    expect((await runtime.currentRuntimeModelSnapshot()).openClawVersion).toBe("v2");
+  });
+
+  test("空批量删除走正常缓存:暖缓存下不新增探测、不落盘", async () => {
+    const ws = fixture();
+    let calls = 0;
+    let pluginCalls = 0;
+    const app = createApp(appOptions(ws.paths, {
+      runtimeModelCatalogProvider: () => { calls += 1; return snapshot(); },
+      pluginCatalogProvider: () => { pluginCalls += 1; return emptyPlugins(); }
+    }));
+    const warm = await request(app, "/api/model-inventory");
+    expect(calls).toBe(1);
+    const revision = warm.json.policyRevision;
+
+    const result = await request(app, "/api/model-policy/rules/batch-remove", "POST", {
+      values: [],
+      expectedRevision: revision
+    });
+    expect(result.response.status).toBe(200);
+    expect(result.json).toMatchObject({ ok: true, removedCount: 0, backupId: null, warnings: [] });
+    // 空 no-op:暖缓存下不新增探测,仍返回可用 inventory
+    expect(calls).toBe(1);
+    expect(pluginCalls).toBe(1);
+    expect(result.json.inventory.models.some((row: any) => row.ref === "cpa/main")).toBe(true);
+    expect(backups(ws.paths)).toEqual([]);
+  });
+
+  test("异步 discovery 在途期间 /api/meta 正常响应,同 scope 并发共享一次探测", async () => {
+    const ws = fixture();
+    let discoveryCalls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const app = createApp(appOptions(ws.paths, {
+      asyncRuntimeDiscoveryProvider: async () => {
+        discoveryCalls += 1;
+        await gate;
+        return discovery();
+      }
+    }));
+    const first = request(app, "/api/settings/paths");
+    const second = request(app, "/api/settings/paths");
+    try {
+      // discovery 未完成期间其他路由照常响应
+      expect((await request(app, "/api/meta")).response.status).toBe(200);
+      expect((await request(app, "/api/health")).response.status).toBe(200);
+    } finally {
+      release();
+    }
+    const results = await Promise.all([first, second]);
+    expect(results.map((item) => item.response.status)).toEqual([200, 200]);
+    // 同 scope 并发只读 discovery 共享一次在途 Promise
+    expect(discoveryCalls).toBe(1);
+    // 完成后无跨请求缓存:下一次请求重新探测(gate 已释放,直接完成)
+    const third = await request(app, "/api/settings/paths");
+    expect(third.response.status).toBe(200);
+    expect(discoveryCalls).toBe(2);
+  });
 });

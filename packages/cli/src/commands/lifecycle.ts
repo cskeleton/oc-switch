@@ -28,8 +28,7 @@ async function startBackgroundServe(context: CommandContext): Promise<void> {
     process.exit(1);
   }
 
-  const paths = context.activePaths();
-  const stateDir = paths.stateDir;
+  const { stateDir } = context.stateOnlyPaths();
   const url = defaultServeUrl(DEFAULT_HOST, DEFAULT_PORT);
 
   const existingPid = readServePid(stateDir);
@@ -96,8 +95,8 @@ export function registerLifecycleCommands(program: Command, context: CommandCont
     .command("stop")
     .description("Stop background oc-switch serve started by start")
     .action(async () => {
-      const paths = context.activePaths();
-      const result = await stopServePid(paths.stateDir);
+      const { stateDir } = context.stateOnlyPaths();
+      const result = await stopServePid(stateDir);
       console.log(result.message);
     });
 
@@ -105,8 +104,8 @@ export function registerLifecycleCommands(program: Command, context: CommandCont
     .command("restart")
     .description("Restart background oc-switch serve started by start")
     .action(async () => {
-      const paths = context.activePaths();
-      const result = await stopServePid(paths.stateDir);
+      const { stateDir } = context.stateOnlyPaths();
+      const result = await stopServePid(stateDir);
       console.log(result.message);
       await startBackgroundServe(context);
     });

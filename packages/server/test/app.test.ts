@@ -106,6 +106,9 @@ function createTestApp(
     runtimeModelCatalogProvider: extra?.runtimeModelCatalogProvider ?? runtimeModelCatalogProvider,
     ...(fetchImpl ? { fetchImpl } : {}),
     runtimeDiscoveryProvider: extra?.runtimeDiscoveryProvider ?? gatewayRuntimeDiscovery(ws, expectedGatewayEnvPath(ws.dir)),
+    // Server 读路径(settings/gateway)走异步 discovery;测试注入与同步 provider 相同事实,避免 shell-out
+    asyncRuntimeDiscoveryProvider: async () =>
+      (extra?.runtimeDiscoveryProvider ?? gatewayRuntimeDiscovery(ws, expectedGatewayEnvPath(ws.dir)))(),
     ...(extra?.gatewayRouteOptions ? { gatewayRouteOptions: extra.gatewayRouteOptions } : {})
   });
 }

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,8 +8,11 @@ import type { OpenClawConfig, RuntimeDiscoveryResult } from "@oc-switch/core";
 import { MAX_PROVIDER_MODELS, upsertDisabledProviderState, writeModelMetadataQueue } from "@oc-switch/core";
 import { prepareGatewayEnvTarget, expectedGatewayEnvPath } from "../../core/test/gateway-sync-fixture";
 import { createCommandContext, repoRoot } from "../src/command-context";
+import { registerBackupCommands } from "../src/commands/backups";
 import { registerGatewayCommands } from "../src/commands/gateway";
+import { registerLifecycleCommands } from "../src/commands/lifecycle";
 import { registerModelCommands } from "../src/commands/models";
+import { registerTokenCommands } from "../src/commands/token";
 
 // 新增的 inventory / reconcile / plugin 命令每次 runCli 都要 spawn bun 子进程 + 8s 级探测，
 // 偶发超过 bun:test 默认 5s 超时；放宽到 30s（只调时长，不放宽断言）
@@ -128,6 +131,92 @@ describe("cli read commands", () => {
     expect(context.activePaths().envPath).toBe(envPath);
     expect(calls).toBe(1);
     expect(repoRoot).toBe(join(import.meta.dir, "../../.."));
+  });
+
+  test("settings 固定两路径时 activePaths 跳过 discovery;仅 config 显式时仍 discovery", () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-explicit-paths-"));
+    tempDirs.push(dir);
+    const home = join(dir, "home");
+    const stateDir = join(home, ".oc-switch");
+    mkdirSync(stateDir, { recursive: true });
+    const openclawPath = join(dir, "openclaw.json");
+    const envPath = join(dir, ".env");
+    writeFileSync(openclawPath, "{}\n");
+    writeFileSync(join(stateDir, "settings.json"), JSON.stringify({ openclawPath, envPath }));
+    let calls = 0;
+    const context = createCommandContext({
+      env: { HOME: home },
+      stateDir,
+      runtimeDiscoveryProvider: () => {
+        calls += 1;
+        return { status: "gateway-not-detected", instances: [], candidateGroups: [], diagnostics: [] };
+      }
+    });
+
+    expect(context.activePaths()).toEqual({ openclawPath, envPath, stateDir });
+    expect(context.activePaths().openclawPath).toBe(openclawPath);
+    // 两个路径均已显式确定:discovery 不再执行,结果不变
+    expect(calls).toBe(0);
+
+    // 仅 config 显式(envPath 未显式)不得擅自推断:仍需 discovery,envPath 回落默认
+    const dir2 = mkdtempSync(join(tmpdir(), "oc-switch-cli-partial-explicit-"));
+    tempDirs.push(dir2);
+    const home2 = join(dir2, "home");
+    const stateDir2 = join(home2, ".oc-switch");
+    mkdirSync(stateDir2, { recursive: true });
+    const openclawPath2 = join(dir2, "openclaw.json");
+    writeFileSync(openclawPath2, "{}\n");
+    let calls2 = 0;
+    const context2 = createCommandContext({
+      env: { HOME: home2, OPENCLAW_CONFIG_PATH: openclawPath2 },
+      stateDir: stateDir2,
+      runtimeDiscoveryProvider: () => {
+        calls2 += 1;
+        return { status: "gateway-not-detected", instances: [], candidateGroups: [], diagnostics: [] };
+      }
+    });
+    expect(context2.activePaths().openclawPath).toBe(openclawPath2);
+    expect(context2.activePaths().envPath).toBe(join(home2, ".openclaw", ".env"));
+    expect(calls2).toBe(1);
+  });
+
+  test("state-only 命令(token rotate / backup list / lifecycle stop)不触发 discovery", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-state-only-"));
+    tempDirs.push(dir);
+    const home = join(dir, "home");
+    const stateDir = join(home, ".oc-switch");
+    mkdirSync(stateDir, { recursive: true });
+    let calls = 0;
+    const context = createCommandContext({
+      env: { HOME: home },
+      stateDir,
+      runtimeDiscoveryProvider: () => {
+        calls += 1;
+        return { status: "gateway-not-detected", instances: [], candidateGroups: [], diagnostics: [] };
+      }
+    });
+    const stdout: string[] = [];
+    const log = spyOn(console, "log").mockImplementation((...values: unknown[]) => {
+      stdout.push(values.map(String).join(" "));
+    });
+    try {
+      const tokenProgram = new Command().exitOverride();
+      registerTokenCommands(tokenProgram, context);
+      await tokenProgram.parseAsync(["token", "rotate"], { from: "user" });
+      expect(existsSync(join(stateDir, "token.json"))).toBe(true);
+
+      const backupProgram = new Command().exitOverride();
+      registerBackupCommands(backupProgram, context);
+      await backupProgram.parseAsync(["backup", "list"], { from: "user" });
+
+      const lifecycleProgram = new Command().exitOverride();
+      registerLifecycleCommands(lifecycleProgram, context);
+      await lifecycleProgram.parseAsync(["stop"], { from: "user" });
+      expect(stdout.some((line) => line.includes("serve 未在运行"))).toBe(true);
+    } finally {
+      log.mockRestore();
+    }
+    expect(calls).toBe(0);
   });
 
   test("prints status", async () => {

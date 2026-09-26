@@ -7,8 +7,8 @@ export function registerTokenCommands(program: Command, context: CommandContext)
   tokenCmd.command("rotate")
     .description("Rotate persisted API access token")
     .action(() => {
-      const paths = context.activePaths();
-      const token = rotatePersistedToken(paths.stateDir);
+      const { stateDir } = context.stateOnlyPaths();
+      const token = rotatePersistedToken(stateDir);
       console.log(`Rotated token. New token: ${token}`);
     });
 }

@@ -56,8 +56,8 @@ export function registerGatewayRoutes(app: Hono, runtime: AppRuntime, options: G
 
   app.get("/api/gateway/env-drift", async (c) => {
     const paths = runtime.currentPaths();
-    // 读报告：每次请求现做 discovery、现读文件，不缓存
-    const discovery = runtime.runtimeDiscoveryProvider();
+    // 读报告：每次请求现做异步 discovery、现读文件，不缓存
+    const discovery = await runtime.currentDiscovery();
     const candidateId = c.req.query("candidateId")?.trim() || undefined;
     let target: GatewayRuntimeTarget;
     try {

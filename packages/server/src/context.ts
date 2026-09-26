@@ -2,6 +2,7 @@ import {
   buildModelInventory,
   defaultPresetDirs,
   discoverOpenClawRuntime,
+  discoverOpenClawRuntimeAsync,
   discoverPluginCatalogAsync,
   discoverRuntimeModelCatalogAsync,
   getActivePaths,
@@ -17,6 +18,7 @@ import {
   type PluginProvider,
   type PresetDirs,
   type RuntimeDiscoveryProvider,
+  type RuntimeDiscoveryResult,
   type RuntimeModelSnapshot
 } from "@oc-switch/core";
 import JSON5 from "json5";
@@ -43,6 +45,8 @@ export interface AppOptions {
   port?: number;
   /** 测试注入：覆盖完整运行实例发现 */
   runtimeDiscoveryProvider?: RuntimeDiscoveryProvider;
+  /** 测试注入：覆盖异步运行实例发现（Server 读路径；默认真正异步的有界进程 runner） */
+  asyncRuntimeDiscoveryProvider?: () => Promise<RuntimeDiscoveryResult>;
   /** 测试注入：Gateway sync/restart */
   gatewayRouteOptions?: GatewayRouteOptions;
   /** 测试注入：插件 provider 目录发现 */
@@ -58,24 +62,31 @@ export interface AppRuntime {
   runtimeDiscoveryProvider: RuntimeDiscoveryProvider;
   currentPaths(): OcSwitchPaths;
   setActivePaths(paths: OcSwitchPaths): void;
+  /**
+   * 异步运行实例发现（Server 读路径用）：每次调用都取得新证据，
+   * 同 scope 并发只共享一次在途 Promise，完成后即清除（无跨请求 TTL）。
+   */
+  currentDiscovery(): Promise<RuntimeDiscoveryResult>;
   /** 插件 provider 目录（30s TTL 缓存；失败降级为空列表）。 */
-  currentPluginCatalog(options?: { paths?: OcSwitchPaths }): Promise<PluginCatalogResult>;
+  currentPluginCatalog(options?: { refresh?: boolean; paths?: OcSwitchPaths }): Promise<PluginCatalogResult>;
   currentPluginProviders(options?: { paths?: OcSwitchPaths }): Promise<PluginProvider[]>;
   /** 插件级 descriptor（与 providers 共用同一份 plugin catalog 缓存）。 */
   currentPluginDescriptors(options?: { paths?: OcSwitchPaths }): Promise<ModelPluginDescriptor[]>;
   /**
    * 当前运行时模型 snapshot（30s TTL 缓存）。
-   * `refresh: true` 强制重新探测；provider 抛错时降级为 incomplete snapshot，绝不抛。
+   * `refresh: true` 不复用刷新前已完成的值；同代次并发 refresh 共享一次新探测；
+   * provider 抛错时降级为 incomplete snapshot，绝不抛。
    */
   currentRuntimeModelSnapshot(options?: { refresh?: boolean; paths?: OcSwitchPaths }): Promise<RuntimeModelSnapshot>;
   /**
-   * 同时失效两个 catalog 缓存（插件目录 + 运行时 snapshot）。
-   * 写入端点成功落盘后调用，避免「新插件状态 + 旧模型目录」混用。
+   * 统一失效入口：推进代次并清空已完成缓存与在途引用。
+   * 写成功、路径/文件版本变化（含事务重做预检触发的版本变化）都必须经此入口，
+   * 旧代次完成后不得覆盖当前缓存。
    */
   invalidateCatalogCaches(): void;
   /**
    * 组装统一 model inventory：读当前 config + disabled Provider + 插件 catalog + 运行时 snapshot。
-   * `refresh: true` 时先强制刷新两个缓存。
+   * `refresh: true` 强制两个 catalog 重新探测（先读不可复用刷新前已完成的值）。
    */
   buildCurrentInventory(options?: { refresh?: boolean; config?: OpenClawConfig; paths?: OcSwitchPaths }): Promise<ModelInventory>;
 }
@@ -108,11 +119,11 @@ function incompleteSnapshotFromError(): RuntimeModelSnapshot {
 export function createAppRuntime(options: AppOptions): AppRuntime {
   const runtimeDiscoveryProvider =
     options.runtimeDiscoveryProvider ?? discoverOpenClawRuntime;
+  const asyncRuntimeDiscoveryProvider =
+    options.asyncRuntimeDiscoveryProvider ?? (() => discoverOpenClawRuntimeAsync());
   const pluginCatalogProvider = options.pluginCatalogProvider ?? ((paths: OcSwitchPaths) => discoverPluginCatalogAsync({ configPath: paths.openclawPath }));
   const runtimeModelCatalogProvider =
     options.runtimeModelCatalogProvider ?? ((paths: OcSwitchPaths) => discoverRuntimeModelCatalogAsync({ configPath: paths.openclawPath }));
-  let pluginCatalogCache: { at: number; catalog: Promise<PluginCatalogResult> } | undefined;
-  let runtimeModelCache: { at: number; snapshot: Promise<RuntimeModelSnapshot> } | undefined;
   let activePaths = options.paths ?? getActivePaths({
     runtimeDiscovery: runtimeDiscoveryProvider()
   });
@@ -120,10 +131,60 @@ export function createAppRuntime(options: AppOptions): AppRuntime {
   const presetDirs = options.presetDirs ?? defaultPresetDirs(currentPaths().stateDir);
   const fetchImpl = options.fetchImpl ?? fetch;
   let catalogScope: string | undefined;
+  /**
+   * 代次缓存槽：已完成值（TTL 按采集开始时间计算）与当前在途探测分开存；
+   * 失效统一走 invalidateCatalogCaches（推进代次），旧代次完成后不得覆盖当前缓存。
+   */
+  interface CatalogSlot<T> {
+    completed: { value: T; at: number; generation: number } | undefined;
+    inflight: { promise: Promise<T>; at: number; generation: number } | undefined;
+  }
+  const pluginSlot: CatalogSlot<PluginCatalogResult> = { completed: undefined, inflight: undefined };
+  const runtimeModelSlot: CatalogSlot<RuntimeModelSnapshot> = { completed: undefined, inflight: undefined };
+  let catalogGeneration = 0;
   const invalidateCatalogCaches = (): void => {
-    pluginCatalogCache = undefined;
-    runtimeModelCache = undefined;
+    catalogGeneration += 1;
+    pluginSlot.completed = undefined;
+    pluginSlot.inflight = undefined;
+    runtimeModelSlot.completed = undefined;
+    runtimeModelSlot.inflight = undefined;
   };
+  /**
+   * 读取缓存槽：普通读在 TTL 内复用同代次已完成值（TTL 自采集开始时刻计算）；
+   * refresh 不复用刷新前已完成的值；同代次并发（含并发 refresh）共享一次在途探测。
+   */
+  const readSlot = <T>(
+    slot: CatalogSlot<T>,
+    ttlMs: number,
+    refresh: boolean,
+    probe: () => Promise<T>
+  ): Promise<T> => {
+    const generation = catalogGeneration;
+    const now = Date.now();
+    if (!refresh) {
+      const completed = slot.completed;
+      if (completed && completed.generation === generation && now - completed.at < ttlMs) {
+        return Promise.resolve(completed.value);
+      }
+    }
+    if (slot.inflight?.generation === generation) {
+      return slot.inflight.promise;
+    }
+    const probeGeneration = catalogGeneration;
+    const at = Date.now();
+    const promise = probe().then((value) => {
+      // 探测期间发生写成功/路径或文件版本变化（统一失效入口已推进代次）时不得落缓存
+      if (probeGeneration === catalogGeneration) {
+        slot.completed = { value, at, generation: probeGeneration };
+      }
+      if (slot.inflight?.promise === promise) slot.inflight = undefined;
+      return value;
+    });
+    slot.inflight = { promise, at, generation: probeGeneration };
+    return promise;
+  };
+  // 同 scope 并发的只读 discovery 共享一次在途 Promise；完成后即清除，无跨请求 TTL
+  let discoveryInFlight: { scope: string; promise: Promise<RuntimeDiscoveryResult> } | undefined;
   // 缓存只复用同一配置/源 env 版本；只看文件元数据，不读取或缓存密钥值。
   const ensureCatalogScope = (paths: OcSwitchPaths): void => {
     const scope = [paths.stateDir, ...[paths.openclawPath, paths.envPath].map((path) => {
@@ -145,17 +206,30 @@ export function createAppRuntime(options: AppOptions): AppRuntime {
       activePaths = paths;
       this.invalidateCatalogCaches();
     },
-    async currentPluginCatalog(options2 = {}) {
+    currentDiscovery() {
+      const scope = [activePaths.stateDir, activePaths.openclawPath, activePaths.envPath].join("\0");
+      const existing = discoveryInFlight;
+      if (existing && existing.scope === scope) {
+        return existing.promise;
+      }
+      // 每次调用都取得新证据；不缓存已完成结果
+      const promise = Promise.resolve().then(() => asyncRuntimeDiscoveryProvider());
+      const entry = { scope, promise };
+      discoveryInFlight = entry;
+      void promise
+        .finally(() => {
+          if (discoveryInFlight === entry) discoveryInFlight = undefined;
+        })
+        .catch(() => {});
+      return promise;
+    },
+    currentPluginCatalog(options2 = {}) {
       const paths = options2.paths ?? activePaths;
       ensureCatalogScope(paths);
-      if (pluginCatalogCache && Date.now() - pluginCatalogCache.at < PLUGIN_CATALOG_CACHE_TTL_MS) {
-        return pluginCatalogCache.catalog;
-      }
-      const catalog = Promise.resolve().then(() => pluginCatalogProvider(paths)).catch(() => ({
-        providers: [], plugins: [], diagnostics: ["plugin catalog discovery failed"]
-      }));
-      pluginCatalogCache = { at: Date.now(), catalog };
-      return catalog;
+      return readSlot(pluginSlot, PLUGIN_CATALOG_CACHE_TTL_MS, options2.refresh === true, () =>
+        Promise.resolve().then(() => pluginCatalogProvider(paths)).catch(() => ({
+          providers: [], plugins: [], diagnostics: ["plugin catalog discovery failed"]
+        })));
     },
     async currentPluginProviders(options2 = {}) {
       return (await this.currentPluginCatalog(options2)).providers;
@@ -163,26 +237,21 @@ export function createAppRuntime(options: AppOptions): AppRuntime {
     async currentPluginDescriptors(options2 = {}) {
       return (await this.currentPluginCatalog(options2)).plugins;
     },
-    async currentRuntimeModelSnapshot(options2 = {}) {
+    currentRuntimeModelSnapshot(options2 = {}) {
       const paths = options2.paths ?? activePaths;
       ensureCatalogScope(paths);
-      const now = Date.now();
-      if (!options2.refresh && runtimeModelCache && now - runtimeModelCache.at < RUNTIME_MODEL_CACHE_TTL_MS) {
-        return runtimeModelCache.snapshot;
-      }
-      const snapshot = Promise.resolve().then(() => runtimeModelCatalogProvider(paths)).catch(incompleteSnapshotFromError);
-      runtimeModelCache = { at: Date.now(), snapshot };
-      return snapshot;
+      return readSlot(runtimeModelSlot, RUNTIME_MODEL_CACHE_TTL_MS, options2.refresh === true, () =>
+        Promise.resolve().then(() => runtimeModelCatalogProvider(paths)).catch(incompleteSnapshotFromError));
     },
     invalidateCatalogCaches,
     async buildCurrentInventory(options2 = {}) {
-      if (options2.refresh) {
-        // 先失效再取（currentRuntimeModelSnapshot 内部会强制探测）
-        this.invalidateCatalogCaches();
-      }
       const paths = options2.paths ?? activePaths;
       const config = options2.config ?? readConfig(paths);
-      const [catalog, snapshot] = await Promise.all([this.currentPluginCatalog({ paths }), this.currentRuntimeModelSnapshot({ paths })]);
+      const refresh = options2.refresh === true;
+      const [catalog, snapshot] = await Promise.all([
+        this.currentPluginCatalog({ paths, refresh }),
+        this.currentRuntimeModelSnapshot({ paths, refresh })
+      ]);
       return buildModelInventory({
         config,
         disabledProviderIds: readDisabledProviderIds(paths),

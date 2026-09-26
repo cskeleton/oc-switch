@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   discoverOpenClawRuntime,
-  discoverRunningOpenClawInstances
+  discoverOpenClawRuntimeAsync,
+  discoverRunningOpenClawInstances,
+  type AsyncProcessProbe
 } from "../src/path-discovery";
 import { deduplicateRuntimeCandidateGroups } from "../src/runtime-discovery-candidates";
 import type { RuntimePathCandidateGroup } from "../src/runtime-discovery-types";
@@ -531,5 +533,168 @@ describe("discoverOpenClawRuntime", () => {
       confidence: "confirmed",
       evidence: ["systemd-unit", "cli-status", "process-cmdline"]
     }]);
+  });
+});
+
+describe("discoverOpenClawRuntimeAsync", () => {
+  const GATEWAY_PROCESS = { pid: 9, argv: ["node", "/opt/openclaw/dist/index.js", "gateway"] };
+
+  /** linux fixture:进程认领 systemd unit,show 与 cli-status 共同提升到 confirmed */
+  function linuxConfirmedDeps() {
+    return {
+      platform: "linux" as const,
+      homeDir: "/home/tester",
+      userId: undefined,
+      listGatewayProcesses: () => [GATEWAY_PROCESS],
+      readTextFile: (path: string) => {
+        if (path === "/proc/9/environ") return "OPENCLAW_SYSTEMD_UNIT=openclaw-custom.service";
+        if (path === "/units/openclaw-custom.service") return "EnvironmentFile=/runtime/custom-service.env";
+        throw new Error("ENOENT");
+      },
+      runCommand: (command: string) => command === "systemctl"
+        ? { status: 0, stdout: "MainPID=9\nFragmentPath=/units/openclaw-custom.service", timedOut: false }
+        : {
+            status: 0,
+            stdout: JSON.stringify({
+              daemon: { pid: 9, configPath: "/etc/openclaw/custom.json", stateDir: "/runtime/state" }
+            }),
+            timedOut: false
+          },
+      listDirectory: () => [] as string[],
+      pathExists: () => false
+    };
+  }
+
+  test("异步探测与同步结果一致(linux,认领 unit 不触发 list-units)", async () => {
+    const syncResult = discoverOpenClawRuntime(linuxConfirmedDeps());
+    const asyncResult = await discoverOpenClawRuntimeAsync({
+      ...linuxConfirmedDeps(),
+      listGatewayProcesses: async () => [GATEWAY_PROCESS],
+      runCommand: async (command: string) => linuxConfirmedDeps().runCommand(command)
+    });
+    expect(asyncResult).toEqual(syncResult);
+    expect(asyncResult.instances[0]).toMatchObject({ confidence: "confirmed" });
+  });
+
+  test("异步探测与同步结果一致(无认领 unit 时枚举 list-units,失败也不改变行为)", async () => {
+    const deps = {
+      platform: "linux" as const,
+      homeDir: "/home/tester",
+      userId: undefined,
+      listGatewayProcesses: () => [GATEWAY_PROCESS],
+      readTextFile: () => { throw new Error("ENOENT"); },
+      runCommand: () => ({ status: 1, stdout: "", timedOut: false }),
+      listDirectory: () => [] as string[],
+      pathExists: () => false
+    };
+    const syncResult = discoverOpenClawRuntime(deps);
+    const asyncResult = await discoverOpenClawRuntimeAsync({
+      ...deps,
+      listGatewayProcesses: async () => [GATEWAY_PROCESS],
+      runCommand: async () => ({ status: 1, stdout: "", timedOut: false })
+    });
+    expect(asyncResult).toEqual(syncResult);
+    expect(asyncResult.status).toBe("gateway-detected-path-unresolved");
+  });
+
+  test("异步探测与同步结果一致(macOS launchd plist 预取)", async () => {
+    const plist = `<?xml version="1.0"?><plist><dict><key>ProgramArguments</key><array>
+<string>/Users/alice/.openclaw/service-env/gateway-env-wrapper.sh</string>
+<string>/Users/alice/.openclaw/service-env/gateway.env</string>
+<string>node</string><string>/opt/openclaw/dist/index.js</string><string>gateway</string>
+</array></dict></plist>`;
+    const deps = {
+      platform: "darwin" as const,
+      homeDir: "/Users/alice",
+      userId: 501,
+      listGatewayProcesses: () => [{ pid: 51, argv: ["node", "/opt/openclaw/dist/index.js", "gateway"] }],
+      listDirectory: () => ["ai.openclaw.gateway.plist"],
+      pathExists: () => false,
+      readTextFile: (path: string) => path.endsWith(".plist") ? plist : "",
+      runCommand: () => ({ status: 0, stdout: "pid = 999", timedOut: false })
+    };
+    const syncResult = discoverOpenClawRuntime(deps);
+    const asyncResult = await discoverOpenClawRuntimeAsync({
+      ...deps,
+      listGatewayProcesses: async () => [{ pid: 51, argv: ["node", "/opt/openclaw/dist/index.js", "gateway"] }],
+      runCommand: async () => ({ status: 0, stdout: "pid = 999", timedOut: false })
+    });
+    expect(asyncResult).toEqual(syncResult);
+    expect(asyncResult.status).toBe("gateway-detected-path-unresolved");
+  });
+
+  test("无运行进程时不发起任何子进程命令", async () => {
+    let runCommandCalls = 0;
+    let probeCalls = 0;
+    const result = await discoverOpenClawRuntimeAsync({
+      platform: "linux",
+      homeDir: "/home/tester",
+      listGatewayProcesses: async () => [],
+      processProbe: async () => {
+        probeCalls += 1;
+        return { status: 0, stdout: "", timedOut: false };
+      },
+      runCommand: async () => {
+        runCommandCalls += 1;
+        return { status: 1, stdout: "", timedOut: false };
+      },
+      pathExists: () => false
+    });
+    expect(result.status).toBe("gateway-not-detected");
+    expect(runCommandCalls).toBe(0);
+    // 进程列表来自注入,默认 pgrep probe 不应被调用
+    expect(probeCalls).toBe(0);
+  });
+
+  test("进程探测失败映射 probe-failed,后续命令不再发起", async () => {
+    let runCommandCalls = 0;
+    const result = await discoverOpenClawRuntimeAsync({
+      platform: "linux",
+      homeDir: "/home/tester",
+      listGatewayProcesses: async () => { throw new Error("denied"); },
+      runCommand: async () => {
+        runCommandCalls += 1;
+        return { status: 0, stdout: "", timedOut: false };
+      },
+      pathExists: () => false
+    });
+    expect(result.status).toBe("probe-failed");
+    expect(result.diagnostics).toContain("process-probe-failed");
+    expect(runCommandCalls).toBe(0);
+  });
+
+  test("子进程调用并发起跑:openclaw status 在 systemctl show 完成前启动", async () => {
+    let showResolved = false;
+    let openclawStartedBeforeShowResolved: boolean | undefined;
+    const started: string[] = [];
+    const runCommand: AsyncProcessProbe = async (command, args) => {
+      started.push([command, ...args].join(" "));
+      if (command === "systemctl" && args.includes("show")) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        showResolved = true;
+        return { status: 0, stdout: "MainPID=9\nFragmentPath=/units/openclaw-custom.service", timedOut: false };
+      }
+      if (command === "openclaw") {
+        openclawStartedBeforeShowResolved = !showResolved;
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            daemon: { pid: 9, configPath: "/etc/openclaw/custom.json", stateDir: "/runtime/state" }
+          }),
+          timedOut: false
+        };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    };
+    const result = await discoverOpenClawRuntimeAsync({
+      ...linuxConfirmedDeps(),
+      listGatewayProcesses: async () => [GATEWAY_PROCESS],
+      runCommand
+    });
+    expect(openclawStartedBeforeShowResolved).toBe(true);
+    // 认领 unit:只须一次 systemctl show,不走到 list-units 枚举
+    expect(started.filter((key) => key.startsWith("systemctl --user show"))).toHaveLength(1);
+    expect(started.some((key) => key.includes("list-units"))).toBe(false);
+    expect(result.instances[0]).toMatchObject({ confidence: "confirmed" });
   });
 });

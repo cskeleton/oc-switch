@@ -12,9 +12,10 @@ import { jsonError } from "../errors";
 import { requirePathSettingsUpdate } from "../schemas";
 
 export function registerSettingsRoutes(app: Hono, runtime: AppRuntime): void {
-  app.get("/api/settings/paths", (c) => {
+  app.get("/api/settings/paths", async (c) => {
     const paths = runtime.currentPaths();
-    const runtimeDiscovery = runtime.runtimeDiscoveryProvider();
+    // 读路径：真正异步的完整 discovery；同 scope 并发共享在途探测，无跨请求缓存
+    const runtimeDiscovery = await runtime.currentDiscovery();
     const candidates = resolveOpenClawPathCandidates({
       stateDir: paths.stateDir,
       runtimeDiscovery,
@@ -34,8 +35,8 @@ export function registerSettingsRoutes(app: Hono, runtime: AppRuntime): void {
         envPath: parsed.envPath,
         stateDir: runtime.currentPaths().stateDir
       };
-      // 每次 PUT 只探测一次，供候选组校验复用
-      const discovery = runtime.runtimeDiscoveryProvider();
+      // 每次 PUT 都取得新证据，供候选组校验复用
+      const discovery = await runtime.currentDiscovery();
       validateRuntimePathSelection({
         openclawPath: next.openclawPath,
         envPath: next.envPath,

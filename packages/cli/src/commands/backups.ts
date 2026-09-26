@@ -9,8 +9,8 @@ import type { CommandContext } from "../command-context";
 export function registerBackupCommands(program: Command, context: CommandContext): void {
   const backup = program.command("backup");
   backup.command("list").action(() => {
-    const paths = context.activePaths();
-    for (const entry of listBackups(paths.stateDir)) {
+    const { stateDir } = context.stateOnlyPaths();
+    for (const entry of listBackups(stateDir)) {
       console.log(`${entry.id}\t${entry.metadata.createdAt}\t${entry.metadata.reason}`);
     }
   });
