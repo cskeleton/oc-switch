@@ -665,7 +665,8 @@ export type AsyncProcessProbe = (
 export interface DiscoverOpenClawRuntimeAsyncOptions {
   platform?: NodeJS.Platform;
   homeDir?: string;
-  userId?: number;
+  // 与同步 RuntimeDiscoveryDependencies 口径一致：允许显式 undefined
+  userId?: number | undefined;
   /** 测试注入：替代默认异步进程 runner（如注入延迟 gate） */
   processProbe?: AsyncProcessProbe;
   /** 测试注入：替代默认异步 pgrep 进程列表探测 */
