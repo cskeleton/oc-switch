@@ -59,8 +59,11 @@ function isWildcard(entry: string): boolean {
   return entry.endsWith("/*");
 }
 
-/** 同一逻辑模型的精确匹配：Provider 前缀大小写折叠、model ID 保持敏感。解析失败的条目/引用永不匹配。 */
-function exactEntryMatches(entry: string, ref: string): boolean {
+/**
+ * 同一逻辑模型的精确匹配：Provider 前缀大小写折叠、model ID 保持敏感。解析失败的条目/引用永不匹配。
+ * 导出供 model-policy-index 的单次调用匹配上下文复用（不另写近似 matcher）。
+ */
+export function exactEntryMatches(entry: string, ref: string): boolean {
   if (isWildcard(entry)) return false;
   if (entry === ref) return true;
   try {
@@ -79,8 +82,8 @@ function exactEntryMatches(entry: string, ref: string): boolean {
   }
 }
 
-/** 通配匹配：去掉 `*` 后做前缀比较；Provider 段大小写折叠（折叠后重试一次）。 */
-function wildcardEntryMatches(entry: string, ref: string): boolean {
+/** 通配匹配：去掉 `*` 后做前缀比较；Provider 段大小写折叠（折叠后重试一次）。导出供匹配上下文复用。 */
+export function wildcardEntryMatches(entry: string, ref: string): boolean {
   if (!isWildcard(entry)) return false;
   const prefix = entry.slice(0, -1);
   if (ref.startsWith(prefix)) return true;

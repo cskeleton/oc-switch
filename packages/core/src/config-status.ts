@@ -7,11 +7,11 @@ import { listOrphanEnvKeys, readManifest } from "./manifest-manager";
 import { normalizeProviderId, parseModelRef } from "./model-ref";
 import {
   getModelPolicyMode,
-  getModelSelectionSource,
   isPolicyAllowsRef,
   readModelPolicyAllow,
   readModelPolicyAllowRaw
 } from "./model-policy";
+import { ModelPolicyMatchContext } from "./model-policy-index";
 import type { OcSwitchPaths } from "./paths";
 import { filterPluginProvidersConflictWithConfig, type PluginProvider } from "./plugin-catalog";
 import { readProviderStates } from "./provider-states";
@@ -370,6 +370,9 @@ function buildModelPolicyStatus(
 ): ConfigStatusModelPolicy {
   const rawAllow = readModelPolicyAllowRaw(config);
   const providers = config.models?.providers ?? {};
+  // 单次报告内复用的匹配上下文：effectiveCatalogCount 的逐模型 selection 判定
+  // 与 getModelSelectionSource 同一语义，避免 O(模型数×规则数) 的重复扫描
+  const policyMatch = ModelPolicyMatchContext.fromConfig(config);
   const providersByNormalizedId = new Map<string, Array<{ id: string; modelIds: Set<string> }>>();
   for (const [id, provider] of Object.entries(providers)) {
     const normalizedId = normalizeProviderId(id);
@@ -390,7 +393,7 @@ function buildModelPolicyStatus(
     (count, [providerId, provider]) => {
       if (disabledProviderIds.has(normalizeProviderId(providerId))) return count;
       return count + (provider.models ?? []).filter((model) =>
-        getModelSelectionSource(config, `${providerId}/${model.id}`) !== undefined
+        policyMatch.selectionSourceFor(`${providerId}/${model.id}`) !== undefined
       ).length;
     },
     0
@@ -398,7 +401,7 @@ function buildModelPolicyStatus(
   for (const plugin of pluginProvidersByNormalizedId.values()) {
     if (!plugin.enabled) continue;
     effectiveCatalogCount += plugin.models.filter(
-      (model) => getModelSelectionSource(config, `${plugin.providerId}/${model.id}`) !== undefined
+      (model) => policyMatch.selectionSourceFor(`${plugin.providerId}/${model.id}`) !== undefined
     ).length;
   }
 

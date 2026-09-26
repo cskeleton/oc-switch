@@ -1,5 +1,6 @@
 import { formatModelRef, normalizeProviderId, parseModelRef } from "./model-ref";
-import { getModelPolicyMode, getModelSelectionSource } from "./model-policy";
+import { getModelPolicyMode } from "./model-policy";
+import { ModelPolicyMatchContext } from "./model-policy-index";
 import { filterPluginProvidersConflictWithConfig, type PluginProvider } from "./plugin-catalog";
 import { readPrimaryModelRef } from "./primary-model";
 import type { ModelSummary, OpenClawConfig, ProviderSummary, StatusSummary } from "./types";
@@ -30,6 +31,8 @@ export function createConfigAdapter(config: OpenClawConfig, options: ConfigAdapt
   const allowlist = config.agents?.defaults?.models ?? {};
   const primaryModel = readPrimaryModelRef(config);
   const modelPolicyMode = getModelPolicyMode(config);
+  // 单次 adapter 调用内复用的 policy 匹配上下文（与 getModelSelectionSource 同一语义）
+  const policyMatch = ModelPolicyMatchContext.fromConfig(config);
   const disabledProviderIds = new Set(
     [...(options.disabledProviderIds ?? [])].map((providerId) => normalizeProviderId(providerId))
   );
@@ -78,7 +81,7 @@ export function createConfigAdapter(config: OpenClawConfig, options: ConfigAdapt
     if (modelPolicyMode === "legacy" && !uniqueProviderId(providerId)) {
       return Object.prototype.hasOwnProperty.call(allowlist, ref) ? "legacy" : undefined;
     }
-    return getModelSelectionSource(config, ref);
+    return policyMatch.selectionSourceFor(ref);
   }
 
   function listProviderSummaries(): ProviderSummary[] {
@@ -195,7 +198,7 @@ export function createConfigAdapter(config: OpenClawConfig, options: ConfigAdapt
         }
         const selectionSource = modelPolicyMode === "unrestricted"
           ? undefined
-          : getModelSelectionSource(config, ref);
+          : policyMatch.selectionSourceFor(ref);
         summaries.set(identity, {
           ref: formatModelRef(canonicalProviderId, modelId),
           providerId: canonicalProviderId,

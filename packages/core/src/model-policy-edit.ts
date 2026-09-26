@@ -5,10 +5,14 @@ import {
   findPolicyWildcardForRef,
   findWildcardEntryInAllowList,
   getModelPolicyMode,
-  isPolicyAllowsRef,
-  readModelPolicyAllow,
   readModelPolicyAllowRaw
 } from "./model-policy";
+import {
+  assessPolicyRuleRemoval,
+  createRuleMatcher,
+  ModelPolicyMatchContext,
+  type PolicyRemovalViolation
+} from "./model-policy-index";
 import { normalizeModelRefForStorage, normalizeProviderId, parseModelRef } from "./model-ref";
 import type { ModelInventory } from "./model-inventory";
 import type { OperationResult } from "./operation-common";
@@ -183,7 +187,8 @@ function unknownProviderWarnings(providerSegment: string, options: AddModelPolic
 
 /**
  * 最终状态保护（2026-09-16 spec §3.2）：原子替换与纯规则删除共用，对构造好的最终
- * allow 统一校验，禁止先删后加的中间状态。
+ * allow 统一校验，禁止先删后加的中间状态。判定本身与 assessPolicyRuleRemoval 共享
+ * （同一匹配上下文、同一最终覆盖判断），此处只负责把违规映射为结构化错误。
  *
  * - 防清空（fail closed）：编辑后 raw allow 不得为 []（非字符串项计入剩余，
  *   沿用 raw 长度语义；replace 保持条目数不会触发，remove 主要在此拦截）；
@@ -196,7 +201,8 @@ function assertPolicyFinalState(
   config: OpenClawConfig,
   finalRaw: unknown[],
   action: string,
-  removedRefs?: string[]
+  removedRefs?: string[],
+  options: { removedValues: string[]; addedRules?: string[]; context?: ModelPolicyMatchContext } = { removedValues: [] }
 ): void {
   if (finalRaw.length === 0) {
     throw new ModelPolicyEditError(
@@ -205,50 +211,59 @@ function assertPolicyFinalState(
       { refs: removedRefs }
     );
   }
-  const beforeStrings = readModelPolicyAllow(config) ?? [];
-  const afterStrings = finalRaw.filter((entry): entry is string => typeof entry === "string");
-  // 覆盖变化由删除/替换的规则贡献：编辑前被覆盖、编辑后不再覆盖时，这些规则即触发 ref
-  const triggeringRefs = (identity: string): string[] | undefined =>
-    removedRefs?.filter((value) => isPolicyAllowsRef([value], identity));
-  const primaryIdentity = protectedRefIdentity(readPrimaryModelRef(config));
-  if (
-    primaryIdentity !== undefined &&
-    isPolicyAllowsRef(beforeStrings, primaryIdentity) &&
-    !isPolicyAllowsRef(afterStrings, primaryIdentity)
-  ) {
-    throw new ModelPolicyEditError(
-      "primary-model-referenced",
-      `Cannot ${action}: the primary model ${primaryIdentity} is covered by the current policy and no remaining rule would cover it. Switch the primary model first.`,
-      { refs: triggeringRefs(primaryIdentity) }
-    );
-  }
-  for (const fallbackRef of readFallbackModelRefs(config)) {
-    const fallbackIdentity = protectedRefIdentity(fallbackRef);
-    if (
-      fallbackIdentity !== undefined &&
-      isPolicyAllowsRef(beforeStrings, fallbackIdentity) &&
-      !isPolicyAllowsRef(afterStrings, fallbackIdentity)
-    ) {
-      throw new ModelPolicyEditError(
-        "fallback-referenced",
-        `Cannot ${action}: the fallback model ${fallbackIdentity} is covered by the current policy and no remaining rule would cover it. Resolve the fallback reference first.`,
-        { refs: triggeringRefs(fallbackIdentity) }
-      );
-    }
-  }
+  const context = options.context ?? ModelPolicyMatchContext.fromConfig(config);
+  const assessment = assessPolicyRuleRemoval(context, options.removedValues, { addedRules: options.addedRules });
+  if (assessment.removable) return;
+  const violation = assessment.violation!;
+  if (violation.kind === "not-found" || violation.kind === "last-rule-removal") return;
+  throw policyCoverageError(violation, action, removedRefs === undefined ? undefined : violation.triggeringValues);
 }
 
-/** 「失去策略放行」warning：被 removedRule 放行、但最终规则不再覆盖的 inventory 模型行。 */
+/** 覆盖保护违规 → 结构化错误（primary/fallback 文案按 2026-09-16 spec 锁定）。 */
+function policyCoverageError(
+  violation: Extract<PolicyRemovalViolation, { kind: "primary-model-referenced" | "fallback-referenced" }>,
+  action: string,
+  refs: string[] | undefined
+): ModelPolicyEditError {
+  if (violation.kind === "primary-model-referenced") {
+    return new ModelPolicyEditError(
+      "primary-model-referenced",
+      `Cannot ${action}: the primary model ${violation.identity} is covered by the current policy and no remaining rule would cover it. Switch the primary model first.`,
+      { refs }
+    );
+  }
+  return new ModelPolicyEditError(
+    "fallback-referenced",
+    `Cannot ${action}: the fallback model ${violation.identity} is covered by the current policy and no remaining rule would cover it. Resolve the fallback reference first.`,
+    { refs }
+  );
+}
+
+/** 「失去策略放行」warning：被 removedRule 放行、但最终规则不再覆盖的 inventory 模型行。
+ *  removedRule 只解析一次；最终 allow 的覆盖判定复用单次匹配上下文（O(M) 而非 O(M×R)）。 */
 function losingAllowanceWarnings(
   inventory: ModelInventory | undefined,
   removedRule: string,
   finalStrings: string[]
 ): string[] {
   if (inventory === undefined) return [];
+  return losingAllowanceWarningsWithContext(
+    inventory,
+    removedRule,
+    ModelPolicyMatchContext.fromAllowStrings(finalStrings)
+  );
+}
+
+function losingAllowanceWarningsWithContext(
+  inventory: ModelInventory,
+  removedRule: string,
+  finalContext: ModelPolicyMatchContext
+): string[] {
+  const removedCovers = createRuleMatcher(removedRule);
   const losingRefs = inventory.models
     .filter((model) => {
       const ref = `${model.providerId}/${model.modelId}`;
-      return isPolicyAllowsRef([removedRule], ref) && !isPolicyAllowsRef(finalStrings, ref);
+      return removedCovers(ref) && !finalContext.allows(ref);
     })
     .map((model) => model.ref)
     .sort();
@@ -390,15 +405,17 @@ export function removeModelPolicyWildcard(
       `Cannot remove ${trimmed} because removing the last agents.defaults.modelPolicy.allow entry would make [] unrestricted; keep another rule or narrow the policy first.`
     );
   }
+  const remainingStrings = remainingRaw.filter((entry): entry is string => typeof entry === "string");
 
   // 4. primary/fallback 覆盖保护：剩余字符串规则（exact + 其他 wildcard）必须仍覆盖受保护引用
-  const remainingStrings = remainingRaw.filter((entry): entry is string => typeof entry === "string");
-  const remainingAllowStrings = (readModelPolicyAllow(config) ?? []).filter((entry) => entry !== trimmed);
+  // （与 removeModelPolicyRule 共用同一匹配上下文的最终覆盖判定；文案按本入口锁定）
+  const context = ModelPolicyMatchContext.fromConfig(config);
+  const removedValueSet = new Set<string>([trimmed]);
   const primaryIdentity = protectedRefIdentity(readPrimaryModelRef(config));
   if (
     primaryIdentity !== undefined &&
-    isPolicyAllowsRef([trimmed], primaryIdentity) &&
-    !isPolicyAllowsRef(remainingAllowStrings, primaryIdentity)
+    context.ruleCovers(trimmed, primaryIdentity) &&
+    !context.coveredAfterEdit(primaryIdentity, removedValueSet, [])
   ) {
     throw new ModelPolicyEditError(
       "primary-model-referenced",
@@ -409,8 +426,8 @@ export function removeModelPolicyWildcard(
     const fallbackIdentity = protectedRefIdentity(fallbackRef);
     if (
       fallbackIdentity !== undefined &&
-      isPolicyAllowsRef([trimmed], fallbackIdentity) &&
-      !isPolicyAllowsRef(remainingAllowStrings, fallbackIdentity)
+      context.ruleCovers(trimmed, fallbackIdentity) &&
+      !context.coveredAfterEdit(fallbackIdentity, removedValueSet, [])
     ) {
       throw new ModelPolicyEditError(
         "fallback-referenced",
@@ -427,23 +444,8 @@ export function removeModelPolicyWildcard(
   if (removedCount > 1) {
     warnings.push(`Removed ${removedCount} identical entries of the rule ${trimmed}.`);
   }
-  if (options.inventory !== undefined) {
-    // 仅由该 wildcard 放行的 inventory 模型行：被它覆盖且不被任何剩余规则覆盖
-    const losingRefs = options.inventory.models
-      .filter((model) => {
-        const ref = `${model.providerId}/${model.modelId}`;
-        return isPolicyAllowsRef([trimmed], ref) && !isPolicyAllowsRef(remainingStrings, ref);
-      })
-      .map((model) => model.ref)
-      .sort();
-    if (losingRefs.length > 0) {
-      const shown = losingRefs.slice(0, 5).join(", ");
-      const suffix = losingRefs.length > 5 ? ", …" : "";
-      warnings.push(
-        `After removal, ${losingRefs.length} model(s) will lose policy allowance: ${shown}${suffix}.`
-      );
-    }
-  }
+  // 仅由该 wildcard 放行的 inventory 模型行：被它覆盖且不被任何剩余规则覆盖
+  warnings.push(...losingAllowanceWarnings(options.inventory, trimmed, remainingStrings));
 
   return { config: next, warnings, removedCount };
 }
@@ -532,7 +534,10 @@ export function replaceModelPolicyRule(
 
   // 7. 构造最终 allow（每个匹配位置写入同一新规则，保留副本数量与原位置）并统一校验最终状态
   const finalRaw = raw.map((entry) => (entry === value ? storedRule : entry));
-  assertPolicyFinalState(config, finalRaw, `replace ${value}`);
+  assertPolicyFinalState(config, finalRaw, `replace ${value}`, undefined, {
+    removedValues: [value],
+    addedRules: [storedRule]
+  });
 
   // 8. 写入：在克隆上重新计算最终 allow，输出不与输入共享任何引用；不动其它条目
   const next = structuredClone(config);
@@ -586,7 +591,7 @@ export function removeModelPolicyRule(
 
   // 3. 构造最终 allow 并统一校验最终状态（防清空 + primary/fallback 覆盖）
   const finalRaw = raw.filter((entry) => entry !== value);
-  assertPolicyFinalState(config, finalRaw, `remove ${value}`, [value]);
+  assertPolicyFinalState(config, finalRaw, `remove ${value}`, [value], { removedValues: [value] });
 
   // 4. 写入：在克隆上重新计算，删除全部相同副本；不动其它条目与非字符串条目
   const next = structuredClone(config);
@@ -609,17 +614,16 @@ export function removeModelPolicyRule(
 
 /**
  * 纯规则删除可删性投影（非抛出）：与 removeModelPolicyRule 的成败严格一致——
- * 同一模式门禁、同一完全相同匹配存在性检查、同一 assertPolicyFinalState 最终状态保护，
- * 只是不构造写入结果。供 inventory 规则行 `removable` 投影使用（2026-09-16 spec §4：
- * 共用 Core 守卫，不复制匹配器，不用模型行 canRemovePolicyExactRef 推断规则可删性）。
+ * 同一模式门禁、同一完全相同匹配存在性检查、同一最终状态保护（共享
+ * assessPolicyRuleRemoval 判定），只是不构造写入结果。供 inventory 规则行
+ * `removable` 投影使用（2026-09-16 spec §4：共用 Core 守卫，不复制匹配器，
+ * 不用模型行 canRemovePolicyExactRef 推断规则可删性）。
+ * `context` 由 inventory 投影传入一次构建的匹配上下文；缺省时即时构建。
  */
-export function canRemoveModelPolicyRule(config: OpenClawConfig, value: string): boolean {
+export function canRemoveModelPolicyRule(config: OpenClawConfig, value: string, context?: ModelPolicyMatchContext): boolean {
   try {
     assertPolicyRestricted(config);
-    const raw = readModelPolicyAllowRaw(config)!;
-    if (!raw.some((entry) => entry === value)) return false;
-    assertPolicyFinalState(config, raw.filter((entry) => entry !== value), `remove ${value}`);
-    return true;
+    return assessPolicyRuleRemoval(context ?? ModelPolicyMatchContext.fromConfig(config), [value]).removable;
   } catch (error) {
     if (isModelPolicyEditError(error)) return false;
     throw error;
@@ -668,7 +672,9 @@ export function removeModelPolicyRules(
   // 3. 构造最终 allow 并一次性统一校验最终状态（防清空 + primary/fallback 覆盖）
   const valueSet = new Set(uniqueValues);
   const finalRaw = raw.filter((entry) => !valueSet.has(entry as string));
-  assertPolicyFinalState(config, finalRaw, `remove ${uniqueValues.join(", ")}`, uniqueValues);
+  assertPolicyFinalState(config, finalRaw, `remove ${uniqueValues.join(", ")}`, uniqueValues, {
+    removedValues: uniqueValues
+  });
 
   // 4. 写入：在克隆上重新计算，删除全部匹配副本；不动其它条目与非字符串条目
   const next = structuredClone(config);
@@ -679,12 +685,16 @@ export function removeModelPolicyRules(
   const removedCount = raw.length - finalRaw.length;
   const finalStrings = finalRaw.filter((entry): entry is string => typeof entry === "string");
   const warnings: string[] = [];
+  // 「失去策略放行」逐值判定共享同一个最终 allow 匹配上下文（避免 O(值数×模型数×规则数)）
+  const finalContext = options.inventory === undefined ? undefined : ModelPolicyMatchContext.fromAllowStrings(finalStrings);
   for (const value of uniqueValues) {
     const copies = raw.filter((entry) => entry === value).length;
     if (copies > 1) {
       warnings.push(`Removed ${copies} identical entries of the rule ${value}.`);
     }
-    warnings.push(...losingAllowanceWarnings(options.inventory, value, finalStrings));
+    if (options.inventory !== undefined && finalContext !== undefined) {
+      warnings.push(...losingAllowanceWarningsWithContext(options.inventory, value, finalContext));
+    }
   }
 
   return { config: next, warnings, removedCount };
@@ -692,20 +702,15 @@ export function removeModelPolicyRules(
 
 /**
  * 批量纯规则删除可删性投影（非抛出）：与 removeModelPolicyRules 的成败严格一致，
- * 同一模式门禁、同一存在性检查、同一 assertPolicyFinalState 最终状态保护。
+ * 同一模式门禁、同一存在性检查、同一最终状态保护（共享 assessPolicyRuleRemoval 判定）。
  * 空数组视为 no-op 可删（true）。服务器校验仍是权威，投影仅供勾选默认值与禁用提示。
  */
-export function canRemoveModelPolicyRules(config: OpenClawConfig, values: string[]): boolean {
+export function canRemoveModelPolicyRules(config: OpenClawConfig, values: string[], context?: ModelPolicyMatchContext): boolean {
   try {
     const uniqueValues = [...new Set(values)];
     if (uniqueValues.length === 0) return true;
     assertPolicyRestricted(config);
-    const raw = readModelPolicyAllowRaw(config)!;
-    const missing = uniqueValues.filter((value) => !raw.some((entry) => entry === value));
-    if (missing.length > 0) return false;
-    const valueSet = new Set(uniqueValues);
-    assertPolicyFinalState(config, raw.filter((entry) => !valueSet.has(entry as string)), "remove", uniqueValues);
-    return true;
+    return assessPolicyRuleRemoval(context ?? ModelPolicyMatchContext.fromConfig(config), uniqueValues).removable;
   } catch (error) {
     if (isModelPolicyEditError(error)) return false;
     throw error;

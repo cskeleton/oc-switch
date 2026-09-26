@@ -1,6 +1,7 @@
 import { normalizeProviderId, parseModelRef } from "./model-ref";
-import { getModelPolicyMode, getModelSelectionSource, readModelPolicyAllowRaw, isPolicyAllowsRef, findPolicyWildcardForRef } from "./model-policy";
-import { buildModelPolicyRevision, canRemoveModelPolicyRule } from "./model-policy-edit";
+import { getModelPolicyMode, readModelPolicyAllowRaw, wildcardEntryMatches } from "./model-policy";
+import { assessPolicyRuleRemoval, ModelPolicyMatchContext, wildcardProviderBucketKey } from "./model-policy-index";
+import { buildModelPolicyRevision } from "./model-policy-edit";
 import type { PluginProvider } from "./plugin-catalog";
 import { readFallbackModelRefs, readPrimaryModelRef } from "./primary-model";
 import type { RuntimeModelDiagnostic, RuntimeModelEntry, RuntimeModelSnapshot } from "./runtime-model-catalog";
@@ -278,10 +279,15 @@ export function buildModelInventory(input: BuildModelInventoryInput): ModelInven
     if (!pluginEnabledById.has(provider.pluginId)) pluginEnabledById.set(provider.pluginId, provider.enabled);
   }
   for (const plugin of plugins) pluginEnabledById.set(plugin.id, plugin.enabled);
+  // 全部插件启用时无需逐模型计算 authoredRefs 身份（惰性短路，语义不变）
+  const anyPluginDisabled = [...pluginEnabledById.values()].some((enabled) => enabled === false);
 
   const primaryRef = readPrimaryModelRef(config);
   const fallbackRefs = readFallbackModelRefs(config);
   const policyMode = getModelPolicyMode(config);
+  // 单次投影共用的 policy 匹配上下文：exact 身份索引 / wildcard 分桶 / 副本计数 /
+  // primary-fallback 覆盖（一次构建、重复查询；2026-09-26 方案 §4 O2）
+  const policyMatch = ModelPolicyMatchContext.fromConfig(config);
   const primaryIdentity = primaryRef !== undefined ? refIdentity(primaryRef) : undefined;
   const fallbackIdentities = new Set(fallbackRefs.map((ref) => refIdentity(ref)).filter((id) => id !== undefined));
   const providerDisabled = (providerIdentity: string): boolean => disabledProviderIds.has(providerIdentity);
@@ -343,7 +349,7 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
     const provider = ensureProvider(providerIdentity, plugin.providerId, "plugin-manifest");
     if (!provider.pluginIds.has(plugin.pluginId)) provider.pluginIds.add(plugin.pluginId);
     for (const model of plugin.models) {
-      if (pluginEnabledById.get(plugin.pluginId) === false && !authoredRefs.has(refIdentity(`${plugin.providerId}/${model.id}`))) continue;
+      if (anyPluginDisabled && pluginEnabledById.get(plugin.pluginId) === false && !authoredRefs.has(refIdentity(`${plugin.providerId}/${model.id}`))) continue;
       const working = ensureModel(`${plugin.providerId}/${model.id}`, "plugin-manifest");
       if (working) working.pluginIds.add(plugin.pluginId);
     }
@@ -371,7 +377,7 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
     const disabledPluginOnly = providerKnown && !providerKnown.sources.includes("config") && providerKnown.pluginIds.size > 0 && [...providerKnown.pluginIds].every(id => pluginEnabledById.get(id) === false);
     if (disabledPluginOnly && !authoredRefs.has(identity) && !pickerIdentities.has(identity)) continue;
     // --all 只补所选或已管理模型的证据，不把世界目录变成用户待办。
-    if (!pickerIdentities.has(identity) && !configuredIdentities.has(identity) && !modelsByIdentity.has(identity!) && !providerKnown?.sources.includes("config") && !authoredRefs.has(identity) && getModelSelectionSource(config, entry.ref) === undefined) continue;
+    if (!pickerIdentities.has(identity) && !configuredIdentities.has(identity) && !modelsByIdentity.has(identity!) && !providerKnown?.sources.includes("config") && !authoredRefs.has(identity) && policyMatch.selectionSourceFor(entry.ref) === undefined) continue;
     if (!pickerIdentities.has(identity) && !configuredIdentities.has(identity) && !modelsByIdentity.has(identity!) && !authoredRefs.has(identity) && entry.available !== true) continue;
     // missing 行只是 OpenClaw 为悬空引用生成的占位，不能作为目录或 wildcard 命中证据。
     const runtimeEvidence = entry.missing !== true;
@@ -392,10 +398,7 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
 
   // 引用来源（非字符串 policy 条目不参与匹配，只在 policyRules 里以 index/invalid 呈现）
   const policyAllowRaw = readModelPolicyAllowRaw(config) ?? [];
-  const policyStrings: string[] = [];
-  policyAllowRaw.forEach((entry) => {
-    if (typeof entry === "string") policyStrings.push(entry);
-  });
+  const policyStrings: readonly string[] = policyMatch.stringEntries;
 
   function addReference(identity: string, ref: string, source: ModelReferenceSource): void {
     let model = modelsByIdentity.get(identity);
@@ -429,7 +432,7 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
     for (const model of modelsByIdentity.values()) {
       if (model.catalogSources.length === 0) continue;
       const ref = `${model.providerId}/${model.modelId}`;
-      if (policyStrings.some((entry) => entry.endsWith("/*") && wildcardEntryCovers(entry, ref))) {
+      if (policyMatch.findWildcardCovering(ref) !== undefined) {
         if (!model.referenceSources.includes("policy-wildcard")) model.referenceSources.push("policy-wildcard");
       }
     }
@@ -470,8 +473,8 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
         ? "policy-exact"
         : referenceSources.includes("policy-wildcard")
           ? "policy-wildcard"
-          : policyMode === "legacy" ? getModelSelectionSource(config, ref)
-            : policyMode === "unrestricted" && catalogSources.length > 0 ? "unrestricted" : getModelSelectionSource(config, ref) === "policy-exact" ? "policy-exact" : undefined;
+          : policyMode === "legacy" ? policyMatch.selectionSourceFor(ref)
+            : policyMode === "unrestricted" && catalogSources.length > 0 ? "unrestricted" : policyMatch.selectionSourceFor(ref) === "policy-exact" ? "policy-exact" : undefined;
     const policyAllowed = selectionSource !== undefined;
 
     // 可用性证据规则（spec §7.2）：OpenClaw 明确 available 的事实优先
@@ -534,8 +537,12 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
       !inactive && (protectedReference || referenceSources.includes("policy-exact") || (policyAllowed && availability === "available"));
     const needsAttention = !inactive && (policyAllowed || protectedReference) && availability !== "available";
     // 不可用行走「处理」流程（补全/替换/删除引用/保留），不提供普通启停开关（spec §11.2）
-    const preservesRestricted = policyAllowRaw.some(entry => typeof entry !== "string" || !exactEntryCovers(entry, ref));
-    const canRemovePolicyExactRef = isExactOnlySelection && !protectedReference && preservesRestricted && !findPolicyWildcardForRef(config, ref);
+    // preservesRestricted：只有当 raw 全部条目都是覆盖本 ref 的字符串时才是 false（旧实现 some 语义含空数组）
+    const preservesRestricted = !(
+      policyMatch.rawLength === policyMatch.stringEntries.length &&
+      policyMatch.countExactCovers(ref) === policyMatch.stringEntries.length
+    );
+    const canRemovePolicyExactRef = isExactOnlySelection && !protectedReference && preservesRestricted && policyMatch.findWildcardCovering(ref) === undefined;
     // primary/fallback 只阻断关闭；为它们补回缺失的允许规则是安全的启用操作。
     const canTogglePolicy = !providerDisabled(providerIdentity) && (!policyAllowed || !protectedReference) && availability === "available" &&
       (policyMode === "legacy" || (policyMode === "restricted" && (!policyAllowed || canRemovePolicyExactRef)));
@@ -576,12 +583,21 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
   }
   // 稳定排序：providerId（小写）→ modelId（大小写敏感字典序）
   models.sort((a, b) => a.providerId < b.providerId ? -1 : a.providerId > b.providerId ? 1 : a.modelId < b.modelId ? -1 : a.modelId > b.modelId ? 1 : 0);
+  // 按 Provider 一次分组：Provider 行聚合与规则投影共用（models[].providerId 已归一，可直接作键）
+  const modelsByProviderId = new Map<string, ModelInventoryEntry[]>();
+  const modelByIdentity = new Map<string, ModelInventoryEntry>();
+  for (const model of models) {
+    const list = modelsByProviderId.get(model.providerId) ?? [];
+    list.push(model);
+    modelsByProviderId.set(model.providerId, list);
+    modelByIdentity.set(`${model.providerId}/${model.modelId}`, model);
+  }
 
   // ---------- 3. Provider 行计算 ----------
   const providers: ProviderInventoryEntry[] = [];
   for (const provider of providersByNormal.values()) {
     const providerIdentity = normalizeProviderId(provider.providerId);
-    const providerModels = models.filter((model) => normalizeProviderId(model.providerId) === providerIdentity);
+    const providerModels = modelsByProviderId.get(providerIdentity) ?? [];
     const pluginIds = [...provider.pluginIds].sort();
     const fromConfig = provider.sources.includes("config");
     const pluginEnabled =
@@ -649,9 +665,19 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
   providers.sort((a, b) => (a.providerId < b.providerId ? -1 : a.providerId > b.providerId ? 1 : 0));
 
   // ---------- 4. policy rule 投影 ----------
-  const policyRules = projectPolicyRules(config, policyAllowRaw, policyMode, models);
+  const policyRules = projectPolicyRules(policyMatch, policyAllowRaw, policyMode, modelByIdentity, modelsByProviderId);
 
   // ---------- 5. summary 与插件回显 ----------
+  let summaryPolicyAllowed = 0;
+  let summaryAvailable = 0;
+  let summaryUnavailable = 0;
+  let summaryUnknown = 0;
+  for (const model of models) {
+    if (model.policyAllowed) summaryPolicyAllowed++;
+    if (model.availability === "available") summaryAvailable++;
+    else if (model.availability === "unavailable") summaryUnavailable++;
+    else summaryUnknown++;
+  }
   return {
     schemaVersion: 2,
     pickerSource: runtime.pickerSource ?? "inferred",
@@ -668,10 +694,10 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
     ],
     summary: {
       modelCount: models.length,
-      policyAllowedCount: models.filter((model) => model.policyAllowed).length,
-      availableCount: models.filter((model) => model.availability === "available").length,
-      unavailableCount: models.filter((model) => model.availability === "unavailable").length,
-      unknownCount: models.filter((model) => model.availability === "unknown").length
+      policyAllowedCount: summaryPolicyAllowed,
+      availableCount: summaryAvailable,
+      unavailableCount: summaryUnavailable,
+      unknownCount: summaryUnknown
     }
   };
 }
@@ -711,22 +737,9 @@ function derivePlugins(
   return [...derived.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
-/** 通配条目是否覆盖 ref：复用 model-policy 的折叠前缀语义（不重复实现匹配细节）。 */
+/** 通配条目是否覆盖 ref：直接复用 model-policy 的 wildcardEntryMatches（entry 为 wildcard 时 exact 分支恒 false）。 */
 function wildcardEntryCovers(entry: string, ref: string): boolean {
-  return entry.endsWith("/*") && isPolicyAllowsRef([entry], ref);
-}
-
-/** 与 model-policy 的精确匹配语义一致（Provider 折叠 + model 敏感）。 */
-function exactEntryCovers(entry: string, ref: string): boolean {
-  if (entry.endsWith("/*")) return false;
-  if (entry === ref) return true;
-  const parsedEntry = tryParseRef(entry);
-  const parsedRef = tryParseRef(ref);
-  if (parsedEntry === undefined || parsedRef === undefined) return false;
-  return (
-    normalizeProviderId(parsedEntry.providerId) === normalizeProviderId(parsedRef.providerId) &&
-    parsedEntry.modelId === parsedRef.modelId
-  );
+  return entry.endsWith("/*") && wildcardEntryMatches(entry, ref);
 }
 
 /**
@@ -739,12 +752,16 @@ function exactEntryCovers(entry: string, ref: string): boolean {
  * - editable：合法字符串规则在 restricted 模式下恒为 true（不可删除不等于不可编辑；
  *   sole wildcard removable=false 仍可打开编辑框），invalid 恒为 false；
  * - 非字符串条目不回显值，仅返回 index/invalid 诊断（secret-free 纪律）。
+ *
+ * 匹配走单次构建的 ModelPolicyMatchContext：exact 规则按 identity 索引直接取模型行，
+ * wildcard 规则只扫对应 Provider 分桶，removable 复用共享删除判定（O(1)/规则）。
  */
 function projectPolicyRules(
-  config: OpenClawConfig,
+  policyMatch: ModelPolicyMatchContext,
   policyAllowRaw: unknown[],
   policyMode: ModelPolicyMode,
-  models: ModelInventoryEntry[]
+  modelByIdentity: Map<string, ModelInventoryEntry>,
+  modelsByProvider: Map<string, ModelInventoryEntry[]>
 ): ModelPolicyRuleEntry[] {
   // legacy / unrestricted 模式下 allow 不产生有效规则，不投影（保持三态语义）
   if (policyMode === "legacy" || policyMode === "unrestricted") return [];
@@ -765,18 +782,26 @@ function projectPolicyRules(
       return;
     }
     const kind: ModelPolicyRuleEntry["kind"] = entry.endsWith("/*") ? "wildcard" : "exact";
-    const matched = models.filter((model) =>
-      kind === "wildcard"
-        ? model.catalogSources.length > 0 && wildcardEntryCovers(entry, `${model.providerId}/${model.modelId}`)
-        : exactEntryCovers(entry, `${model.providerId}/${model.modelId}`)
-    );
+    let matched: ModelInventoryEntry[];
+    if (kind === "wildcard") {
+      // wildcard 只扫该 Provider 的模型行（分桶键与匹配上下文同一推导）；空 Provider 段
+      // 的 wildcard 不可能覆盖任何可解析 ref，自然得到空桶
+      const candidates = modelsByProvider.get(wildcardProviderBucketKey(entry)) ?? [];
+      matched = candidates.filter((model) =>
+        model.catalogSources.length > 0 && wildcardEntryCovers(entry, `${model.providerId}/${model.modelId}`)
+      );
+    } else {
+      // exact 按 identity 取唯一模型行（与旧实现的逐行 exactEntryCovers 扫描等价）
+      const model = modelByIdentity.get(refIdentity(entry) ?? "");
+      matched = model === undefined ? [] : [model];
+    }
     rules.push({
       value: entry,
       kind,
       matchedModelCount: matched.length,
       unavailableModelCount: matched.filter((model) => model.availability === "unavailable").length,
       // 可删性与 Core 纯规则删除共用同一守卫（同一匹配器、同一最终覆盖判断）
-      removable: canRemoveModelPolicyRule(config, entry),
+      removable: assessPolicyRuleRemoval(policyMatch, [entry]).removable,
       editable: true
     });
   });

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readJsonState, writeJsonState } from "./json-state-store";
 import { readPrimaryModelRef, readFallbackModelRefs } from "./primary-model";
-import type { ModelInventory } from "./model-inventory";
+import type { ModelInventory, ModelInventoryEntry, ModelPluginDescriptor, ProviderInventoryEntry } from "./model-inventory";
 import type { OpenClawConfig } from "./types";
 
 export interface ModelAttentionIssue {
@@ -51,6 +51,55 @@ function protectedRefs(config: OpenClawConfig): string[] {
 /** 目录事实不等于待办：停用对象安静，同一 Provider/插件的失败合并。 */
 export function buildModelAttention(config: OpenClawConfig, inventory: ModelInventory): ModelAttentionIssue[] {
   const dependencies = protectedRefs(config);
+  const dependencySet = new Set(dependencies);
+  // 预建查询表（单次调用内）：Provider 按小写 id 首见、插件按 id/贡献 Provider 首见，
+  // 多插件贡献的选择顺序保持 inventory.plugins 原顺序（find 首个匹配的语义）
+  const providerByLowerId = new Map<string, ProviderInventoryEntry>();
+  for (const provider of inventory.providers) {
+    const key = provider.providerId.toLowerCase();
+    if (!providerByLowerId.has(key)) providerByLowerId.set(key, provider);
+  }
+  const pluginPositionById = new Map<string, number>();
+  const pluginsByProviderLower = new Map<string, ModelPluginDescriptor[]>();
+  inventory.plugins.forEach((plugin, position) => {
+    if (!pluginPositionById.has(plugin.id)) pluginPositionById.set(plugin.id, position);
+    for (const providerId of plugin.providerIds) {
+      const key = providerId.toLowerCase();
+      const list = pluginsByProviderLower.get(key) ?? [];
+      if (!list.includes(plugin)) list.push(plugin);
+      pluginsByProviderLower.set(key, list);
+    }
+  });
+  const findPluginForRow = (row: ModelInventoryEntry): ModelPluginDescriptor | undefined => {
+    let best: ModelPluginDescriptor | undefined;
+    let bestPosition = Infinity;
+    for (const pluginId of row.pluginIds) {
+      const position = pluginPositionById.get(pluginId);
+      if (position !== undefined && position < bestPosition) {
+        bestPosition = position;
+        best = inventory.plugins[position]!;
+      }
+    }
+    for (const plugin of pluginsByProviderLower.get(row.providerId.toLowerCase()) ?? []) {
+      const position = pluginPositionById.get(plugin.id)!;
+      if (position < bestPosition) {
+        bestPosition = position;
+        best = plugin;
+      }
+    }
+    return best;
+  };
+  // 各 Provider 是否仍有「可见/放行、未停用、可用」的健康选项：一次 O(M) 预建，
+  // 替代逐行 O(M) 的 some 扫描（全部失效场景下旧实现接近 M²）
+  const healthyByProviderLower = new Map<string, true>();
+  for (const model of inventory.models) {
+    if (!(model.pickerVisible || model.policyAllowed) || model.inactive || model.availability !== "available") continue;
+    const key = model.providerId.toLowerCase();
+    if (!healthyByProviderLower.has(key)) healthyByProviderLower.set(key, true);
+  }
+  const hasHealthySelectionFor = (ownerProviders: readonly string[]): boolean =>
+    ownerProviders.some((providerId) => healthyByProviderLower.get(providerId.toLowerCase()) === true);
+
   const groups = new Map<string, ModelAttentionIssue>();
   const unknown = inventory.models.some(m => m.availability === "unknown" && !m.inactive);
   if (inventory.diagnostics.length || unknown) {
@@ -58,16 +107,16 @@ export function buildModelAttention(config: OpenClawConfig, inventory: ModelInve
       title: "运行状态尚未确认", detail: "部分探测未完成。保留已有证据，请重试或查看诊断；不会把未知目录批量列为模型故障。" });
   }
   for (const row of inventory.models) {
-    const protectedRef = dependencies.includes(identity(row.ref));
-    const provider = inventory.providers.find(p => p.providerId.toLowerCase() === row.providerId.toLowerCase());
-    const plugin = inventory.plugins.find(p => row.pluginIds.includes(p.id) || p.providerIds.some(id => id.toLowerCase() === row.providerId.toLowerCase()));
+    const protectedRef = dependencySet.has(identity(row.ref));
+    const provider = providerByLowerId.get(row.providerId.toLowerCase());
+    const plugin = findPluginForRow(row);
     const stopped = provider?.disabled || (!row.catalogSources.includes("config") && plugin?.enabled === false);
     const residual = Boolean(stopped && row.pickerVisible && inventory.pickerSource === "gateway");
     if (!residual && (!protectedRef && (row.inactive || stopped || (!row.policyAllowed && !row.pickerVisible)))) continue;
     if (!residual && (row.availability === "available" || row.availability === "unknown")) continue;
     // 单模型失效不升级为整插件故障，避免关闭同组仍被正常使用的模型。
     const ownerProviders = plugin?.providerIds ?? [row.providerId];
-    const hasHealthySelection = inventory.models.some(m => ownerProviders.some(p => p.toLowerCase() === m.providerId.toLowerCase()) && (m.pickerVisible || m.policyAllowed) && !m.inactive && m.availability === "available");
+    const hasHealthySelection = hasHealthySelectionFor(ownerProviders);
     const ownerType = protectedRef || (!residual && hasHealthySelection) ? "model" : plugin ? "plugin" : provider?.sources.includes("config") ? "provider" : "model";
     const ownerId = ownerType === "plugin" ? plugin!.id : ownerType === "provider" ? row.providerId : row.ref;
     const kind = protectedRef ? "dependency" : residual ? "residual" : "unavailable";
