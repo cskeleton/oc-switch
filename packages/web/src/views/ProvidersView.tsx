@@ -145,20 +145,25 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
     setError(null);
     setAuxErrors({});
     setLoading(true);
+    // 读/写响应共用同一递增代次：所有成功/失败状态更新都在代次检查之后统一应用，迟到的旧轮一律作废
+    const auxNext: { health?: string; migrations?: string; queue?: string } = {};
+    let attentionFetchError: string | null = null;
+    const auxMessage = (err: unknown): string => err instanceof Error ? err.message : "读取失败";
     try {
       const [list, health, migrationPreview, queue, inventoryResult, attentionResult] = await Promise.all([
-        client.getProviders().then(result => { setProviders(result.providers); return result; }),
-        client.getHealth().catch((err: unknown) => { setAuxErrors(prev => ({ ...prev, health: err instanceof Error ? err.message : "读取失败" })); return null; }),
-        client.getProviderSecretRefMigrations().catch((err: unknown) => { setAuxErrors(prev => ({ ...prev, migrations: err instanceof Error ? err.message : "读取失败" })); return null; }),
+        client.getProviders(),
+        client.getHealth().catch((err: unknown) => { auxNext.health = auxMessage(err); return null; }),
+        client.getProviderSecretRefMigrations().catch((err: unknown) => { auxNext.migrations = auxMessage(err); return null; }),
         // 队列计数失败不阻塞主列表
-        client.getModelMetadataSyncQueue().catch((err: unknown) => { setAuxErrors(prev => ({ ...prev, queue: err instanceof Error ? err.message : "读取失败" })); return null; }),
+        client.getModelMetadataSyncQueue().catch((err: unknown) => { auxNext.queue = auxMessage(err); return null; }),
         // 新读路径不可用时明确报错，不能以旧 config-only 列表冒充完整 inventory。
-        presetInventory ? Promise.resolve(presetInventory) : client.getModelInventory().then(result => { setInventory(result); return result; }),
-        client.getModelAttention().catch((err: unknown) => { setAttentionError(err instanceof Error ? err.message : "无法读取问题状态"); return null; })
+        presetInventory ? Promise.resolve(presetInventory) : client.getModelInventory(),
+        client.getModelAttention().catch((err: unknown) => { attentionFetchError = err instanceof Error ? err.message : "无法读取问题状态"; return null; })
       ]);
       if (seq !== loadSeq.current) return;
       setProviders(list.providers);
       setInventory(inventoryResult);
+      setAuxErrors(auxNext);
       if (attentionResult) {
         if (Array.isArray(attentionResult.pending) && Array.isArray(attentionResult.ignored)) {
           setAttention(attentionResult);
@@ -166,6 +171,8 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
         } else {
           setAttentionError("提醒协议不兼容，请重启服务。");
         }
+      } else if (attentionFetchError) {
+        setAttentionError(attentionFetchError);
       }
       setDuplicateGroups(health?.caseDuplicateGroups ?? []);
       setSecretRefMigrations(

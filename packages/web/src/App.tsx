@@ -7,8 +7,8 @@ import {
   Loader2,
   Settings
 } from "lucide-react";
-import { Suspense, lazy, useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import { createApiClient } from "./api";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { createApiClient, type ApiClient } from "./api";
 import {
   clearAuthSession,
   persistAuth,
@@ -135,27 +135,40 @@ export function App() {
     [baseUrl, token]
   );
 
-  // 连接握手：手动连接、自动登录与版本重试共用一次 /api/meta，同时完成认证与协议校验
-  const verifyService = useCallback(async () => {
-    const info = await client.getServiceInfo();
+  // 连接握手：手动连接、自动登录与版本重试共用一次 /api/meta，同时完成认证与协议校验；
+  // 登录路径握手成功后经 verifiedServiceKey 复用结果，effect 不再对同一身份补发 meta（O1）
+  const verifyServiceClient = useCallback(async (target: ApiClient) => {
+    const info = await target.getServiceInfo();
     if (info.protocolVersion !== 2) throw new Error("前后端版本不兼容，请重启 oc-switch 后刷新页面。");
-  }, [client]);
+  }, []);
+  const verifyService = useCallback(() => verifyServiceClient(client), [client, verifyServiceClient]);
+  /** 已完成握手复用的 client 身份（baseUrl+token）；身份变化必须重新握手 */
+  const verifiedServiceKey = useRef<string | null>(null);
+  const identityKey = useMemo(() => `${baseUrl}\0${token}`, [baseUrl, token]);
   const serviceCheckError = "无法确认服务版本。请重启 oc-switch 后刷新；依赖新版状态的操作暂不可用。";
 
   useEffect(() => {
     if (!connected) return;
+    // 登录路径已对同一身份完成握手：直接复用结果，不再补发 meta；身份或断开变化时才重新握手
+    if (verifiedServiceKey.current === identityKey) {
+      setService({ ready: true });
+      return;
+    }
     let cancelled = false;
     setService({ ready: false });
     void verifyService().then(() => {
       if (!cancelled) setService({ ready: true });
     }).catch(() => { if (!cancelled) setService({ ready: false, error: serviceCheckError }); });
     return () => { cancelled = true; };
-  }, [connected, verifyService]);
+  }, [connected, verifyService, identityKey]);
 
   /** 版本确认失败后的显式重试：只重跑连接握手，不重建 client、不触发业务刷新 */
   function retryServiceCheck() {
     setService({ ready: false });
+    // 显式重试不复用登录握手：重新验证，成功后再记录复用键
+    verifiedServiceKey.current = null;
     void verifyService().then(() => {
+      verifiedServiceKey.current = identityKey;
       setService({ ready: true });
     }).catch(() => { setService({ ready: false, error: serviceCheckError }); });
   }
@@ -185,8 +198,11 @@ export function App() {
     let cancelled = false;
     void (async () => {
       try {
-        await createApiClient({ baseUrl: initialAuth.baseUrl, token: initialAuth.token }).getStatus();
+        // 自动登录与手动连接共用一次 /api/meta 握手（认证+协议校验），成功后复用不再补发
+        const loginClient = createApiClient({ baseUrl: initialAuth.baseUrl, token: initialAuth.token });
+        await verifyServiceClient(loginClient);
         if (cancelled) return;
+        verifiedServiceKey.current = `${initialAuth.baseUrl}\0${initialAuth.token}`;
         finishConnect(initialAuth.token, initialAuth.baseUrl, {
           rememberToken: initialAuth.rememberToken,
           autoLogin: initialAuth.autoLogin
@@ -209,7 +225,9 @@ export function App() {
     setConnectError(null);
     const testClient = createApiClient({ baseUrl, token });
     try {
-      await testClient.getStatus();
+      // 手动连接与自动登录共用一次 /api/meta 握手（认证+协议校验），成功后复用不再补发
+      await verifyServiceClient(testClient);
+      verifiedServiceKey.current = identityKey;
       finishConnect(token, baseUrl, { rememberToken, autoLogin });
     } catch (err) {
       setConnectError(err instanceof Error ? err.message : "连接失败");

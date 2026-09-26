@@ -6,6 +6,8 @@ import {
   ApiRequestError,
   createApiClient,
   type ApiClient,
+  type ModelAttentionIssue,
+  type ModelAttentionReport,
   type ModelInventory,
   type ModelInventoryEntry,
   type ModelPluginDescriptor,
@@ -654,6 +656,71 @@ describe("runtime Web review regressions", () => {
       expect(await view.findByText(warning)).toBeTruthy();
       // O3：写后不再 GET inventory——写响应中的有效 v2 视图被直接消费
       await waitFor(() => expect(loadInventory).toHaveBeenCalledTimes(1));
+    });
+
+    test("纯规则写后同步待处理列表：删除唯一悬空规则后需处理归零，不补发 inventory GET", async () => {
+      // review P2-3 回归：写响应只应用 inventory 时，待处理区段会与已保存配置脱节
+      const issue: ModelAttentionIssue = {
+        id: "model:ghost/gone:unavailable", revision: "v1", kind: "unavailable",
+        ownerType: "model", ownerId: "ghost/gone", providerIds: ["ghost"], refs: ["ghost/gone"],
+        protectedRefs: [], title: "ghost 的模型未就绪", detail: "可配置或不再使用", canIgnore: true, canDisable: true
+      };
+      const ghostRule = { value: "ghost/gone", kind: "exact" as const, matchedModelCount: 0, unavailableModelCount: 1, removable: true, editable: true };
+      const before = inventory([], { schemaVersion: 2, pickerSource: "gateway", policyMode: "restricted", policyRevision: "v1:fixture", policyRules: [ghostRule] });
+      const after = inventory([], { schemaVersion: 2, pickerSource: "gateway", policyMode: "restricted", policyRevision: "v2:fixture", policyRules: [] });
+      let attentionCalls = 0;
+      const getModelAttention = mock(async (): Promise<ModelAttentionReport> => {
+        attentionCalls += 1;
+        return attentionCalls === 1 ? { pending: [issue], ignored: [] } : { pending: [], ignored: [] };
+      });
+      const remove = mock(async () => ({
+        ok: true as const, value: "ghost/gone", removedCount: 1, backupId: "fixture-backup", warnings: [] as string[], runtimeConfirmed: true, inventory: after
+      }));
+      const loadInventory = mock(async () => before);
+      const view = renderModels(before, { getModelInventory: loadInventory, getModelAttention, removeModelPolicyRule: remove });
+
+      await view.findByRole("button", { name: "需处理 1" });
+      await userEvent.click(await view.findByRole("button", { name: "展开 Policy 规则" }));
+      await userEvent.click(view.getByRole("button", { name: "删除规则 ghost/gone" }));
+      await userEvent.click(within(view.getByRole("dialog")).getByRole("button", { name: "删除规则" }));
+      await view.findByText(/已删除规则 ghost\/gone/);
+
+      // 写后由父页面统一刷新一次 attention：带保存结果的待处理区段必须立即归零
+      expect(await view.findByRole("button", { name: "需处理 0" })).toBeTruthy();
+      expect(loadInventory).toHaveBeenCalledTimes(1);
+      expect(getModelAttention).toHaveBeenCalledTimes(2);
+    });
+
+    test("写响应推进代次：迟到的旧读取不得重新显示刚删除的规则", async () => {
+      // review P2-4 回归：写响应未推进 loadSeq 时，挂起中的旧读取会盖回较新的写后视图
+      const ghostRule = { value: "ghost/gone", kind: "exact" as const, matchedModelCount: 0, unavailableModelCount: 1, removable: true, editable: true };
+      const before = inventory([], { schemaVersion: 2, pickerSource: "gateway", policyMode: "restricted", policyRevision: "v1:fixture", policyRules: [ghostRule] });
+      const after = inventory([], { schemaVersion: 2, pickerSource: "gateway", policyMode: "restricted", policyRevision: "v2:fixture", policyRules: [] });
+      let calls = 0;
+      let releaseSlow!: (value: ModelInventory) => void;
+      const slowGate = new Promise<ModelInventory>((resolve) => { releaseSlow = resolve; });
+      const loadInventory = mock(() => {
+        calls += 1;
+        return calls === 2 ? slowGate : Promise.resolve(before);
+      });
+      const remove = mock(async () => ({
+        ok: true as const, value: "ghost/gone", removedCount: 1, backupId: "fixture-backup", warnings: [] as string[], runtimeConfirmed: true, inventory: after
+      }));
+      const view = renderModels(before, { getModelInventory: loadInventory, removeModelPolicyRule: remove });
+
+      await userEvent.click(await view.findByRole("button", { name: "展开 Policy 规则" }));
+      await view.findByRole("button", { name: "删除规则 ghost/gone" });
+      // 挂起中的旧读取（慢轮）：删除完成前就发射，删除后才返回
+      await userEvent.click(view.getByRole("button", { name: "刷新" }));
+      expect(calls).toBe(2);
+      await userEvent.click(view.getByRole("button", { name: "删除规则 ghost/gone" }));
+      await userEvent.click(within(view.getByRole("dialog")).getByRole("button", { name: "删除规则" }));
+      await view.findByText(/已删除规则 ghost\/gone/);
+      await waitFor(() => expect(view.queryByRole("button", { name: "删除规则 ghost/gone" })).toBeNull());
+
+      releaseSlow(before);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+      expect(view.queryByRole("button", { name: "删除规则 ghost/gone" })).toBeNull();
     });
 
     test("删除规则确认前重查 removable：规则变为不可删时禁用确认按钮", async () => {

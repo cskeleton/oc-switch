@@ -573,40 +573,65 @@ function runDefaultAsyncProcessProbe(
     }
     let stdout = "";
     let outputBytes = 0;
+    let stderrBytes = 0;
     let outputTooLarge = false;
     let settled = false;
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-    }, options.timeoutMs);
+    let killReason: "timeout" | "oversize" | null = null;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
     const finish = (result: RuntimeCommandResult): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      // 故意不清 killTimer：Promise 结算与子进程收尾分离——
+      // 忽略 SIGTERM 的子进程仍须在宽限后被 SIGKILL 回收，结算提前返回不代表进程已死
       resolve(result);
     };
-    const onData = (chunk: Buffer): void => {
-      if (settled) return;
+    const sliceStdout = (): string => stdout.slice(0, options.maxOutputBytes);
+    // SIGTERM 后仍在收尾宽限内未退出则升级 SIGKILL；Promise 不依赖最终 signal，保证有界结束
+    const terminate = (reason: "timeout" | "oversize"): void => {
+      if (killReason) return;
+      killReason = reason;
+      child.kill("SIGTERM");
+      killTimer = setTimeout(() => {
+        // SIGKILL 不可捕获/忽略：顽固子进程必然在此被回收；close 事件统一清理定时器
+        child.kill("SIGKILL");
+        // oversize 至此必有结果；timeout 已即时结算
+        if (reason === "oversize") finish({ status: null, stdout: sliceStdout(), timedOut: false, outputTooLarge: true });
+      }, 250);
+      killTimer.unref?.();
+      // 超时在发出终止信号时即刻固定为 timedOut；子进程随后捕获/忽略 SIGTERM 再 exit 0 也不得冒充未超时
+      if (reason === "timeout") finish({ status: null, stdout: sliceStdout(), timedOut: true });
+    };
+    const timer = setTimeout(() => terminate("timeout"), options.timeoutMs);
+    const onStdout = (chunk: Buffer): void => {
+      if (settled || outputTooLarge) return;
       outputBytes += chunk.byteLength;
       if (outputBytes > options.maxOutputBytes) {
         // 与 spawnSync ENOBUFS 对齐：截断输出并标记 oversize
         outputTooLarge = true;
-        child.kill("SIGTERM");
+        terminate("oversize");
         return;
       }
       stdout += chunk.toString("utf8");
     };
-    child.stdout?.on("data", onData);
-    child.stderr?.on("data", onData);
+    child.stdout?.on("data", onStdout);
+    // stderr 独立消费且有界：只排空防背压，绝不拼入 stdout（机器 JSON 通道），内容不回显
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderrBytes += chunk.byteLength;
+      if (stderrBytes > options.maxOutputBytes) stderrBytes = options.maxOutputBytes + 1;
+    });
     child.on("error", () => {
       // ENOENT 等：status=null 且非超时，同 spawnSync 的 error 语义
       finish({ status: null, stdout, timedOut: false });
     });
-    child.on("close", (code, signal) => {
+    child.on("close", (code) => {
+      // 子进程真正退出：唯一清理全部定时器的收尾点（含已发射/未发射的升级定时器）
+      if (killTimer) clearTimeout(killTimer);
       finish({
         status: code,
         stdout: stdout.slice(0, options.maxOutputBytes),
-        // 与同步 probeOutput 一致：status=null 且 SIGTERM 视为超时
-        timedOut: code === null && signal === "SIGTERM",
+        // 自然退出即非超时；超时已在 terminate 时结算并忽略其后退出码
+        timedOut: false,
         ...(outputTooLarge ? { outputTooLarge: true } : {})
       });
     });
@@ -780,8 +805,8 @@ export async function discoverOpenClawRuntimeAsync(
   // 第二段：依赖进程结果的预取（有进程时才可能用到的命令）
   const stage2: Promise<unknown>[] = [];
   if (gatewayProcesses !== undefined && strictProcesses.length > 0) {
-    // 实例不完整或路径证据冲突时的 CLI status 补充
-    prefetch(stage2, "openclaw", CLI_STATUS_ARGS, CLI_STATUS_PROBE_OPTIONS);
+    // 注意：CLI status 不在此预取——同步流水线只在路径缺口/证据冲突时才需要它，
+    // 无条件预取会让已完整解析的目标白等一个进程启动（见两段解析 runParser）
     if (platform === "linux") {
       const claimedUnits = new Set<string>();
       let anyUnclaimed = false;
@@ -836,8 +861,11 @@ export async function discoverOpenClawRuntimeAsync(
   }
   await Promise.all(stage2);
 
-  // 解析阶段：复用现有完整流水线（解析器、候选归并、诊断与同步入口完全一致）
-  return discoverOpenClawRuntime({
+  // 解析阶段：复用现有完整流水线（解析器、候选归并、诊断与同步入口完全一致）。
+  // 两段解析：第一段不发起 CLI status；流水线确实需要它（路径缺口/证据冲突）时再异步补充并重做一次。
+  // 解析是纯函数，重复成本低；已完整解析的目标不必为一个用不到的命令等待进程启动。
+  let cliStatusNeeded = false;
+  const runParser = () => discoverOpenClawRuntime({
     platform,
     homeDir,
     userId,
@@ -852,10 +880,26 @@ export async function discoverOpenClawRuntimeAsync(
       const hit = prefetched.get(commandKey(command, args));
       if (hit instanceof Error) throw hit;
       if (hit) return hit;
+      const isCliStatus = command === "openclaw" && args.join("") === CLI_STATUS_ARGS.join("");
+      if (isCliStatus) {
+        cliStatusNeeded = true;
+        // 空操作结果：supplementWithCliStatus 对 status!==0 不产诊断、不改实例；本次结果作废
+        return { status: 1, stdout: "", timedOut: false };
+      }
       // 未预见到的命令：回退同步有界探测，保证正确性
       return runDefaultProcessProbe(command, args, probeOptions);
     }
   });
+  const first = runParser();
+  if (!cliStatusNeeded) return first;
+  prefetched.set(
+    commandKey("openclaw", CLI_STATUS_ARGS),
+    await runCommandAsync("openclaw", CLI_STATUS_ARGS, CLI_STATUS_PROBE_OPTIONS).then(
+      (result) => result,
+      (error) => (error instanceof Error ? error : new Error(String(error)))
+    )
+  );
+  return runParser();
 }
 
 /** 轻量探测运行中的 OpenClaw 实例；失败时返回空数组 */

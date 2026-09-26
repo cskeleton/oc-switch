@@ -36,17 +36,18 @@ export function Dashboard({ client, onConfigureProvider }: DashboardProps) {
 
   /** 每轮携带递增序号，迟到的旧响应不得覆盖更新的页面结果 */
   const loadSeq = useRef(0);
-  const load = useCallback(async () => {
+  const load = useCallback(async (presetInventory?: ModelInventory) => {
     const seq = ++loadSeq.current;
     setLoading(true);
     setError(null);
     setDiffUnavailable(false);
     try {
+      // presetInventory：消费 attention 面板回传的重探测 inventory，该端点本轮不再 GET
       const [statusResult, diffResult, healthResult, inventoryResult, attentionResult] = await Promise.allSettled([
         client.getStatus(),
         client.getDiff(),
         client.getHealth(),
-        client.getModelInventory(),
+        presetInventory ? Promise.resolve(presetInventory) : client.getModelInventory(),
         client.getModelAttention()
       ]);
       if (seq !== loadSeq.current) return;
@@ -108,7 +109,7 @@ export function Dashboard({ client, onConfigureProvider }: DashboardProps) {
       ) : null}
       {error ? <p className="text-sm font-medium text-destructive">{error}</p> : null}
 
-      <div className="mb-4"><ModelAttentionPanel client={client} inventory={inventory} report={attention} loadError={attentionError} onChanged={load} onConfigure={onConfigureProvider} /></div>
+      <div className="mb-4"><ModelAttentionPanel client={client} inventory={inventory} report={attention} loadError={attentionError} onChanged={(next) => void load(next)} onConfigure={onConfigureProvider} /></div>
       {status ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {/* 主模型独占首行，四个统计卡在第二行 */}

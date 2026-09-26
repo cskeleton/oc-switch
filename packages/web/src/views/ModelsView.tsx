@@ -154,26 +154,58 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
     }
   }, [client]);
 
-  /** 写后已取得有效新视图时应用：刷新 config-status（stale 集来源），不再 GET inventory */
+  /**
+   * 写后已取得有效新视图时应用：推进统一代次作废在途读响应，不再 GET inventory；
+   * attention 与必要的 config-status 由父页面在此统一刷新一次。
+   */
   const applyWriteInventory = useCallback(async (next: ModelInventory) => {
+    const seq = ++loadSeq.current;
+    // 统一页面代次：在途的旧 config-status 不得在写响应应用后回写旧状态
+    configStatusSeq.current += 1;
+    // 统一写后刷新接管 loading：本入口作废过的旧 load 不再恢复 spinner，本入口自己负责收尾
+    setLoading(true);
     setInventory(next);
-    await refreshConfigStatus(next);
-  }, [refreshConfigStatus]);
+    let attentionFetchError: string | null = null;
+    try {
+      const [attentionResult] = await Promise.all([
+        client.getModelAttention().catch((err: unknown) => {
+          attentionFetchError = err instanceof Error ? err.message : "无法读取问题状态";
+          return null;
+        }),
+        // config-status 与 attention 同轮并行启动（内部仍按 configStatusSeq 乱序保护），不留旧值回写窗口
+        refreshConfigStatus(next)
+      ]);
+      if (seq !== loadSeq.current) return;
+      if (attentionResult) {
+        if (Array.isArray(attentionResult.pending) && Array.isArray(attentionResult.ignored)) {
+          setAttention(attentionResult);
+          setAttentionError(null);
+        } else {
+          setAttentionError("提醒协议不兼容，请重启服务。");
+        }
+      } else {
+        setAttentionError(attentionFetchError ?? "无法读取问题状态");
+      }
+    } finally {
+      if (seq === loadSeq.current) setLoading(false);
+    }
+  }, [client, refreshConfigStatus]);
 
   /**
    * 本页是刷新的唯一责任方：一轮并行读取 inventory + attention，再按需读 config-status。
    * presetInventory 用于消费「写响应 / 显式重探测」已取得的 inventory，避免重复 GET。
-   * 每轮携带递增序号，迟到的旧响应不得覆盖更新的页面结果。
+   * 读与写响应共用同一递增代次：所有成功/失败状态更新都必须在代次检查之后，迟到的旧轮一律作废。
    */
   const loadSeq = useRef(0);
   const load = useCallback(async (presetInventory?: ModelInventory) => {
     const seq = ++loadSeq.current;
     setError(null);
     setLoading(true);
+    let attentionFetchError: string | null = null;
     try {
       const [next, attentionResult] = await Promise.all([
         presetInventory ? Promise.resolve(presetInventory) : client.getModelInventory(),
-        client.getModelAttention().catch((err: unknown) => { setAttentionError(err instanceof Error ? err.message : "无法读取问题状态"); return null; })
+        client.getModelAttention().catch((err: unknown) => { attentionFetchError = err instanceof Error ? err.message : "无法读取问题状态"; return null; })
       ]);
       if (seq !== loadSeq.current) return;
       setInventory(next);
@@ -184,6 +216,8 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
         } else {
           setAttentionError("提醒协议不兼容，请重启服务。");
         }
+      } else if (attentionFetchError) {
+        setAttentionError(attentionFetchError);
       }
       await refreshConfigStatus(next);
     } catch (err) {

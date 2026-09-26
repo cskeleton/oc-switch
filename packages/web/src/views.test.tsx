@@ -13,7 +13,7 @@ import { UnavailableModelsPanel } from "./components/UnavailableModelsPanel";
 import { ModelPolicyPanel } from "./components/ModelPolicyPanel";
 import { PluginProviderGroup } from "./components/PluginProviderGroup";
 import { ProviderModelsDialog } from "./components/ProviderModelsDialog";
-import { createApiClient, type ApiClient, type CaseDuplicateKind, type ConfigHealthReport, type ModelAvailability, type ModelInventoryEntry, type ModelInventory, type ModelMetadataQueueItem, type ModelMetadataSuggestionsResponse, type ModelPluginDescriptor, type ModelSummary, type PluginStateMutationResult, type ProviderInventoryEntry, type ProviderModelInput, type ProviderSummary } from "./api";
+import { createApiClient, type ApiClient, type CaseDuplicateKind, type ConfigHealthReport, type ModelAttentionIssue, type ModelAttentionReport, type ModelAvailability, type ModelInventoryEntry, type ModelInventory, type ModelMetadataQueueItem, type ModelMetadataSuggestionsResponse, type ModelPluginDescriptor, type ModelSummary, type PluginStateMutationResult, type ProviderInventoryEntry, type ProviderModelInput, type ProviderSummary } from "./api";
 import { Dashboard } from "./views/Dashboard";
 import { ModelsView } from "./views/ModelsView";
 import { ProvidersView } from "./views/ProvidersView";
@@ -125,6 +125,41 @@ describe("Dashboard", () => {
     expect(await findByText("4")).toBeTruthy();
     expect(await findByText("有效可选模型（受限策略）")).toBeTruthy();
     expect(await findByText("传统元数据条目")).toBeTruthy();
+  });
+
+  test("attention 面板重探测回传的 inventory 被 Dashboard 复用：本轮不再补发 GET inventory", async () => {
+    // review O3 遗漏回归：onChanged=load 丢弃回传值时，每次重探测会多发一次 /api/model-inventory
+    const probe: ModelAttentionIssue = {
+      id: "model:idle/one:probe-failed", revision: "v1", kind: "probe",
+      ownerType: "model", ownerId: "idle/one", providerIds: ["idle"], refs: ["idle/one"],
+      protectedRefs: [], title: "idle 的运行可用性未确认", detail: "可重新探测", canIgnore: true, canDisable: false
+    };
+    const base = legacyAsInventory({ providers: [], models: [] });
+    const refreshed = legacyAsInventory({ providers: [], models: [] });
+    const getModelInventory = mock(async () => base);
+    const refreshModelInventory = mock(async () => refreshed);
+    const getModelAttention = mock(async (): Promise<ModelAttentionReport> => ({ pending: [probe], ignored: [] }));
+    const view = render(
+      <Dashboard
+        client={mockClient({
+          getModelInventory, refreshModelInventory, getModelAttention,
+          getStatus: async () => ({
+            ok: true, primaryModel: "nvidia/deepseek-ai/deepseek-v4-flash",
+            providerCount: 1, providerModelCount: 1, allowlistModelCount: 1,
+            modelPolicyMode: "restricted" as const, effectiveModelCount: 1
+          })
+        })}
+      />
+    );
+    await view.findByRole("button", { name: "需处理 1" });
+    expect(getModelInventory).toHaveBeenCalledTimes(1);
+    await userEvent.click(view.getByRole("button", { name: "需处理 1" }));
+    await userEvent.click(view.getByRole("button", { name: "处理问题 idle/one" }));
+    await userEvent.click(view.getByRole("button", { name: "重新探测" }));
+    await waitFor(() => expect(refreshModelInventory).toHaveBeenCalledTimes(1));
+    // 复用回传 inventory：本轮不再 GET inventory（旧实现会在此多发一次）
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
+    expect(getModelInventory).toHaveBeenCalledTimes(1);
   });
 
   test("shows configuration health from latest backup diff", async () => {
@@ -563,6 +598,33 @@ describe("ModelsView", () => {
 });
 
 describe("ProvidersView", () => {
+  test("读/写响应共用代次：迟到的旧读取不得覆盖较新的刷新结果", async () => {
+    // review P2-4 回归：getProviders 的 then 副作用在代次检查前落盘，旧数据会盖回新刷新
+    let releaseSlow!: (value: { providers: ProviderSummary[] }) => void;
+    const slowGate = new Promise<{ providers: ProviderSummary[] }>((resolve) => { releaseSlow = resolve; });
+    const oldList = { providers: [providerSummary({ id: "nvidia", baseUrl: "https://old.invalid/v1" })] };
+    const newList = { providers: [providerSummary({ id: "nvidia", baseUrl: "https://new.invalid/v1" })] };
+    let calls = 0;
+    const getProviders = mock(() => {
+      calls += 1;
+      if (calls === 2) return slowGate;
+      return Promise.resolve(calls > 2 ? newList : oldList);
+    });
+    const { findByText, queryByText, getByRole } = renderProvidersView(mockClient({ getProviders }));
+
+    await findByText("https://old.invalid/v1");
+    // 挂起中的旧读取（慢轮），随后紧跟一轮拿到新数据的刷新
+    await userEvent.click(getByRole("button", { name: "刷新" }));
+    expect(calls).toBe(2);
+    await userEvent.click(getByRole("button", { name: "刷新" }));
+    await findByText("https://new.invalid/v1");
+
+    releaseSlow(oldList);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    expect(queryByText("https://old.invalid/v1")).toBeNull();
+    expect(await findByText("https://new.invalid/v1")).toBeTruthy();
+  });
+
   test("首轮加载显示「正在加载服务商…」,期间不渲染表格,完成后切换为内容", async () => {
     let release!: (value: ModelInventory) => void;
     const gate = new Promise<ModelInventory>((resolve) => { release = resolve; });
@@ -2635,6 +2697,24 @@ describe("App shell", () => {
       await userEvent.click(app.getByRole("button", { name: "重试" }));
       await app.findByTestId("dashboard-view");
       expect(counts["/api/meta"]).toBe(metaBefore + 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("手动登录只用一次 /api/meta 握手；Dashboard 只读取其需要的一次 /api/status（登录计数）", async () => {
+    // review O1 遗漏回归：旧路径 getStatus 登录 + effect meta + Dashboard status 共计 status=2/meta=1
+    const counts: Record<string, number> = {};
+    globalThis.fetch = countingFetchRouter(counts) as unknown as typeof fetch;
+    try {
+      const app = render(<App />);
+      await userEvent.type(await app.findByLabelText("Token"), "token");
+      await userEvent.click(app.getByRole("button", { name: "连接" }));
+      await app.findByTestId("dashboard-view");
+      // 等一拍：旧实现会在登录后由 effect 再补发一次握手请求，给这些 effect 落定时间
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 200)); });
+      expect(counts["/api/meta"]).toBe(1);
+      expect(counts["/api/status"]).toBe(1);
     } finally {
       globalThis.fetch = originalFetch;
     }

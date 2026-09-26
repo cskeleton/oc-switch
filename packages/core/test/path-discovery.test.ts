@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   discoverOpenClawRuntime,
   discoverOpenClawRuntimeAsync,
@@ -663,7 +667,7 @@ describe("discoverOpenClawRuntimeAsync", () => {
     expect(runCommandCalls).toBe(0);
   });
 
-  test("子进程调用并发起跑:openclaw status 在 systemctl show 完成前启动", async () => {
+  test("子进程调用按需发起:确认路径缺口后 CLI status 异步补充一次", async () => {
     let showResolved = false;
     let openclawStartedBeforeShowResolved: boolean | undefined;
     const started: string[] = [];
@@ -691,10 +695,174 @@ describe("discoverOpenClawRuntimeAsync", () => {
       listGatewayProcesses: async () => [GATEWAY_PROCESS],
       runCommand
     });
-    expect(openclawStartedBeforeShowResolved).toBe(true);
+    // 按需补充：解析确认路径缺口后才发起 CLI status,不再无条件预取并排在关键路径
+    expect(started.filter((key) => key === "openclaw gateway status --json")).toHaveLength(1);
+    expect(openclawStartedBeforeShowResolved).toBe(false);
     // 认领 unit:只须一次 systemctl show,不走到 list-units 枚举
     expect(started.filter((key) => key.startsWith("systemctl --user show"))).toHaveLength(1);
     expect(started.some((key) => key.includes("list-units"))).toBe(false);
     expect(result.instances[0]).toMatchObject({ confidence: "confirmed" });
+  });
+});
+
+describe("O4 审查修复:CLI status 按需与异步 runner 收尾", () => {
+  // 注入证据即可完整解析路径的场景:无需 CLI status
+  const RESOLVED_COMMON = {
+    platform: "linux" as const,
+    homeDir: "/fixture",
+    userId: undefined,
+    readTextFile: () => { throw new Error("ENOENT"); },
+    listDirectory: () => [] as string[],
+    pathExists: (p: string) => p === "/fixture/.openclaw/openclaw.json"
+  };
+  const GATEWAY_PROCS = [{ pid: 9, argv: ["node", "/opt/openclaw/dist/index.js", "gateway"] }];
+  const DAEMON_JSON = JSON.stringify({ daemon: { pid: 9, configPath: "/fixture/openclaw.json", stateDir: "/fixture" } });
+  /** 仅凭 environ 认领 unit、路径缺口需要 CLI status 补充的场景(伪 CLI 经 PATH 注入) */
+  const incompleteDeps = () => ({
+    platform: "linux" as const,
+    homeDir: "/fixture",
+    userId: undefined,
+    listGatewayProcesses: async () => GATEWAY_PROCS,
+    readTextFile: (path: string) => {
+      if (path === "/proc/9/environ") return "OPENCLAW_SYSTEMD_UNIT=openclaw-review.service";
+      if (path === "/fixture/review.service") return "EnvironmentFile=/fixture/gateway.env";
+      throw new Error("ENOENT");
+    },
+    listDirectory: () => [] as string[],
+    pathExists: () => false
+  });
+
+  function installFakeCli(dir: string, scriptBody: string, options?: { prewarmCli?: boolean }): void {
+    mkdirSync(binDirOf(dir), { recursive: true });
+    const cliPath = join(binDirOf(dir), "openclaw");
+    writeFileSync(cliPath, scriptBody);
+    chmodSync(cliPath, 0o755);
+    const systemctlPath = join(binDirOf(dir), "systemctl");
+    // 认领 unit 的 systemctl show 同样走向 PATH(与独立审查 harness fixture 对齐)
+    writeFileSync(systemctlPath, "#!/bin/sh\nprintf 'MainPID=9\\nFragmentPath=/fixture/review.service\\n'\n");
+    chmodSync(systemctlPath, 0o755);
+    // 已观测新建可执行文件的首次执行存在冷启动延迟(实测 ~250-300ms,机制未确认):
+    // 会把 250ms 预算的 systemctl show 探成超时(service-metadata-missing)。
+    // 这是环境效应,不放宽产品超时;先在独立的 10s 夹具准备预算内执行一次吸收延迟,探测即可在毫秒级完成。
+    if (options?.prewarmCli !== false) spawnSync(cliPath, [], { timeout: 10_000, stdio: "ignore" });
+    spawnSync(systemctlPath, [], { timeout: 10_000, stdio: "ignore" });
+  }
+  function binDirOf(dir: string): string {
+    return join(dir, "bin");
+  }
+  function processAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code === "EPERM";
+    }
+  }
+
+  test("已由既有证据解析的目标不发起 CLI status;缺证据时同步/异步各一次且结果等价", async () => {
+    let syncCalls = 0;
+    let asyncCalls = 0;
+    const syncResult = discoverOpenClawRuntime({
+      ...RESOLVED_COMMON,
+      listGatewayProcesses: () => GATEWAY_PROCS,
+      runCommand: (command: string) => {
+        if (command === "openclaw") syncCalls += 1;
+        return { status: 1, stdout: "", timedOut: false };
+      }
+    });
+    const asyncResult = await discoverOpenClawRuntimeAsync({
+      ...RESOLVED_COMMON,
+      listGatewayProcesses: async () => GATEWAY_PROCS,
+      runCommand: async (command: string) => {
+        if (command === "openclaw") {
+          asyncCalls += 1;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        return { status: 1, stdout: "", timedOut: false };
+      }
+    });
+    // 同步本就不需要的命令,异步也不得预取或等待(独立审查复现:旧实现为 1 次并多等一次启动)
+    expect(syncCalls).toBe(0);
+    expect(asyncCalls).toBe(0);
+    expect(asyncResult).toEqual(syncResult);
+
+    // 缺证据路径:解析确实需要 CLI status——同步/异步各调用一次,结果等价
+    let syncNeeded = 0;
+    let asyncNeeded = 0;
+    const syncNeededResult = discoverOpenClawRuntime({
+      ...RESOLVED_COMMON,
+      pathExists: () => false,
+      listGatewayProcesses: () => GATEWAY_PROCS,
+      runCommand: (command: string) => {
+        if (command === "openclaw") syncNeeded += 1;
+        return { status: 1, stdout: "", timedOut: false };
+      }
+    });
+    const asyncNeededResult = await discoverOpenClawRuntimeAsync({
+      ...RESOLVED_COMMON,
+      pathExists: () => false,
+      listGatewayProcesses: async () => GATEWAY_PROCS,
+      runCommand: async (command: string) => {
+        if (command === "openclaw") asyncNeeded += 1;
+        return { status: 1, stdout: "", timedOut: false };
+      }
+    });
+    expect(syncNeeded).toBe(1);
+    expect(asyncNeeded).toBe(1);
+    expect(asyncNeededResult).toEqual(syncNeededResult);
+  });
+
+  test("异步 runner:stderr 噪声不污染 CLI status 的机器 JSON 通道", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-discovery-stderr-"));
+    const savedPath = process.env.PATH;
+    try {
+      installFakeCli(
+        dir,
+        "#!/bin/sh\nprintf '%s\\n' '" + DAEMON_JSON + "'\necho 'review-fixture-stderr-noise' >&2\n"
+      );
+      // PATH 只含伪 bin:命令未命中伪 CLI 时必须 ENOENT 失败,不得回落本机真实 openclaw
+      process.env.PATH = binDirOf(dir);
+      const result = await discoverOpenClawRuntimeAsync(incompleteDeps());
+      // stderr 拼进 stdout 的旧实现会把合法 JSON 判为 cli-status-invalid(独立审查复现)
+      expect(result.status).toBe("resolved");
+      expect(result.instances[0]).toMatchObject({ confidence: "confirmed", openclawPath: "/fixture/openclaw.json" });
+      expect(result.diagnostics).not.toContain("cli-status-invalid");
+    } finally {
+      process.env.PATH = savedPath;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("异步 runner:SIGTERM 被捕获时超时仍有界结束、标记 timeout 且子进程被回收", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oc-switch-discovery-timeout-"));
+    const pidFile = join(dir, "cli.pid");
+    const savedPath = process.env.PATH;
+    try {
+      installFakeCli(
+        dir,
+        "#!/bin/sh\necho $$ > " + pidFile + "\ntrap '' TERM\n/bin/sleep 5\nprintf '%s\\n' '" + DAEMON_JSON + "'\n",
+        // 该脚本故意捕获 SIGTERM 并 sleep,不能在预热窗口执行;其首 exec 在 1500ms 预算内完成即可
+        { prewarmCli: false }
+      );
+      // PATH 只含伪 bin:命令未命中伪 CLI 时必须 ENOENT 失败,不得回落本机真实 openclaw;
+      // 脚本内的 sleep 因此必须用绝对路径(/bin/sleep),其余均为 sh 内建命令
+      process.env.PATH = binDirOf(dir);
+      const start = performance.now();
+      const result = await discoverOpenClawRuntimeAsync(incompleteDeps());
+      const elapsedMs = performance.now() - start;
+      // 预算 1.5s + 收尾宽限;修复前会空等子进程自行退出(伪 CLI 为 5 秒)且误判 confirmed
+      expect(elapsedMs).toBeLessThan(2500);
+      expect(result.status).toBe("gateway-detected-path-unresolved");
+      expect(result.diagnostics).toContain("cli-status-timeout");
+      expect(result.instances[0]?.confidence ?? "").not.toBe("confirmed");
+      // Promise 结算 ≠ 子进程已死:等待收尾宽限后,伪 CLI 必须已被 SIGKILL 回收
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      const pid = Number(readFileSync(pidFile, "utf8").trim());
+      expect(Number.isInteger(pid)).toBe(true);
+      expect(processAlive(pid)).toBe(false);
+    } finally {
+      process.env.PATH = savedPath;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
