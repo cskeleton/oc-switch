@@ -1,6 +1,6 @@
 # oc-switch 运行效率评估与优化方案
 
-日期：2026-09-26。评估基线：`main`，`354ec4916bb3d599c7a033996c6a4eaddb67580a`。状态：**方案，尚未实施**。
+日期：2026-09-26。评估基线：`main`，`354ec4916bb3d599c7a033996c6a4eaddb67580a`。状态：**已实施**（同日完成切片 A–E，结果见文末 §8 实施记录）。
 
 ## 1. 决策摘要
 
@@ -155,7 +155,7 @@ bun test packages/server/test/runtime-review.test.ts \
 
 **目标复杂度。**exact 主导时消除 `R×M` 和逐条 `R²` 工作；主要成本接近模型/规则索引构建、受保护引用覆盖计算与稳定排序。wildcard 的成本仍与实际覆盖和前缀数量有关，不承诺所有输入严格线性，不先引入 trie。
 
-**依赖：**无，可独立于 O1。**验收：**完整 DTO 与旧实现逐字段一致；尤其是 invalid 条目索引、同值副本、重叠 wildcard、primary/fallback、available:null、missing、config/plugin 同名并集和稳定排序。用现有测试加有意义的组合输入比较；性能目标为同机 1,000/2,000 exact 场景中位耗时至少下降 80%，100 模型场景无明显回退。该百分比是验收目标，尚未实现。
+**依赖：**无，可独立于 O1。**验收：**完整 DTO 与旧实现逐字段一致；尤其是 invalid 条目索引、同值副本、重叠 wildcard、primary/fallback、available:null、missing、config/plugin 同名并集和稳定排序。用现有测试加有意义的组合输入比较；性能目标为同机 1,000/2,000 exact 场景中位耗时至少下降 80%，100 模型场景无明显回退。**该目标已达成，实测数据见 §8。**
 
 ### O3 · P1：每个页面只有一个刷新责任方，优先消费已有响应
 
@@ -313,7 +313,7 @@ bun test packages/server/test/runtime-review.test.ts \
 
 ## 7. 交接说明与评估限制
 
-1. 本次只新增本文档，业务代码未修改，优化尚未实施。临时实验全部使用合成配置与注入依赖，未读取真实 OpenClaw/凭据或操作常驻服务。
+1. 本评估会话只新增本文档（业务代码改动全部发生在后续实施会话，见 §8）。临时实验全部使用合成配置与注入依赖，未读取真实 OpenClaw/凭据或操作常驻服务。
 2. 本文以当前源码为准。2026-06-26 的结构优化草案包含已过时的 metadata/选择器描述和已完成的模块拆分，不能作为当前优化任务清单直接执行。
 3. “低并发本地管理器”来自项目定位；具体活跃 Provider 数、runtime 目录规模、远端 CPU/磁盘、网络 RTT 和用户操作频率均未采样。实施前可采集这些非敏感计数，调整优先级，不收集配置原文或 token。
 4. 本文的源码行号固定于基线 commit；后续实现按符号定位并更新文档。没有做生产 profiler、全量浏览器录制、内存泄漏长测或远端压测。
@@ -390,3 +390,37 @@ for (const n of [100, 500, 1000, 2000]) {
 - **env 替换：**临时 `.env` 写无敏感 fixture 内容；`writeOpenClawTransaction` 注入空 discovery，只修改 config；比较前后字节和 `stat` inode。备份与锁均在临时 stateDir。
 
 以上实验服务于本次证据与后续回归计数。不要将其改成对真实个人配置、常驻服务或远端机器的自动压测。
+
+## 8. 实施记录（2026-09-26）
+
+按 §6 顺序完成切片 A–E，commit 依次：`47d94a8`（本文档）→ `b7e0faa`（D）→ `2d6abed`（B）→ `75ccb10`（C）→ `3d47738`（A）→ `24d5072`（E）→ `2e59c7c`、`ed75c10`（集成修复）。
+
+### 性能复测（附录 A 同一脚本、同机同批次，中位数/9 样本）
+
+| 场景 | 基线 | 实施后 | 变化 |
+| --- | ---: | ---: | ---: |
+| inventory 100 exact | 3.27 ms | 1.05 ms | −68%（无回退） |
+| inventory 500 exact | 60.5 ms | 3.45 ms | −94% |
+| inventory 1,000 exact | 240.8 ms | 6.02 ms | −97.5%，达成 ≥80% 目标 |
+| inventory 2,000 exact | 967.5 ms | 11.02 ms | −98.9%，达成 ≥80% 目标 |
+| inventory 2,000 / 20 wildcard | 27.3 ms | 8.64 ms | −68% |
+| attention-all-unavailable 2,000 | 101.8 ms | 1.31 ms | −98.7% |
+
+O2 的 DTO 逐字段一致由复合 fixture golden 比对与随机交叉验证（11 万+断言）锁定；各切片计数/时序验收（请求数、探测数、inode/字节、mtime、代次合并）均按 §4 验收点以注入依赖实验通过，新测试均做了「还原旧代码必失败」的判别性验证。
+
+### 集成验证
+
+`bun run test`（core/cli/server/scripts + web）exit 0（web 段 251 pass）；`bun run typecheck`（tsc -b 全包）干净；`bun run build` ✓；`bun run acceptance` ✓；`bun run test:e2e`（隔离 17420/15173，desktop+mobile）**46 passed**。
+
+集成时发现并修复两个切片遗漏：C 的异步 discovery 默认 runner 旁路了只注入同步 `runtimeDiscoveryProvider` 的测试/验收场景（acceptance smoke 捕获，`ed75c10`：注入同步 provider 时读路径复用包装它）；core 测试在 `exactOptionalPropertyTypes` 下显式 `userId: undefined` 不可赋值（`2e59c7c`：异步 options 与同步依赖口径对齐）。
+
+### 本次未做（维持方案原判）
+
+- C1（纯 policy 编辑免强制 runtime 探测）：需先修订 policy editing spec 的 fresh-inventory 契约，单独进行。
+- C2（Provider discover 网络等待预算）：需先做挂起 headers/body 与取消的可复现用例，单独进行。
+- 「不建议现在做的事」全表维持原判，未引入全局缓存框架/虚拟表格/备份索引库等。
+- E 遗留观察：`backups.ts`、`providers.ts` 的 `.catch(() => ({}))` body 吞错不在 O8 三文件边界内，建议后续单独审阅。
+
+### 未验证边界
+
+未测量真实用户配置下的端到端页面耗时；未做生产 profiler、内存长测、远端部署验证。性能数字为合成输入 CPU 耗时，不外推为用户界面提速倍数。

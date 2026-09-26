@@ -32,6 +32,7 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 - **Web 共享组件**：`Button` / `Pill` / `Toast`（`ToastProvider` + `useToast`）/ `EmptyState` / `Skeleton` / `DataTable`（支持列排序）/ `PageHeader`（统一页头：标题 + 描述 + 右侧操作区）位于 `packages/web/src/components(/ui)`，新代码应直接使用，不得再内联拼 class。
 - **Web 单测 DOM 全局**：`packages/web/src/test-setup.ts` 逐项挑选 happy-dom 全局注入 `globalThis`，缺项不会在启动时报错，只在渲染时抛 `X is not defined` 且堆栈指向组件库内部。已知项：Radix `Switch` 位于 `<form>` 内会额外渲染依赖 `ResizeObserver` 的隐藏 bubble input（表单外不会），故该全局必须注入。引入新 Radix 组件后若测试炸在这类报错上，补 test-setup 而非改组件；单个用例的崩溃会经 `cleanup()` 连带打挂同文件其它用例，别被表象误导。另外 `@testing-library` 的 `screen` 在模块加载期一次性绑定 `document.body`，bun test 下它先于 test-setup 的注入完成求值，导致单文件独立运行时 `screen.*` 抛「global document has to be available」（全量套件因跨文件模块缓存被掩盖）；test-setup 末尾已在注入 `document` 后用 `getQueriesForElement` 重建 screen 绑定，新增测试文件务必第一行 `import "./test-setup"`。
 - **共享类型**：不新建 shared contracts 包；core 类型由 server/cli/web 各自引用。
+- **Web 刷新责任**：API client 只随 baseUrl/token 重建；业务刷新不再触发连接握手（不重发 `/api/meta`、不卸载页面），断线/版本校验失败才重跑握手。policy/协调类写响应携带 inventory 时经 `inventoryFromWriteResponse` 校验消费，校验失败只提示「已保存、未取得最新视图」，不装作成功也不自动重试；页面每轮最多各读一次 inventory/attention（`ModelAttentionPanel` 只消费父级 report，不自行请求）。
 
 ## 领域约定
 
@@ -96,7 +97,7 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 - **运行时写入门禁**：模型启停 / 设主模型 / 编辑删除 / 批量清理 / 引用协调使用事务内 fresh inventory，不能以静态目录绕过 unknown；缓存绑定所选 config/env 路径与文件版本。预检期间外部 config/env 变化时，Core 重新读取并重做 mutation 一次，持续变化则明确拒绝。插件启停与精确协调事务设 `normalizeConfig:false`，不顺带归一无关配置；全局归一也不允许改写或去重 wildcard。
 - **插件级启停**：`packages/core/src/plugin-state.ts` 只写 `plugins.entries.<pluginId>.enabled` 一个键（diff-guard 白名单已含）；主模型 / fallback 命中贡献 Provider 时 fail closed；policy / legacy metadata 原样保留（停用后成为不可用项是预期，重新启用即恢复）。一个插件可贡献多个 Provider（如 xiaomi → xiaomi + xiaomi-token-plan），UI/CLI 只提供插件级开关并完整提示非模型能力（speech/tools/hooks…）影响；写后重探测并确认目标插件的实际 enabled 与请求值一致，`runtimeConfirmed: false` 是警告不是失败。非模型能力从真实 `toolNames` / `hookNames` / `hookCount` / 各类 `*ProviderIds` 等公开字段归类，不只识别旧 `toolIds` 等别名。未知 pluginId 在 server 404 / CLI 非零退出（descriptor 只来自当前发现的插件列表，杜绝凭空注入）。
 - **模型引用协调**：`packages/core/src/model-reconciliation.ts`——`removeModelPolicyExactRef`（默认只删 policy exact、metadata 为独立复选项；删成 `[]` unrestricted 时 fail closed；wildcard 输入拒绝）与 `materializeRuntimeModel`（仅 runtime `available` 且 config Provider 已存在才补入；Provider 缺配置返回结构化「需用户补充字段」，绝不猜 baseUrl/API）。primary/fallback 命中时 fail closed，`force` 不可绕过。
-- **测试隔离（运行时探测，必读）**：server 的 `createApp` 与 CLI 默认真实 shell-out `openclaw`。server 测试经 `AppOptions.runtimeModelCatalogProvider` 注入；CLI 测试经 `OC_SWITCH_MOCK_RUNTIME_MODELS` 环境变量指向 `{ version, status, list, listAll }` fixture 文件；acceptance 在 PATH 前置假 `openclaw` 脚本按 argv 回放，并经 `OC_FAKE_OPENCLAW_MODE=timeout|invalid-json` 切换失败模式。任何测试都不得读开发机真实 `~/.openclaw`。完整浏览器 E2E 默认隔离 API `17420` / Web `15173`，可用 `E2E_API_PORT` / `E2E_WEB_PORT` 覆盖；不能停掉或复用常驻 `7420`。
+- **测试隔离（运行时探测，必读）**：server 的 `createApp` 与 CLI 默认真实 shell-out `openclaw`。server 测试经 `AppOptions.runtimeModelCatalogProvider` 注入；CLI 测试经 `OC_SWITCH_MOCK_RUNTIME_MODELS` 环境变量指向 `{ version, status, list, listAll }` fixture 文件；acceptance 在 PATH 前置假 `openclaw` 脚本按 argv 回放，并经 `OC_FAKE_OPENCLAW_MODE=timeout|invalid-json` 切换失败模式。任何测试都不得读开发机真实 `~/.openclaw`。完整浏览器 E2E 默认隔离 API `17420` / Web `15173`，可用 `E2E_API_PORT` / `E2E_WEB_PORT` 覆盖；不能停掉或复用常驻 `7420`。运行实例发现同理有注入缝：Server 读路径走 `AppOptions.asyncRuntimeDiscoveryProvider`；只注入同步 `runtimeDiscoveryProvider` 时读路径自动包装复用它，**不得**落到真实发现。
 - 详见 `docs/superpowers/specs/2026-09-09-oc-switch-runtime-model-management-design.md`（§17 为实现后 Sync Audit）。
 
 ### 插件 Provider（OpenClaw 2026.4+）
@@ -168,6 +169,7 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 ### 路径与环境
 
 - 分层 env 管理；跨平台运行实例探测（Linux systemd / macOS LaunchAgent），返回 `RuntimeDiscoveryResult` 与候选组（`candidateId`）；管理源 `.env` 与 Gateway service env 分离，后者只读展示且不得成为 active `envPath`
+- CLI 路径解析按需分径：只消费 oc-switch stateDir 的命令（token、backup list、lifecycle stop）走 `stateOnlyPaths()`，不触发运行实例发现；config/env 两路径均已显式固定时 `activePaths()` 跳过 discovery；Server 读路径用真正异步的有界 runner（`discoverOpenClawRuntimeAsync`），catalog 缓存按代次合并，写成功/路径或文件版本变化推进代次，旧代次结果不得覆盖新缓存
 - **运行时 env 来源**：`openclaw.json` 使用 canonical SecretRef 引用；`openclaw` CLI 与 Gateway 可加载 state 目录全局 `.env`。OpenClaw 同时为服务生成 env 快照（Linux：unit 实际 `EnvironmentFile=`，常见为 `gateway.systemd.env`；macOS：`service-env/*.env`）；服务进程环境优先于 dotenv，因此快照同名旧值会覆盖 `.env`，而快照缺项可由 `.env` 补足。改 API Key 后仍应同步服务 env 并 restart/apply，使运行中进程加载新值（日常切模型/allowlist 通常无需重启）。
 - Gateway 服务环境：`.env` 托管块在写入校验通过且能唯一关联候选组时自动同步到该组 service env（Linux：PID/unit 关联的 `EnvironmentFile=`，禁止仅按 `dirname(envPath)/gateway.systemd.env` 猜测；macOS：共享 LaunchAgent 解析器识别的 `service-env/*.env`，兼容 `/bin/sh + wrapper` 与旧 wrapper 布局）；无法唯一关联时主写入仍成功但 `gatewayEnvSync.ok=false`；目标文件块外内容原样保留，块外同名 Key 只告警不自动改写；Web/CLI/API 提供 `sync-env`、`restart`、`apply`（均可带 `--candidate` / `candidateId`），多实例时必须指定候选，不自动静默重启 Gateway
 - **Gateway 环境分叉检测**：`GET /api/gateway/env-drift`、`oc-switch gateway env-drift [--candidate] [--json]`、Settings「环境分叉」卡片；文件级比较 `.env` 托管块与已关联 service env 快照（**不读运行中进程 env**，文案须提示重启后生效），五态分类：`different`（快照旧值覆盖 `.env`）为 blocking，`extra-in-service`（仅目标托管块内残留）/`outside-conflict` 为 warning，`missing-in-service`（运行时由全局 `.env` 补足）/`equal` 为 info；源空值附 `unsyncable`；恒 200 + `report.status:"unavailable"` 承载无法关联（ambiguous 附 candidates）；只回显变量名与状态枚举，绝不回显值
@@ -247,6 +249,7 @@ bun run packages/cli/src/index.ts     # 直接调用 CLI
 | 悬空策略引用批量清理 | `docs/superpowers/specs/2026-09-19-oc-switch-stale-policy-refs-cleanup-design.md` |
 | 配置文件权限警告 | `docs/superpowers/specs/2026-09-19-oc-switch-config-permission-warning-design.md` |
 | 真实配置写 E2E | `docs/superpowers/specs/2026-09-19-oc-switch-real-config-e2e-design.md` |
+| 运行效率优化 | `docs/superpowers/specs/2026-09-26-oc-switch-runtime-efficiency-optimization-plan.md` |
 
 ## Learned User Preferences
 
