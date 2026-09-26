@@ -6,6 +6,7 @@ export interface ReadJsonStateOptions<T> {
   filename: string;
   fallback: () => T;
   normalize?: (value: unknown) => T;
+  /** 仅约束「文件可读但 JSON 坏 / normalize 失败」；文件不可读（EACCES 等）任何模式下都抛出 */
   invalidJson?: "fallback" | "throw";
 }
 
@@ -30,8 +31,23 @@ function safeChmod(path: string, mode: number): void {
 export function readJsonState<T>(options: ReadJsonStateOptions<T>): T {
   const path = jsonStatePath(options.stateDir, options.filename);
   if (!existsSync(path)) return options.fallback();
+  let raw: string;
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    raw = readFileSync(path, "utf8");
+  } catch (error) {
+    // 区分「不存在」与「不可读」：ENOENT（含存在性检查后的竞态删除）仍是正常空状态；
+    // EACCES 等 I/O 失败对任何状态用途都不是缺省值，抛出以免静默回退制造伪事实。
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return options.fallback();
+    throw error;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (error) {
+    if (options.invalidJson === "throw") throw error;
+    return options.fallback();
+  }
+  try {
     return options.normalize ? options.normalize(parsed) : (parsed as T);
   } catch (error) {
     if (options.invalidJson === "throw") throw error;

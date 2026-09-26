@@ -21,18 +21,23 @@ export interface GatewayRouteOptions {
   syncManagedBlockToGatewayServiceEnv?: typeof syncManagedBlockToGatewayServiceEnv;
 }
 
-/** 解析可选 JSON body；空 body 视为 {} */
-async function readJsonBody(c: { req: { json: () => Promise<unknown> } }): Promise<Record<string, unknown>> {
+/**
+ * 解析可选 JSON body：真正空 body（无内容/纯空白）视为 {}，保持可选参数语义；
+ * 非空但非法的 JSON 必须报错（路由层转 400），不能让无效请求悄悄进入默认目标选择。
+ */
+async function readJsonBody(c: { req: { text: () => Promise<string> } }): Promise<Record<string, unknown>> {
+  const text = await c.req.text().catch(() => "");
+  if (!text.trim()) return {};
+  let body: unknown;
   try {
-    const body = await c.req.json();
-    if (!body || typeof body !== "object" || Array.isArray(body)) {
-      throw new Error("body must be an object");
-    }
-    return body as Record<string, unknown>;
-  } catch (error) {
-    if (error instanceof Error && error.message === "body must be an object") throw error;
-    return {};
+    body = JSON.parse(text);
+  } catch {
+    throw new Error("Request body must be valid JSON");
   }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new Error("body must be an object");
+  }
+  return body as Record<string, unknown>;
 }
 
 /** 每次请求 discovery 一次，按 explicit 模式解析唯一 runtime 目标 */

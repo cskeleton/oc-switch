@@ -45,7 +45,9 @@ export function registerHealthRoutes(app: Hono, runtime: AppRuntime): void {
     try {
       envContent = readEnvContent(paths) ?? "";
     } catch {
-      envContent = "";
+      // .env 存在但读取失败（EACCES/I/O 错误）不是空 env：继续计算只会把
+      // 真实密钥报成「缺失」等伪事实，明确报错让错误状态与正常空状态可分辨。
+      return c.json({ error: `env file is not readable: ${paths.envPath}` }, 500);
     }
     return c.json(inspectConfigStatus({
       ...(config ? { config } : {}),

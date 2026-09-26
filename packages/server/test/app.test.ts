@@ -1526,7 +1526,7 @@ describe("server write endpoints", () => {
     expect(openclawIssue?.severity).toBe("blocking");
   });
 
-  test("GET /api/config-status 在 .env 不可读时仍返回 200 与 path blocking issue", async () => {
+  test("GET /api/config-status 在 .env 不可读时返回 500 错误而非伪空报告", async () => {
     if (process.platform === "win32") return;
     const ws = workspace();
     writeFileSync(ws.paths.envPath, "TEST=1\n");
@@ -1535,12 +1535,16 @@ describe("server write endpoints", () => {
 
     try {
       const { response, json } = await jsonRequest(app, "/api/config-status", { method: "GET" });
-      expect(response.status).toBe(200);
-      const report = json as {
-        issues: Array<{ id: string; severity: string; source: string }>;
-      };
-      const envIssue = report.issues.find((issue) => issue.id === "paths:unreadable:env");
-      expect(envIssue).toMatchObject({ severity: "blocking", source: "paths" });
+      expect(response.status).toBe(500);
+      expect(String((json as { error?: string }).error)).toContain("not readable");
+      // 不返回报告体：避免把不可读 env 伪装成「密钥缺失」等伪事实
+      expect(json).not.toHaveProperty("issues");
+
+      // 修复可读后与「预期不存在」一样回到正常报告（.env 缺失本身是正常空状态）
+      chmodSync(ws.paths.envPath, 0o600);
+      const after = await jsonRequest(app, "/api/config-status", { method: "GET" });
+      expect(after.response.status).toBe(200);
+      expect(after.json).toHaveProperty("issues");
     } finally {
       chmodSync(ws.paths.envPath, 0o644);
     }
@@ -2391,6 +2395,58 @@ describe("server env APIs", () => {
       });
       expect(response.status).toBe(400);
       expect(String((json as { error?: string }).error).length).toBeGreaterThan(0);
+    }
+  });
+
+  test("POST /api/gateway/* 非空非法 JSON 返回 400，不悄悄落入默认目标选择", async () => {
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, "# oc-switch:start\nK=v\n# oc-switch:end\n");
+    const discovery = gatewayDiscoveryFor(ws);
+    const app = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: () => discovery
+    });
+
+    for (const path of ["/api/gateway/sync-env", "/api/gateway/restart", "/api/gateway/apply"]) {
+      const { response, json } = await jsonRequest(app, path, {
+        method: "POST",
+        body: "{\"candidateId\": "
+      });
+      expect(response.status).toBe(400);
+      expect(String((json as { error?: string }).error)).toContain("valid JSON");
+    }
+  });
+
+  test("POST /api/gateway/* 真正空 body 保持可选并走默认目标", async () => {
+    const ws = workspace();
+    writeFileSync(ws.paths.envPath, "# oc-switch:start\nK=v\n# oc-switch:end\n");
+    const discovery = gatewayDiscoveryFor(ws);
+    const app = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: () => discovery
+    });
+
+    const empty = await jsonRequest(app, "/api/gateway/sync-env", { method: "POST", body: "" });
+    expect(empty.response.status).toBe(200);
+    expect(empty.json.ok).toBe(true);
+
+    const whitespace = await jsonRequest(app, "/api/gateway/sync-env", { method: "POST", body: "  \n" });
+    expect(whitespace.response.status).toBe(200);
+    expect(whitespace.json.ok).toBe(true);
+  });
+
+  test("POST /api/gateway/* 合法 JSON 非对象（数组/null）仍 400", async () => {
+    const ws = workspace();
+    const discovery = gatewayDiscoveryFor(ws);
+    const app = createTestApp(ws, undefined, {
+      runtimeDiscoveryProvider: () => discovery
+    });
+
+    for (const body of ["[1,2]", "null", "42"]) {
+      const { response, json } = await jsonRequest(app, "/api/gateway/sync-env", {
+        method: "POST",
+        body
+      });
+      expect(response.status).toBe(400);
+      expect(String((json as { error?: string }).error)).toContain("object");
     }
   });
 

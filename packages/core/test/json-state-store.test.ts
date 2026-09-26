@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { jsonStatePath, readJsonState, writeJsonState } from "../src/json-state-store";
@@ -40,6 +40,55 @@ describe("json-state-store", () => {
         invalidJson: "throw"
       })).toThrow(SyntaxError);
     } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  test("区分不存在与不可读：EACCES 状态文件在两种模式下都抛出而不是静默回退", () => {
+    if (process.platform === "win32") return;
+    const stateDir = tempStateDir();
+    const path = jsonStatePath(stateDir, "sample.json");
+    writeFileSync(path, "{\"ok\":true}");
+    chmodSync(path, 0o000);
+    try {
+      // 不可读必须可辨认：默认模式不允许吞成缺省值（与「文件不存在」区分开）
+      expect(() => readJsonState({
+        stateDir,
+        filename: "sample.json",
+        fallback: () => ({ ok: false })
+      })).toThrow();
+      expect(() => readJsonState({
+        stateDir,
+        filename: "sample.json",
+        fallback: () => ({ ok: false }),
+        invalidJson: "throw"
+      })).toThrow();
+    } finally {
+      chmodSync(path, 0o600);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  test("EACCES 修复可读后恢复正常读取", () => {
+    if (process.platform === "win32") return;
+    const stateDir = tempStateDir();
+    const path = jsonStatePath(stateDir, "sample.json");
+    writeFileSync(path, "{\"ok\":true}");
+    chmodSync(path, 0o000);
+    try {
+      expect(() => readJsonState({
+        stateDir,
+        filename: "sample.json",
+        fallback: () => ({ ok: false })
+      })).toThrow();
+      chmodSync(path, 0o600);
+      expect(readJsonState({
+        stateDir,
+        filename: "sample.json",
+        fallback: () => ({ ok: false })
+      })).toEqual({ ok: true });
+    } finally {
+      chmodSync(path, 0o600);
       rmSync(stateDir, { recursive: true, force: true });
     }
   });
