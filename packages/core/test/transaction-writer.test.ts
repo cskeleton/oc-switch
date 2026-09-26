@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sample from "./fixtures/openclaw.sample.json";
@@ -196,6 +196,33 @@ describe("writeOpenClawTransaction", () => {
     expect(readFileSync(ws.envPath, "utf8")).toContain("NVIDIA_API_KEY=secret");
     expect(readFileSync(join(result.backupDir, "openclaw.json"), "utf8")).toContain("minimax-portal/MiniMax-M3");
     expect(readFileSync(join(result.backupDir, ".env"), "utf8")).toContain("USER_DEFINED_API_KEY=keep");
+  });
+
+  test("纯配置变更不替换未变化的 .env：字节、inode、mtime 均不变", async () => {
+    const ws = makeWorkspace({ prepareGateway: false });
+    const beforeContent = readFileSync(ws.envPath, "utf8");
+    const beforeStat = statSync(ws.envPath);
+
+    await writeOpenClawTransaction({
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath,
+      stateDir: ws.stateDir,
+      reason: "json only env untouched",
+      runtimeDiscoveryProvider: () => discoveryResult([]),
+      mutate(config) {
+        config.agents!.defaults!.model = "nvidia/deepseek-ai/deepseek-v4-flash";
+        return config;
+      }
+    });
+
+    const afterStat = statSync(ws.envPath);
+    expect(readFileSync(ws.envPath, "utf8")).toBe(beforeContent);
+    expect(afterStat.ino).toBe(beforeStat.ino);
+    expect(afterStat.mtimeMs).toBe(beforeStat.mtimeMs);
+    expect(afterStat.size).toBe(beforeStat.size);
+    // config 本身照常落盘
+    expect(JSON.parse(readFileSync(ws.openclawPath, "utf8")).agents.defaults.model)
+      .toBe("nvidia/deepseek-ai/deepseek-v4-flash");
   });
 
   test("rejects unmanaged env collisions before writing config", async () => {
@@ -429,6 +456,51 @@ describe("writeOpenClawTransaction discovery-backed gateway sync", () => {
     expect(readFileSync(serviceEnvPath, "utf8")).toContain("NVIDIA_API_KEY=new-secret");
     expect(readFileSync(serviceEnvPath, "utf8")).toContain("HTTP_PROXY=http://proxy");
     expect(JSON.stringify(result)).not.toContain("new-secret");
+  });
+
+  test("同值 Key 更新不替换 .env，但仍校验并同步 service env 以修复分叉", async () => {
+    const ws = makeWorkspace({ prepareGateway: false });
+    const serviceEnvPath = join(ws.dir, "svc", "gateway.env");
+    mkdirSync(join(ws.dir, "svc"), { recursive: true });
+    // service env 缺失托管 Key（分叉），源 .env 已有相同值的托管 Key
+    writeFileSync(serviceEnvPath, "HTTP_PROXY=http://proxy\n");
+    writeFileSync(ws.envPath, "# oc-switch:start\nNVIDIA_API_KEY=same-secret\n# oc-switch:end\n");
+    const beforeStat = statSync(ws.envPath);
+
+    const result = await writeOpenClawTransaction({
+      openclawPath: ws.openclawPath,
+      envPath: ws.envPath,
+      stateDir: ws.stateDir,
+      reason: "same value key update",
+      envUpdates: { NVIDIA_API_KEY: "same-secret" },
+      runtimeDiscoveryProvider: () => discoveryResult([
+        discoveryGroup({
+          candidateId: "systemd:openclaw-gateway.service:aaa",
+          instanceId: "systemd:openclaw-gateway.service",
+          stateDir: ws.dir,
+          openclawPath: ws.openclawPath,
+          envPath: ws.envPath,
+          serviceEnvPath,
+          serviceId: "openclaw-gateway.service"
+        })
+      ]),
+      mutate(config) {
+        return config;
+      }
+    });
+
+    // .env 内容未变化时不做临时文件/rename：inode 不变
+    expect(statSync(ws.envPath).ino).toBe(beforeStat.ino);
+    expect(readFileSync(ws.envPath, "utf8")).toBe("# oc-switch:start\nNVIDIA_API_KEY=same-secret\n# oc-switch:end\n");
+    // 显式 Key 更新仍执行验证与 service-env 同步，分叉被修复
+    expect(result.envWrite).toMatchObject({ verified: true });
+    expect(result.gatewayEnvSync).toMatchObject({
+      ok: true,
+      targetPath: serviceEnvPath,
+      syncedKeys: ["NVIDIA_API_KEY"]
+    });
+    expect(readFileSync(serviceEnvPath, "utf8")).toContain("NVIDIA_API_KEY=same-secret");
+    expect(readFileSync(serviceEnvPath, "utf8")).toContain("HTTP_PROXY=http://proxy");
   });
 
   test("unmatched manual active path succeeds with gatewayEnvSync.ok=false", async () => {

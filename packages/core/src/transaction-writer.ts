@@ -169,7 +169,7 @@ export async function writeOpenClawTransaction(input: TransactionInput): Promise
     // 重新读取并重做全部业务预检一次；持续变化则明确拒绝，不覆盖外部新状态。
     if (changedDuringPreflight()) prepared = await prepareWrite();
     if (changedDuringPreflight()) throw new Error("OpenClaw config or env changed during preflight; retry after external edits finish");
-    const { beforeHash, afterRaw, afterEnv, hasEnvUpdates, association } = prepared;
+    const { beforeHash, afterRaw, beforeEnv, afterEnv, hasEnvUpdates, association } = prepared;
     const backupDir = createBackup({
       stateDir: input.stateDir,
       openclawPath: input.openclawPath,
@@ -193,7 +193,11 @@ export async function writeOpenClawTransaction(input: TransactionInput): Promise
     const envTmp = `${input.envPath}.tmp`;
     try {
       writeFileSync(configTmp, afterRaw);
-      if (hasEnvUpdates || existsSync(input.envPath)) {
+      // env 内容确实变化、或显式 Key 更新需要创建缺失的 .env 时才写临时文件并 rename。
+      // 纯配置变更跳过未变化的 .env 写入（字节/inode/mtime 不变），但显式 Key 更新
+      // 即使值相同仍继续走下方校验与 service-env 同步，以便修复分叉。
+      const shouldWriteEnv = afterEnv !== beforeEnv || (hasEnvUpdates && !existsSync(input.envPath));
+      if (shouldWriteEnv) {
         writeFileSync(envTmp, afterEnv);
         renameSync(envTmp, input.envPath);
       }

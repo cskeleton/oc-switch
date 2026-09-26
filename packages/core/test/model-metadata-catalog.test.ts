@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import modelsFixture from "./fixtures/model-metadata/models.json";
@@ -457,6 +457,143 @@ describe("loadModelMetadataCatalog", () => {
     expect(second.calls).toHaveLength(2);
     expect(second.calls.find((c) => c.url === MODELS_DEV_MODELS_URL)?.headers["If-None-Match"]).toBe("etag-m");
     expect(result.sources.every((source) => source.stale === false)).toBe(true);
+  });
+
+  test("两个固定源并行启动，乱序完成后仍按固定源顺序合并结果与警告", async () => {
+    const dir = stateDir();
+    // 两个源各产生一条归一化警告，用于验证合并顺序；api 源先完成（乱序）
+    const modelsBody = JSON.stringify({ "broken/negative": { limit: { context: -1 } } });
+    const apiBody = JSON.stringify({ acme: { models: { "m-1": { limit: { input: -5 } } } } });
+    const gates = new Map<string, () => void>();
+    const started: string[] = [];
+    const fetchImpl: FetchImpl = (input) => {
+      const url = String(input);
+      started.push(url);
+      return new Promise<Response>((resolve) => {
+        gates.set(url, () =>
+          resolve(new Response(url === MODELS_DEV_MODELS_URL ? modelsBody : apiBody, { status: 200 }))
+        );
+      });
+    };
+
+    const pending = loadModelMetadataCatalog({ stateDir: dir, fetchImpl, now: () => BASE_NOW });
+    // 两个源都在任一个 gate 释放前启动（并行而非串行）
+    expect(started.sort()).toEqual([MODELS_DEV_API_URL, MODELS_DEV_MODELS_URL].sort());
+
+    // 乱序完成：先释放 api.json，再释放 models.json
+    gates.get(MODELS_DEV_API_URL)!();
+    gates.get(MODELS_DEV_MODELS_URL)!();
+    const result = await pending;
+
+    expect(result.modelFacts.find((entry) => entry.catalogKey === "broken/negative")).toBeTruthy();
+    expect(result.providerCatalog.find((entry) => entry.catalogKey === "acme/m-1")).toBeTruthy();
+    // sources 与 warnings 都按固定源顺序（models-dev-model 在前）合并，不受完成顺序影响
+    expect(result.sources.map((source) => source.kind)).toEqual(["models-dev-model", "models-dev-provider"]);
+    expect(result.warnings).toHaveLength(2);
+    expect(result.warnings[0]).toContain("broken/negative");
+    expect(result.warnings[1]).toContain("acme/m-1");
+  });
+
+  test("同参数并发冷请求合并在途加载：两次调用总共只有 2 次网络请求、只写一次缓存", async () => {
+    const dir = stateDir();
+    const { fetchImpl, calls } = successFetch();
+    const options = { stateDir: dir, fetchImpl, now: () => BASE_NOW };
+
+    const [first, second] = await Promise.all([
+      loadModelMetadataCatalog(options),
+      loadModelMetadataCatalog(options)
+    ]);
+
+    expect(calls).toHaveLength(2);
+    expect(first.modelFacts.find((entry) => entry.catalogKey === "openai/gpt-5.2")).toBeTruthy();
+    expect(second.providerCatalog.find((entry) => entry.catalogKey === "openrouter/openai/gpt-5.2")).toBeTruthy();
+
+    // 合并后在途工作只落盘一次缓存，且两个源都完整
+    const cache = readCacheFile(dir)!;
+    expect(cache.modelFacts?.entries.length).toBeGreaterThan(0);
+    expect(cache.providerCatalog?.entries.length).toBeGreaterThan(0);
+    expect(existsSync(join(dir, MODEL_METADATA_CACHE_FILENAME))).toBe(true);
+
+    // fresh TTL 内再次读取复用缓存，不再写缓存文件
+    const beforeStat = statSync(join(dir, MODEL_METADATA_CACHE_FILENAME));
+    const third = await loadModelMetadataCatalog(options);
+    expect(third.modelFacts.length).toBeGreaterThan(0);
+    const afterStat = statSync(join(dir, MODEL_METADATA_CACHE_FILENAME));
+    expect(afterStat.ino).toBe(beforeStat.ino);
+    expect(afterStat.mtimeMs).toBe(beforeStat.mtimeMs);
+  });
+
+  test("注入不同 fetch 的并发冷请求不串用，各自发起 2 次请求", async () => {
+    const dir = stateDir();
+    const first = successFetch();
+    const second = successFetch();
+
+    const [a, b] = await Promise.all([
+      loadModelMetadataCatalog({ stateDir: dir, fetchImpl: first.fetchImpl, now: () => BASE_NOW }),
+      loadModelMetadataCatalog({ stateDir: dir, fetchImpl: second.fetchImpl, now: () => BASE_NOW })
+    ]);
+
+    expect(first.calls).toHaveLength(2);
+    expect(second.calls).toHaveLength(2);
+    expect(a.modelFacts.length).toBeGreaterThan(0);
+    expect(b.modelFacts.length).toBeGreaterThan(0);
+  });
+
+  test("forceRefresh 不加入普通在途加载，两者各自独立请求", async () => {
+    const dir = stateDir();
+    const gates = new Map<string, () => void>();
+    const calls: string[] = [];
+    const fetchImpl: FetchImpl = (input) => {
+      const url = String(input);
+      calls.push(url);
+      return new Promise<Response>((resolve) => {
+        gates.set(`${calls.length}:${url}`, () =>
+          resolve(new Response(url === MODELS_DEV_MODELS_URL ? MODELS_BODY : API_BODY, { status: 200 }))
+        );
+      });
+    };
+
+    const plain = loadModelMetadataCatalog({ stateDir: dir, fetchImpl, now: () => BASE_NOW });
+    const forced = loadModelMetadataCatalog({ stateDir: dir, fetchImpl, now: () => BASE_NOW, forceRefresh: true });
+    // forceRefresh 立即发起自己的 2 次请求，而不是复用仍在途的普通加载
+    expect(calls).toHaveLength(4);
+
+    for (const release of [...gates.values()]) release();
+    const [a, b] = await Promise.all([plain, forced]);
+    expect(a.modelFacts.length).toBeGreaterThan(0);
+    expect(b.modelFacts.length).toBeGreaterThan(0);
+  });
+
+  test("在途加载完成后不永久记住：同参数随后调用重新请求（失败结果也不被记住）", async () => {
+    const dir = stateDir();
+    let modelsFailures = 0;
+    const modelsCalls: string[] = [];
+    const apiCalls: string[] = [];
+    const fetchImpl: FetchImpl = async (input) => {
+      const url = String(input);
+      if (url === MODELS_DEV_MODELS_URL) {
+        modelsCalls.push(url);
+        if (modelsFailures < 1) {
+          modelsFailures += 1;
+          throw new Error("boom");
+        }
+      } else {
+        apiCalls.push(url);
+      }
+      return new Response(url === MODELS_DEV_MODELS_URL ? MODELS_BODY : API_BODY, { status: 200 });
+    };
+
+    const first = await loadModelMetadataCatalog({ stateDir: dir, fetchImpl, now: () => BASE_NOW });
+    // models 源失败且无缓存 → 空结果（api 源成功写入缓存）
+    expect(first.modelFacts).toEqual([]);
+    expect(first.providerCatalog.length).toBeGreaterThan(0);
+
+    // 同参数再次调用：不被上一次的结果/在途记录拦住，models 源重新请求并成功
+    const second = await loadModelMetadataCatalog({ stateDir: dir, fetchImpl, now: () => BASE_NOW });
+    expect(modelsCalls).toHaveLength(2);
+    // api 源在 fresh TTL 内复用缓存，不再请求
+    expect(apiCalls).toHaveLength(1);
+    expect(second.modelFacts.find((entry) => entry.catalogKey === "openai/gpt-5.2")).toBeTruthy();
   });
 
   test("version 1 旧缓存废弃并重新获取", async () => {

@@ -379,11 +379,18 @@ function failureMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/**
- * 加载 Models.dev 元数据目录（带缓存、ETag、TTL 与 stale 降级）。
- * 只在用户查询建议或显式刷新时调用；不在应用启动时联网。
- */
-export async function loadModelMetadataCatalog(options: LoadModelMetadataOptions): Promise<LoadModelMetadataResult> {
+/** 单源加载结果：entries、source 状态、警告与缓存补丁各自独立返回，由调用方按固定源顺序合并 */
+interface SourceOutcome {
+  entries: NormalizedModelMetadata[];
+  /** 该源的 source 状态；源完全不可用（无缓存快照可回退）时为 undefined */
+  source: ModelMetadataSourceStatus | undefined;
+  /** 该源在刷新/归一化期间产生的警告，保持源内出现顺序 */
+  warnings: string[];
+  /** 需要写回缓存的新源快照；复用缓存或失败回退时为 undefined */
+  cachePatch: ModelMetadataCacheSource | undefined;
+}
+
+async function loadModelMetadataCatalogInternal(options: LoadModelMetadataOptions): Promise<LoadModelMetadataResult> {
   const nowValue = (options.now ?? Date.now)();
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = options.timeoutMs ?? MODEL_METADATA_TIMEOUT_MS;
@@ -394,18 +401,19 @@ export async function loadModelMetadataCatalog(options: LoadModelMetadataOptions
   if (cache.modelFacts) nextCache.modelFacts = cache.modelFacts;
   if (cache.providerCatalog) nextCache.providerCatalog = cache.providerCatalog;
 
-  const warnings: string[] = [];
-  const sources: ModelMetadataSourceStatus[] = [];
-  let dirty = false;
-
-  async function processSource(config: SourceConfig): Promise<NormalizedModelMetadata[]> {
+  async function processSource(config: SourceConfig): Promise<SourceOutcome> {
     const maxBytes = options.maxBytesOverride?.[config.kind] ?? config.maxBytes;
     const cached = nextCache[config.cacheKey];
+    const warnings: string[] = [];
 
     // Fresh TTL 内复用缓存，不联网
     if (cached && !forceRefresh && nowValue - Date.parse(cached.checkedAt) < MODEL_METADATA_FRESH_TTL_MS) {
-      sources.push({ kind: config.kind, fetchedAt: cached.fetchedAt, checkedAt: cached.checkedAt, stale: false });
-      return cached.entries;
+      return {
+        entries: cached.entries,
+        source: { kind: config.kind, fetchedAt: cached.fetchedAt, checkedAt: cached.checkedAt, stale: false },
+        warnings,
+        cachePatch: undefined
+      };
     }
 
     try {
@@ -414,10 +422,12 @@ export async function loadModelMetadataCatalog(options: LoadModelMetadataOptions
         if (!cached) throw new Error("304 without cached snapshot");
         // 304 仅更新 checkedAt，保留数据与 fetchedAt
         const updated: ModelMetadataCacheSource = { ...cached, checkedAt: toIso(nowValue) };
-        nextCache[config.cacheKey] = updated;
-        dirty = true;
-        sources.push({ kind: config.kind, fetchedAt: updated.fetchedAt, checkedAt: updated.checkedAt, stale: false });
-        return cached.entries;
+        return {
+          entries: cached.entries,
+          source: { kind: config.kind, fetchedAt: updated.fetchedAt, checkedAt: updated.checkedAt, stale: false },
+          warnings,
+          cachePatch: updated
+        };
       }
       const parsed = JSON.parse(fetched.bodyText) as unknown;
       const entries = config.normalize(parsed, warnings);
@@ -427,28 +437,105 @@ export async function loadModelMetadataCatalog(options: LoadModelMetadataOptions
         entries
       };
       if (fetched.etag) newSource.etag = fetched.etag;
-      nextCache[config.cacheKey] = newSource;
-      dirty = true;
-      sources.push({ kind: config.kind, fetchedAt: newSource.fetchedAt, checkedAt: newSource.checkedAt, stale: false });
-      return entries;
+      return {
+        entries,
+        source: { kind: config.kind, fetchedAt: newSource.fetchedAt, checkedAt: newSource.checkedAt, stale: false },
+        warnings,
+        cachePatch: newSource
+      };
     } catch (error) {
       // 失败 → 若最后成功快照仍在 30 天窗口内则作为 stale 返回，不覆盖 last-known-good
       if (cached && nowValue - Date.parse(cached.fetchedAt) <= MODEL_METADATA_STALE_MAX_MS) {
         warnings.push(`${config.kind} 目录刷新失败，使用缓存数据：${failureMessage(error)}`);
-        sources.push({ kind: config.kind, fetchedAt: cached.fetchedAt, checkedAt: cached.checkedAt, stale: true });
-        return cached.entries;
+        return {
+          entries: cached.entries,
+          source: { kind: config.kind, fetchedAt: cached.fetchedAt, checkedAt: cached.checkedAt, stale: true },
+          warnings,
+          cachePatch: undefined
+        };
       }
       warnings.push(`${config.kind} 目录不可用：${failureMessage(error)}`);
-      return [];
+      return { entries: [], source: undefined, warnings, cachePatch: undefined };
     }
   }
 
-  const modelFacts = await processSource(MODELS_SOURCE);
-  const providerCatalog = await processSource(PROVIDER_SOURCE);
+  // 两个固定源并行取得；合并永远按固定源顺序进行，避免共享数组并发写入造成输出顺序漂移
+  const [modelsOutcome, providerOutcome] = await Promise.all([
+    processSource(MODELS_SOURCE),
+    processSource(PROVIDER_SOURCE)
+  ]);
 
+  const modelFacts = modelsOutcome.entries;
+  const providerCatalog = providerOutcome.entries;
+  const sources = [modelsOutcome.source, providerOutcome.source].filter(
+    (source): source is ModelMetadataSourceStatus => source !== undefined
+  );
+  const warnings = [...modelsOutcome.warnings, ...providerOutcome.warnings];
+
+  let dirty = false;
+  if (modelsOutcome.cachePatch) {
+    nextCache.modelFacts = modelsOutcome.cachePatch;
+    dirty = true;
+  }
+  if (providerOutcome.cachePatch) {
+    nextCache.providerCatalog = providerOutcome.cachePatch;
+    dirty = true;
+  }
   if (dirty) {
     writeJsonState({ stateDir: options.stateDir, filename: MODEL_METADATA_CACHE_FILENAME, value: nextCache });
   }
 
   return { modelFacts, providerCatalog, sources, warnings };
+}
+
+// ---- 在途加载合并：同 stateDir + 同加载选项的并发调用共享一次网络/磁盘工作 ----
+const inflightLoads = new Map<string, Promise<LoadModelMetadataResult>>();
+const optionObjectIds = new WeakMap<object, number>();
+let nextOptionObjectId = 1;
+
+/** 函数/对象选项（fetchImpl 等）没有稳定序列化形式，用 WeakMap 分配进程内身份 token */
+function optionIdentityToken(value: unknown): string {
+  if (value === undefined) return "-";
+  if (typeof value === "object" || typeof value === "function") {
+    let id = optionObjectIds.get(value as object);
+    if (id === undefined) {
+      id = nextOptionObjectId++;
+      optionObjectIds.set(value as object, id);
+    }
+    return `#${id}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+/** 合并键：stateDir + 影响加载语义的选项；注入不同 fetch/限制的调用因此不会串用 */
+function inflightLoadKey(options: LoadModelMetadataOptions): string {
+  return JSON.stringify([
+    options.stateDir,
+    optionIdentityToken(options.fetchImpl),
+    optionIdentityToken(options.timeoutMs),
+    optionIdentityToken(options.forceRefresh),
+    options.maxBytesOverride
+      ? JSON.stringify(options.maxBytesOverride, Object.keys(options.maxBytesOverride).sort())
+      : "-"
+  ]);
+}
+
+/**
+ * 加载 Models.dev 元数据目录（带缓存、ETag、TTL、stale 降级与在途合并）。
+ * 只在用户查询建议或显式刷新时调用；不在应用启动时联网。
+ * 同参数的并发调用复用同一次在途加载（finally 清理，不永久记住结果或失败）；
+ * forceRefresh 与普通加载键不同，不会互相串用。
+ */
+export async function loadModelMetadataCatalog(options: LoadModelMetadataOptions): Promise<LoadModelMetadataResult> {
+  const key = inflightLoadKey(options);
+  const shared = inflightLoads.get(key);
+  if (shared) return shared;
+
+  const pending = loadModelMetadataCatalogInternal(options);
+  // finally 清理在途记录；身份比对防止误删同键的新加载
+  const tracked = pending.finally(() => {
+    if (inflightLoads.get(key) === tracked) inflightLoads.delete(key);
+  });
+  inflightLoads.set(key, tracked);
+  return tracked;
 }
