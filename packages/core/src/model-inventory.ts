@@ -51,6 +51,14 @@ export interface ModelInventoryCapabilities {
   canMaterializeConfigModel: boolean;
   /** 可安全删除 policy 精确引用：policy-exact 来源，且非 primary/fallback、非通配覆盖。 */
   canRemovePolicyExactRef: boolean;
+  /**
+   * 可清理悬空 metadata 残留：该 ref 只存在于 `agents.defaults.models`（别名 / 参数），
+   * config 目录、插件 manifest、运行时目录都没有它——没有目录条目需要保护，
+   * 因此不受「unknown 可用性」门禁限制（该门禁保护的是目录条目）。
+   * Provider 不在 config（清理会因 Provider 缺失失败，属 Provider 级清理范围）
+   * 或命中 primary/fallback 时恒为 false。
+   */
+  canRemoveDanglingMetadata: boolean;
 }
 
 /** spec §6.1：统一模型行。 */
@@ -556,6 +564,14 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
       runtimeAvailable &&
       providerFromConfig &&
       availability === "available";
+    // 悬空 metadata 残留：任何目录来源都没有该模型，只有 legacy metadata 引用。
+    // 清理只摘 `agents.defaults.models` 的别名/参数，不动目录与密钥，故 unknown 不适用；
+    // Provider 不在 config 时 removeProviderModel 会直接失败，这里不给入口。
+    const canRemoveDanglingMetadata =
+      catalogSources.length === 0 &&
+      referenceSources.includes("legacy-metadata") &&
+      providerFromConfig &&
+      !protectedReference;
 
     models.push({
       pickerVisible,
@@ -577,7 +593,8 @@ function ensureProvider(providerIdentity: string, providerId: string, source: Mo
         canSetPrimary,
         canEditCatalogEntry,
         canMaterializeConfigModel,
-        canRemovePolicyExactRef
+        canRemovePolicyExactRef,
+        canRemoveDanglingMetadata
       }
     });
   }

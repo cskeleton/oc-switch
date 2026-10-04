@@ -644,6 +644,11 @@ export interface ModelInventoryCapabilities {
   canEditCatalogEntry: boolean;
   canMaterializeConfigModel: boolean;
   canRemovePolicyExactRef: boolean;
+  /**
+   * 悬空 metadata 残留（只有 agents.defaults.models 引用、任何目录来源都没有）可清理。
+   * 可选：旧后端不返回该字段，前端按 false 处理并隐藏入口，不回退成自行猜测。
+   */
+  canRemoveDanglingMetadata?: boolean;
 }
 
 /** 统一模型行。 */
@@ -965,6 +970,15 @@ export function createApiClient(options: ApiClientOptions) {
       request<{ ok: boolean; ref: string; warnings: string[]; backupId?: string }>("/api/models", {
         method: "DELETE",
         body: JSON.stringify({ ref, ...body })
+      }),
+    /**
+     * 悬空 metadata 残留清理：只摘 agents.defaults.models 的别名/参数。
+     * 不复用 deleteModel —— 后者始终会删同名目录条目，且会归一化无关的 policy 规则。
+     */
+    removeDanglingModelMetadata: (ref: string) =>
+      request<{ ok: boolean; ref: string; warnings: string[]; backupId?: string }>("/api/models/dangling-metadata", {
+        method: "DELETE",
+        body: JSON.stringify({ ref })
       }),
     /** 查询 Models.dev 参考参数建议（只读；Provider/Model 仅在本地匹配） */
     getModelMetadataSuggestions: (

@@ -576,6 +576,80 @@ describe("server write endpoints", () => {
     expect(config.agents.defaults.models["nvidia/deepseek-ai/deepseek-v4-flash"]).toBeUndefined();
   });
 
+  /** 悬空 metadata 残留：只存在于 agents.defaults.models，目录 / 插件 / 运行时都没有它。 */
+  function seedDanglingMetadata(ws: Workspace) {
+    const seeded = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    seeded.agents.defaults.models["nvidia/ghost/model"] = { alias: "ghost" };
+    writeFileSync(ws.paths.openclawPath, `${JSON.stringify(seeded, null, 2)}\n`);
+  }
+
+  test("DELETE /api/models/dangling-metadata 只摘 metadata：目录条目与 policy 规则（含重复/大小写）原样保留", async () => {
+    const ws = workspace();
+    seedDanglingMetadata(ws);
+    const seeded = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    // 重复 + 大小写混写规则：默认全局归一会改写并去重它们，清理事务必须关闭归一化
+    seeded.agents.defaults.modelPolicy = { allow: ["NVIDIA/keep", "NVIDIA/keep", "NVIDIA/*"] };
+    writeFileSync(ws.paths.openclawPath, `${JSON.stringify(seeded, null, 2)}\n`);
+    const app = createTestApp(ws);
+
+    const { response, json } = await jsonRequest(app, "/api/models/dangling-metadata", {
+      method: "DELETE",
+      body: JSON.stringify({ ref: "nvidia/ghost/model" })
+    });
+
+    expect(response.status).toBe(200);
+    expect(json).toMatchObject({ ok: true });
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(config.agents.defaults.models["nvidia/ghost/model"]).toBeUndefined();
+    // 目录条目与同 Provider 的其它 metadata 不受影响
+    expect(config.models.providers.nvidia.models.map((model: { id: string }) => model.id))
+      .toEqual(["deepseek-ai/deepseek-v4-flash", "z-ai/glm5.1"]);
+    expect(config.agents.defaults.models["nvidia/z-ai/glm5.1"]).toBeDefined();
+    // 确认框承诺「不改 modelPolicy.allow」：规则必须逐条原样，包括大小写与重复次数
+    expect(config.agents.defaults.modelPolicy.allow).toEqual(["NVIDIA/keep", "NVIDIA/keep", "NVIDIA/*"]);
+  });
+
+  test("DELETE /api/models/dangling-metadata：目标已回到目录时拒绝，绝不删目录条目", async () => {
+    const ws = workspace();
+    const app = createTestApp(ws);
+
+    // 确认框打开后外部把该模型补回目录 → 事务内复核必须拒绝（此前会退化成目录删除）
+    const blocked = await jsonRequest(app, "/api/models/dangling-metadata", {
+      method: "DELETE",
+      body: JSON.stringify({ ref: "nvidia/z-ai/glm5.1" })
+    });
+
+    expect(blocked.response.status).toBe(400);
+    expect(String(blocked.json.error)).toContain("no longer a dangling metadata reference");
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(config.models.providers.nvidia.models.map((model: { id: string }) => model.id))
+      .toEqual(["deepseek-ai/deepseek-v4-flash", "z-ai/glm5.1"]);
+  });
+
+  test("DELETE /api/models：探测未知不锁死无目录来源的行，仍保护目录条目", async () => {
+    const ws = workspace();
+    seedDanglingMetadata(ws);
+    // 探测不完整 → 所有行 availability = unknown
+    const app = createTestApp(ws, undefined, { runtimeModelCatalogProvider: async () => emptyRuntimeSnapshot() });
+
+    const blocked = await jsonRequest(app, "/api/models", {
+      method: "DELETE",
+      body: JSON.stringify({ ref: "nvidia/z-ai/glm5.1" })
+    });
+    expect(blocked.response.status).toBe(400);
+    expect(String(blocked.json.error)).toContain("availability is unknown");
+
+    const cleaned = await jsonRequest(app, "/api/models", {
+      method: "DELETE",
+      body: JSON.stringify({ ref: "nvidia/ghost/model", layers: { metadata: true, policyExact: false } })
+    });
+    expect(cleaned.response.status).toBe(200);
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(config.agents.defaults.models["nvidia/ghost/model"]).toBeUndefined();
+    expect(config.models.providers.nvidia.models.map((model: { id: string }) => model.id))
+      .toEqual(["deepseek-ai/deepseek-v4-flash", "z-ai/glm5.1"]);
+  });
+
   test("POST /api/providers adds provider from preset without leaking key", async () => {
     const ws = workspace();
     writeFileSync(join(ws.presetDirs.customDir, "testprov.json"), JSON.stringify({

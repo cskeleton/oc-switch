@@ -5,6 +5,7 @@ import {
   enableModel,
   normalizeModelRefForStorage,
   parseModelRef,
+  removeDanglingModelMetadata,
   removeProviderModel,
   setPrimaryModel,
   updateProviderModel,
@@ -152,10 +153,49 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
         reason: `remove model ${ref}`,
         async mutate(config) {
           const entry = (await runtime.buildCurrentInventory({ refresh: true, config, paths })).models.find(row => normalizeModelRefForStorage(row.ref) === normalizeModelRefForStorage(ref));
-          if (entry?.availability === "unknown") throw new Error("Runtime model availability is unknown; refresh before removing its catalog entry.");
+          // unknown 门禁保护的是「目录条目」。没有任何目录来源的悬空 metadata 行没有目录条目可保护，
+          // 放行给 removeProviderModel 做 metadata 层清理；primary/fallback 与防清空仍由 Core fail closed。
+          if (entry?.availability === "unknown" && entry.catalogSources.length > 0) {
+            throw new Error("Runtime model availability is unknown; refresh before removing its catalog entry.");
+          }
           const removed = removeProviderModel(config, ref, removeOptions);
           warnings = removed.warnings;
           return removed.config;
+        }
+      });
+      runtime.invalidateCatalogCaches();
+      return c.json({ ok: true, ref, warnings, backupId: result.backupDir.split("/").pop() });
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  /**
+   * 悬空 metadata 残留清理（2026-10-04）：只摘 `agents.defaults.models` 中该 ref 的别名/参数。
+   * 与 `DELETE /api/models` 的两点关键区别：
+   * - 事务内用 fresh inventory 复核目标**仍然悬空**——确认框打开后外部可能已把该模型补回目录，
+   *   此时必须拒绝，不能退化成目录条目删除；
+   * - `normalizeConfig: false`——不顺带归一/去重无关的 `modelPolicy.allow` 规则，兑现「不改策略」的承诺。
+   */
+  app.delete("/api/models/dangling-metadata", async (c) => {
+    try {
+      const body = await requireJsonObject(c.req);
+      const ref = requireString(body.ref, "ref");
+      const paths = runtime.currentPaths();
+      let warnings: string[] = [];
+      const result = await writeOpenClawTransaction({
+        ...paths,
+        runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
+        reason: `clean dangling metadata ${ref}`,
+        normalizeConfig: false,
+        async mutate(config) {
+          const entry = (await runtime.buildCurrentInventory({ refresh: true, config, paths })).models.find(row => normalizeModelRefForStorage(row.ref) === normalizeModelRefForStorage(ref));
+          if (entry?.capabilities.canRemoveDanglingMetadata !== true) {
+            throw new Error(`Model ${ref} is no longer a dangling metadata reference; refresh before cleaning it.`);
+          }
+          const cleaned = removeDanglingModelMetadata(config, ref);
+          warnings = cleaned.warnings;
+          return cleaned.config;
         }
       });
       runtime.invalidateCatalogCaches();

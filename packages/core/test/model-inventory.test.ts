@@ -1052,3 +1052,43 @@ describe("buildModelInventory：policyRevision 与规则 editable/removable 投�
     }
   });
 });
+
+describe("悬空 metadata 残留清理能力 canRemoveDanglingMetadata", () => {
+  // cpa/mira/kimi-k3：只有 agents.defaults.models 引用，任何目录来源都没有 → 可清理
+  // cpa/mira/k3：config 目录条目 → 走普通目录删除，不给清理入口
+  // ghostprov/x：Provider 不在 config（removeProviderModel 会因 Provider 缺失失败）→ 不可清理
+  // cpa/protected：primary 引用 → fail closed
+  const config: OpenClawConfig = {
+    models: { providers: { cpa: { models: [{ id: "mira/k3" }] } } },
+    agents: {
+      defaults: {
+        model: "cpa/protected",
+        models: {
+          "cpa/mira/kimi-k3": { alias: "mira-k3" },
+          "cpa/mira/k3": {},
+          "ghostprov/x": {},
+          "cpa/protected": {}
+        },
+        modelPolicy: { allow: ["cpa/*"] }
+      }
+    }
+  };
+
+  for (const [label, runtime] of [
+    ["完整探测", makeSnapshot()],
+    ["探测不完整（unknown）", makeSnapshot({ completeness: { status: false, configuredList: false, allList: false } })]
+  ] as const) {
+    test(`${label}下判定一致`, () => {
+      const models = byRef(buildModelInventory({ config, runtime }));
+      const dangling = models.get("cpa/mira/kimi-k3")!;
+      expect(dangling.catalogSources).toEqual([]);
+      expect(dangling.referenceSources).toEqual(["legacy-metadata"]);
+      expect(dangling.capabilities.canEditCatalogEntry).toBe(false);
+      expect(dangling.capabilities.canRemoveDanglingMetadata).toBe(true);
+
+      expect(models.get("cpa/mira/k3")!.capabilities.canRemoveDanglingMetadata).toBe(false);
+      expect(models.get("ghostprov/x")!.capabilities.canRemoveDanglingMetadata).toBe(false);
+      expect(models.get("cpa/protected")!.capabilities.canRemoveDanglingMetadata).toBe(false);
+    });
+  }
+});

@@ -15,6 +15,7 @@ import {
   removeModelPolicyRule,
   removeModelPolicyRules,
   removeModelPolicyWildcard,
+  removeDanglingModelMetadata,
   removeProviderModel,
   replaceModelPolicyRule,
   readProviderStates,
@@ -203,11 +204,54 @@ export function registerModelCommands(program: Command, context: CommandContext)
         reason: `remove model ${ref}`,
         async mutate(config) {
           const entry = findInventoryEntry(await context.buildInventory({ refresh: true, config, paths }), ref);
-          if (entry?.availability === "unknown") throw new Error("Runtime model availability is unknown; refresh before removing its catalog entry.");
+          // unknown 门禁保护的是「目录条目」：无目录来源的悬空 metadata 行没有目录条目可保护，
+          // 放行给 removeProviderModel 清理 agents.defaults.models 残留（Core 仍校验 primary/fallback 与防清空）。
+          if (entry?.availability === "unknown" && entry.catalogSources.length > 0) {
+            throw new Error("Runtime model availability is unknown; refresh before removing its catalog entry.");
+          }
           return removeProviderModel(config, ref, removeOptions).config;
         }
       });
       console.log(`Removed model ${ref}`);
+    });
+
+  model.command("clean-dangling-metadata")
+    .description("只清理 agents.defaults.models 里的悬空残留（别名/参数）；目标仍在目录时拒绝，不动目录、策略与 Key")
+    .argument("<ref>")
+    .option("--yes", "非交互环境显式确认清理（destructive action fail closed）")
+    .option("--json", "输出 JSON 结果")
+    .action(async (ref: string, options: { yes?: boolean; json?: boolean }) => {
+      try {
+        requireNonInteractiveYes("model clean-dangling-metadata", options.yes);
+        const paths = context.activePaths();
+        let warnings: string[] = [];
+        const result = await writeOpenClawTransaction({
+          ...paths,
+          runtimeDiscoveryProvider: context.runtimeDiscoveryProvider,
+          reason: `clean dangling metadata ${ref}`,
+          // 不顺带归一无关配置：清理承诺「不改 modelPolicy.allow」，全局归一会改写/去重大小写规则。
+          normalizeConfig: false,
+          async mutate(config) {
+            const entry = findInventoryEntry(await context.buildInventory({ refresh: true, config, paths }), ref);
+            // 事务内复核「仍然悬空」：预检后外部把模型补回目录时必须拒绝，不能退化成目录条目删除。
+            if (entry?.capabilities.canRemoveDanglingMetadata !== true) {
+              throw new Error(`Model ${ref} is no longer a dangling metadata reference; refresh before cleaning it.`);
+            }
+            const cleaned = removeDanglingModelMetadata(config, ref);
+            warnings = cleaned.warnings;
+            return cleaned.config;
+          }
+        });
+        if (options.json) {
+          console.log(JSON.stringify({ ok: true, ref, backupId: result.backupDir.split("/").pop(), warnings }));
+          return;
+        }
+        console.log(`Cleaned dangling metadata ${ref} (backup: ${result.backupDir.split("/").pop()})`);
+        for (const warning of warnings) console.warn(warning);
+      } catch (error) {
+        console.error(commandErrorMessage(error));
+        process.exitCode = 1;
+      }
     });
 
   model.command("remove-policy-ref")

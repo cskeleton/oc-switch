@@ -4,6 +4,7 @@ import {
   addProviderModel,
   disableModel,
   enableModel,
+  removeDanglingModelMetadata,
   removeProviderModel,
   setPrimaryModel,
   updateProviderModel
@@ -570,5 +571,56 @@ describe("插件 provider 的模型编排", () => {
     ]) {
       expect(mutate).toThrow();
     }
+  });
+});
+
+describe("悬空 metadata 残留清理 removeDanglingModelMetadata", () => {
+  function danglingConfig(): OpenClawConfig {
+    return {
+      models: { providers: { cpa: { models: [{ id: "mira/k3" }] } } },
+      agents: {
+        defaults: {
+          model: { primary: "cpa/mira/k3" },
+          models: { "cpa/mira/k3": {}, "cpa/mira/kimi-k3": { alias: "mira-k3" } },
+          // 故意保留重复与大小写混写：清理不得顺手归一或去重
+          modelPolicy: { allow: ["CPA/keep", "CPA/keep", "CPA/*"] }
+        }
+      }
+    } as unknown as OpenClawConfig;
+  }
+
+  test("只删 agents.defaults.models 的残留；目录与 policy 规则（含重复/大小写）原样保留", () => {
+    const result = removeDanglingModelMetadata(danglingConfig(), "cpa/mira/kimi-k3");
+    expect(Object.keys(result.config.agents!.defaults!.models!)).toEqual(["cpa/mira/k3"]);
+    expect(result.config.models?.providers?.cpa?.models?.map(model => model.id)).toEqual(["mira/k3"]);
+    expect(result.config.agents!.defaults!.modelPolicy!.allow).toEqual(["CPA/keep", "CPA/keep", "CPA/*"]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  test("目标已在目录时拒绝：确认框打开后被补回目录的竞态不得删掉目录条目", () => {
+    const config = danglingConfig();
+    const before = structuredClone(config);
+    expect(() => removeDanglingModelMetadata(config, "cpa/mira/k3")).toThrow(/exists in the provider catalog/);
+    expect(config).toEqual(before);
+  });
+
+  test("没有同名残留条目、Provider 不在 config 时均拒绝", () => {
+    expect(() => removeDanglingModelMetadata(danglingConfig(), "cpa/not-there")).toThrow(/No leftover agents\.defaults\.models entry/);
+    expect(() => removeDanglingModelMetadata(danglingConfig(), "ghostprov/x")).toThrow(/Provider ghostprov not found/);
+  });
+
+  test("primary / fallback 的 metadata 是合法配置不是残留：拒绝且不改动", () => {
+    const config = {
+      models: { providers: { cpa: { models: [] } } },
+      agents: {
+        defaults: {
+          model: { primary: "cpa/gone", fallbacks: ["cpa/gone-fb"] },
+          models: { "cpa/gone": {}, "cpa/gone-fb": {} }
+        }
+      }
+    } as unknown as OpenClawConfig;
+    expect(() => removeDanglingModelMetadata(config, "cpa/gone")).toThrow(/current primary model/);
+    expect(() => removeDanglingModelMetadata(config, "cpa/gone-fb")).toThrow(/fallbacks/);
+    expect(Object.keys(config.agents!.defaults!.models!)).toEqual(["cpa/gone", "cpa/gone-fb"]);
   });
 });

@@ -48,7 +48,7 @@ interface ModelsViewProps {
 
 /** 处理向导只记录目标；权限始终读取当前 inventory，不复制策略算法。 */
 interface PendingModelAction {
-  kind: "handle" | "remove-policy-ref" | "materialize" | "replace" | "add-policy-rule" | "remove-policy-rule" | "edit-policy-rule";
+  kind: "handle" | "remove-policy-ref" | "materialize" | "replace" | "add-policy-rule" | "remove-policy-rule" | "edit-policy-rule" | "clean-dangling";
   ref: string;
   /** 打开对话框时冻结的 policy revision（背景刷新不替换），用于写入冲突校验 */
   ruleRevision?: string | undefined;
@@ -517,12 +517,32 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
     }
   }
 
+  /**
+   * 清理悬空 metadata 残留：该 ref 只存在于 agents.defaults.models（别名/参数），
+   * 任何目录来源都没有它。只删 metadata 层，不动目录、策略与 API Key。
+   */
+  async function confirmCleanDangling() {
+    if (busy || pendingEntry?.capabilities.canRemoveDanglingMetadata !== true) return;
+    setBusy(pendingEntry.ref);
+    setActionError(null);
+    try {
+      const result = await client.removeDanglingModelMetadata(pendingEntry.ref);
+      setPendingAction(null);
+      toast.success(`已清理 ${pendingEntry.ref} 的残留引用（别名/参数）`);
+      for (const warning of result.warnings ?? []) toast.warning(warning);
+      await load();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "清理残留引用失败");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   function openCreateProvider() {
     if (!pendingEntry || !needsProviderForm(pendingEntry)) return;
     setCustomPrefill({ providerId: pendingEntry.providerId, modelId: pendingEntry.modelId });
     setPendingAction(null);
   }
-
   async function confirmReplacePrimary() {
     if (busy || !pendingEntry?.referenceSources.includes("primary")) return;
     if (!inventory?.models.some(model => model.ref === newPrimary && model.capabilities.canSetPrimary)) return;
@@ -560,10 +580,18 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
     return providerIds.filter((pId) => pId.toLowerCase().includes(normalized));
   }, [providerIds, providerQuery]);
 
-  /** 默认完整呈现选择器选项（pickerVisible 为 v2 必填布尔，非法 DTO 已在 API 边界拒绝）；管理视图另外显示闲置目录，问题行集中在待处理区。 */
+  /**
+   * 默认完整呈现选择器选项（pickerVisible 为 v2 必填布尔，非法 DTO 已在 API 边界拒绝）；
+   * 管理视图另外显示闲置目录，问题行集中在待处理区。
+   * 例外：可清理的悬空 metadata 残留在管理视图必须可达——legacy 模式下这类行是
+   * `policyAllowed=true` + 不可用 ⇒ `needsAttention=true` 且 `pickerVisible=false`，
+   * 沿用同一过滤会让它在两个视图里都看不见，清理入口形同虚设。
+   */
   const selectableModels = useMemo(() => {
     const models = inventory?.models ?? [];
-    return models.filter((model) => manageCatalog ? !model.needsAttention : model.pickerVisible);
+    return models.filter((model) => manageCatalog
+      ? (!model.needsAttention || model.capabilities.canRemoveDanglingMetadata === true)
+      : model.pickerVisible);
   }, [inventory, manageCatalog]);
 
   const providerCounts = useMemo(() => {
@@ -675,6 +703,8 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
                 const canDelete = canDeleteCatalogEntry(row);
                 // runtime-only 可用模型可补全进 config Provider 目录（spec §8.1 补全配置）
                 const canMaterialize = row.capabilities.canMaterializeConfigModel;
+                // 悬空 metadata 残留（仅引用、无目录条目）：清理入口由 Core 事实推导，不由 UI 猜
+                const canCleanDangling = row.capabilities.canRemoveDanglingMetadata === true;
                 return (
                 <div className="flex items-center justify-end gap-1.5 md:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150">
                   {canPrimary ? (
@@ -717,6 +747,18 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
                       onClick={() => openAction({ kind: "materialize", ref: row.ref })}
                     >
                       补全到目录
+                    </Button>
+                  ) : null}
+                  {canCleanDangling ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      aria-label={`清理残留引用 ${row.ref}`}
+                      title="该引用只存在于 agents.defaults.models（别名/参数），目录里没有它；清理只摘掉这条残留"
+                      disabled={busy !== null}
+                      onClick={() => openAction({ kind: "clean-dangling", ref: row.ref })}
+                    >
+                      清理残留
                     </Button>
                   ) : null}
                   {needsProviderForm(row) ? (
@@ -1149,6 +1191,28 @@ export function ModelsView({ client, onOpenProviders }: ModelsViewProps) {
           <div><dt className="text-muted-foreground">模型 ID</dt><dd>{pendingEntry?.modelId}</dd></div>
         </dl>
         <p className="mt-3 text-sm text-muted-foreground">本次提交仅包含模型 ID，不猜测 contextWindow、maxTokens 或 API；已有策略保持不变。</p>
+        {actionError ? <p role="alert" className="mt-3 text-sm text-destructive">{actionError}</p> : null}
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={pendingAction?.kind === "clean-dangling"}
+        title="清理残留引用"
+        message={`确认清理 ${pendingAction?.ref ?? ""} 的残留引用？此操作将创建备份。`}
+        confirmLabel="清理残留引用"
+        danger
+        confirmDisabled={busy !== null || pendingEntry?.capabilities.canRemoveDanglingMetadata !== true}
+        onCancel={closeAction}
+        onConfirm={() => void confirmCleanDangling()}
+      >
+        <dl className="space-y-2 break-all text-sm">
+          <div><dt className="text-muted-foreground">Provider</dt><dd>{pendingEntry?.providerId}</dd></div>
+          <div><dt className="text-muted-foreground">模型 ID</dt><dd>{pendingEntry?.modelId}</dd></div>
+        </dl>
+        <p className="mt-3 text-sm text-muted-foreground">
+          该引用只存在于 agents.defaults.models（别名 / 模型参数），Provider 目录、插件与运行时目录都没有它。
+          本次只删除这条残留，不改 modelPolicy.allow、不删目录条目、不删 API Key。
+          若 modelPolicy.allow 仍有同名精确引用，会保留并可在「清理悬空引用」中处理。
+        </p>
         {actionError ? <p role="alert" className="mt-3 text-sm text-destructive">{actionError}</p> : null}
       </ConfirmDialog>
 

@@ -3284,6 +3284,51 @@ describe("ModelDialog 参考参数建议", () => {
     expect(await findByText("GPT-5.2")).toBeTruthy();
   });
 
+  test("Models 页：悬空 metadata 残留只在管理视图出现，并可清理", async () => {
+    const removeDanglingModelMetadata = mock(async () => ({ ok: true, ref: "cpa/mira/kimi-k3", warnings: [], backupId: "b1" }));
+    const inventory = inventoryFixture({
+      providers: [inventoryProvider({ providerId: "cpa", modelCount: 2, availableModelCount: 1, unavailableModelCount: 1 })],
+      models: [
+        inventoryModelEntry({ ref: "cpa/mira/k3" }),
+        inventoryModelEntry({
+          // 真实 legacy 残留形态（Core DTO 实测）：policyAllowed=true + 不可用
+          // ⇒ needsAttention=true 且 pickerVisible=false，两个视图默认都不列 —— 管理视图必须保留它，
+          // 否则清理入口不可达；清理走 metadata-only 端点，不复用 deleteModel。
+          ref: "cpa/mira/kimi-k3",
+          catalogSources: [],
+          policyMode: "legacy",
+          policyAllowed: true,
+          availability: "unavailable",
+          availabilityReasons: ["model-not-in-catalog"],
+          capabilities: {
+            canTogglePolicy: false,
+            canSetPrimary: false,
+            canEditCatalogEntry: false,
+            canMaterializeConfigModel: false,
+            canRemovePolicyExactRef: false,
+            canRemoveDanglingMetadata: true
+          }
+        })
+      ]
+    });
+
+    const { findByLabelText, findByRole, findByText, queryByLabelText } = renderModelsView(
+      mockClient({ getModelInventory: async () => inventory, getModels: async () => ({ models: [] }), removeDanglingModelMetadata })
+    );
+
+    // IM 选项视图不列该引用（pickerVisible=false），避免把残留当成可选模型
+    // 注意用 heading 精确匹配：页头描述文案里也含「模型选项」，findByText 会命中两个元素
+    await findByRole("heading", { name: /模型选项/ });
+    expect(queryByLabelText("清理残留引用 cpa/mira/kimi-k3")).toBeNull();
+
+    await userEvent.click(await findByRole("button", { name: "管理配置目录" }));
+    await userEvent.click(await findByLabelText("清理残留引用 cpa/mira/kimi-k3"));
+    expect(await findByText(/只删除这条残留/)).toBeTruthy();
+    await userEvent.click(await findByRole("button", { name: "清理残留引用" }));
+
+    await waitFor(() => expect(removeDanglingModelMetadata).toHaveBeenCalledWith("cpa/mira/kimi-k3"));
+  });
+
   test("Provider 模型弹窗入口注入同一个 client 查询方法", async () => {
     const getModelMetadataSuggestions = mock(async () => singleSuggestionResponse());
     const getProviders = mock(async () => ({ providers: [providerSummary({ id: "nvidia" })] }));
@@ -3700,6 +3745,113 @@ describe("插件 Provider 的 Web 呈现", () => {
     expect(((await findByLabelText("同步所选模型参数")) as HTMLButtonElement).disabled).toBe(true);
     expect(queryByLabelText("编辑模型 opencode/hy3")).toBeNull();
     expect(queryByLabelText("删除模型 opencode/hy3")).toBeNull();
+  });
+
+  test("ProviderModelsDialog：悬空 metadata 残留标为「仅引用」并给出清理入口", async () => {
+    const rows = [providerSummary({ id: "cpa", modelCount: 2 })];
+    const getModels = mock(async () => ({
+      models: [
+        modelSummary({ ref: "cpa/mira/k3", name: "Mira Kimi K3" }),
+        // 旧兼容列表会把 agents.defaults.models 的 key 也列出来，且 wildcard 命中下 enabled=true
+        modelSummary({ ref: "cpa/mira/kimi-k3", alias: "mira-k3" })
+      ]
+    }));
+    const removeDanglingModelMetadata = mock(async () => ({ ok: true, ref: "cpa/mira/kimi-k3", warnings: [], backupId: "b1" }));
+    const inventoryModels = [
+      inventoryModelEntry({ ref: "cpa/mira/k3" }),
+      inventoryModelEntry({
+        ref: "cpa/mira/kimi-k3",
+        catalogSources: [],
+        policyMode: "legacy",
+        policyAllowed: true,
+        availability: "unavailable",
+        availabilityReasons: ["model-not-in-catalog"],
+        capabilities: {
+          canTogglePolicy: false,
+          canSetPrimary: false,
+          canEditCatalogEntry: false,
+          canMaterializeConfigModel: false,
+          canRemovePolicyExactRef: false,
+          canRemoveDanglingMetadata: true
+        }
+      })
+    ];
+
+    const { findByLabelText, findByRole, findByText, queryAllByText, queryByLabelText } = render(
+      <ToastProvider>
+        <ProviderModelsDialog
+          open
+          provider={rows[0]!}
+          providers={rows}
+          client={mockClient({ getModels, removeDanglingModelMetadata })}
+          inventoryModels={inventoryModels}
+          onCancel={() => {}}
+          onChanged={() => {}}
+        />
+      </ToastProvider>
+    );
+
+    // 不再伪装成「已启用」：目录里没有它，只剩 agents.defaults.models 的别名/参数
+    expect(await findByText("仅引用")).toBeTruthy();
+    // 只有真实目录行显示「已启用」，悬空行不显示
+    expect(queryAllByText("已启用")).toHaveLength(1);
+    // 目录删除入口不给悬空行；普通目录行不受影响
+    expect(queryByLabelText("删除模型 cpa/mira/kimi-k3")).toBeNull();
+    expect(queryByLabelText("删除模型 cpa/mira/k3")).toBeTruthy();
+
+    await userEvent.click(await findByLabelText("清理残留引用 cpa/mira/kimi-k3"));
+    expect(await findByText(/只删除这条残留/)).toBeTruthy();
+    await userEvent.click(await findByRole("button", { name: "清理残留引用" }));
+
+    // metadata-only 端点：不复用 deleteModel（后者会删同名目录条目并归一化无关 policy 规则）
+    await waitFor(() => expect(removeDanglingModelMetadata).toHaveBeenCalledWith("cpa/mira/kimi-k3"));
+  });
+
+  test("ProviderModelsDialog：清理确认随当前 inventory 能力更新", async () => {
+    const ref = "cpa/ghost/model";
+    const providers = [providerSummary({ id: "cpa" })];
+    const removeDanglingModelMetadata = mock(async () => ({ ok: true, ref, warnings: [] }));
+    const client = mockClient({
+      getModels: async () => ({ models: [modelSummary({ ref })] }),
+      removeDanglingModelMetadata
+    });
+    const dangling = inventoryModelEntry({
+      ref,
+      catalogSources: [],
+      availability: "unavailable",
+      capabilities: {
+        canTogglePolicy: false,
+        canSetPrimary: false,
+        canEditCatalogEntry: false,
+        canMaterializeConfigModel: false,
+        canRemovePolicyExactRef: false,
+        canRemoveDanglingMetadata: true
+      }
+    });
+    const tree = (inventoryModels: ModelInventoryEntry[]) => (
+      <ToastProvider>
+        <ProviderModelsDialog open provider={providers[0]!} providers={providers} client={client}
+          inventoryModels={inventoryModels} onCancel={() => {}} onChanged={() => {}} />
+      </ToastProvider>
+    );
+    const view = render(tree([dangling]));
+    await userEvent.click(await view.findByLabelText(`清理残留引用 ${ref}`));
+    const confirm = (await view.findByRole("button", { name: "清理残留引用" })) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(false);
+
+    // 确认框打开后，父页面的新 inventory 表明该模型已补回目录。
+    view.rerender(tree([inventoryModelEntry({
+      ref,
+      capabilities: { ...dangling.capabilities, canEditCatalogEntry: true, canRemoveDanglingMetadata: false }
+    })]));
+    expect(confirm.disabled).toBe(true);
+    await userEvent.click(confirm);
+    expect(removeDanglingModelMetadata).not.toHaveBeenCalled();
+
+    view.rerender(tree([dangling]));
+    expect(confirm.disabled).toBe(false);
+    await userEvent.click(confirm);
+    await waitFor(() => expect(removeDanglingModelMetadata).toHaveBeenCalledWith(ref));
   });
 });
 

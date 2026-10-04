@@ -2106,6 +2106,58 @@ describe("cli 运行时模型管理（inventory / reconcile / plugin）", () => 
     });
   });
 
+  describe("model clean-dangling-metadata", () => {
+    /** 悬空 metadata 残留 + 大小写混写/重复的 policy 规则（清理必须原样保留后者） */
+    function writeDanglingFixture(): { dir: string; configPath: string } {
+      const dir = mkdtempSync(join(tmpdir(), "oc-switch-cli-dangling-"));
+      tempDirs.push(dir);
+      const configPath = join(dir, "openclaw.json");
+      const config = structuredClone(sample) as OpenClawConfig;
+      config.agents!.defaults!.models!["nvidia/ghost/model"] = { alias: "ghost" };
+      config.agents!.defaults!.modelPolicy = { allow: ["NVIDIA/keep", "NVIDIA/keep", "nvidia/*"] };
+      writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+      return { dir, configPath };
+    }
+
+    test("非 TTY 无 --yes fail closed；--yes 只摘 metadata，目录与 policy 规则原样", async () => {
+      const { dir, configPath } = writeDanglingFixture();
+      const env = {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, completeRuntimeCommands())
+      };
+
+      const blocked = await runCli(["model", "clean-dangling-metadata", "nvidia/ghost/model"], env);
+      expect(blocked.code).not.toBe(0);
+      expect(blocked.stderr).toContain("--yes");
+      expect(JSON.parse(readFileSync(configPath, "utf8")).agents.defaults.models["nvidia/ghost/model"]).toBeDefined();
+
+      const cleaned = await runCli(["model", "clean-dangling-metadata", "nvidia/ghost/model", "--yes"], env);
+      expect(cleaned.code).toBe(0);
+      const after = JSON.parse(readFileSync(configPath, "utf8"));
+      expect(after.agents.defaults.models["nvidia/ghost/model"]).toBeUndefined();
+      // 目录条目不动
+      expect(after.models.providers.nvidia.models.map((model: { id: string }) => model.id))
+        .toEqual(["deepseek-ai/deepseek-v4-flash", "z-ai/glm5.1"]);
+      // 关闭全局归一化：无关规则的大小写与重复次数原样保留
+      expect(after.agents.defaults.modelPolicy.allow).toEqual(["NVIDIA/keep", "NVIDIA/keep", "nvidia/*"]);
+    });
+
+    test("目标仍在目录时拒绝：绝不退化成目录条目删除", async () => {
+      const { dir, configPath } = writeDanglingFixture();
+      const blocked = await runCli(["model", "clean-dangling-metadata", "nvidia/z-ai/glm5.1", "--yes"], {
+        OPENCLAW_CONFIG_PATH: configPath,
+        HOME: dir,
+        OC_SWITCH_MOCK_RUNTIME_MODELS: writeRuntimeMockFile(dir, completeRuntimeCommands())
+      });
+      expect(blocked.code).not.toBe(0);
+      expect(blocked.stderr).toContain("no longer a dangling metadata reference");
+      const after = JSON.parse(readFileSync(configPath, "utf8"));
+      expect(after.models.providers.nvidia.models.map((model: { id: string }) => model.id))
+        .toEqual(["deepseek-ai/deepseek-v4-flash", "z-ai/glm5.1"]);
+    });
+  });
+
   describe("model add-policy-rule", () => {
     test("exact 成功并落盘；wildcard 成功", async () => {
       const { dir, configPath } = writePolicyFixture();

@@ -44,6 +44,8 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
   const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
   const [confirmKeepEnabledOnly, setConfirmKeepEnabledOnly] = useState(false);
   const [batchBusy, setBatchBusy] = useState(false);
+  /** 清理残留 metadata 的目标行：与「删除目录条目」是两回事，单独确认 */
+  const [cleanTarget, setCleanTarget] = useState<ModelSummary | null>(null);
 
   async function load() {
     if (!provider) return;
@@ -79,6 +81,14 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
   // 兼容弹窗也必须遵守新 inventory 的只读能力，不能绕回旧列表清理 unknown 行。
   function isReadOnly(row: ModelSummary): boolean {
     return inventoryByModelId.get(row.modelId)?.capabilities.canEditCatalogEntry === false;
+  }
+  /**
+   * 悬空 metadata 残留：该 ref 只存在于 agents.defaults.models（别名/参数），
+   * 目录 / 插件 / 运行时都没有它——普通「删除目录条目」不适用，走独立的清理入口。
+   * 能力由 Core 推导；旧后端缺字段按 false 处理（保持「只读」，不自行猜测）。
+   */
+  function isDanglingMetadata(row: ModelSummary): boolean {
+    return inventoryByModelId.get(row.modelId)?.capabilities.canRemoveDanglingMetadata === true;
   }
   const hasReadOnlyModels = scopedModels.some(isReadOnly);
   const hasReadOnlySelection = scopedModels.some(row => selectedModelIds.has(row.modelId) && isReadOnly(row));
@@ -136,6 +146,24 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
       onChanged();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "删除模型失败");
+    }
+  }
+
+  /** 只删 agents.defaults.models 的别名/参数残留；目录、策略与 API Key 不动。 */
+  async function confirmCleanDangling() {
+    if (!cleanTarget || batchBusy || !isDanglingMetadata(cleanTarget)) return;
+    setBatchBusy(true);
+    try {
+      const result = await client.removeDanglingModelMetadata(cleanTarget.ref);
+      setCleanTarget(null);
+      toast.success(`已清理 ${cleanTarget.ref} 的残留引用（别名/参数）`);
+      for (const warning of result.warnings ?? []) toast.warning(warning);
+      await load();
+      onChanged();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "清理残留引用失败");
+    } finally {
+      setBatchBusy(false);
     }
   }
 
@@ -296,8 +324,13 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
                     header: "状态",
                     wrap: "nowrap",
                     render: (row) => {
-                      if (inventoryByModelId.get(row.modelId)?.availability === "unknown") return <Pill variant="warning">无法确认</Pill>;
+                      const inventoryRow = inventoryByModelId.get(row.modelId);
+                      if (inventoryRow?.availability === "unknown") return <Pill variant="warning">无法确认</Pill>;
                       if (row.isPrimary) return <Pill variant="brand">主模型</Pill>;
+                      // 仅引用：目录 / 插件 / 运行时都没有该模型，只剩 agents.defaults.models 的别名或参数
+                      if (inventoryRow && inventoryRow.catalogSources.length === 0) {
+                        return <Pill variant="muted" title="Provider 目录里没有该模型；这条只是 agents.defaults.models 的别名/参数残留">仅引用</Pill>;
+                      }
                       return row.enabled
                         ? <Pill variant="success">已启用</Pill>
                         : <Pill variant="muted">已禁用</Pill>;
@@ -308,8 +341,23 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
                     header: "操作",
                     wrap: "nowrap",
                     render: (row) => (
-                      isPlugin || isReadOnly(row) ? (
+                      isPlugin ? (
                         <span className="text-xs text-muted-foreground">只读</span>
+                      ) : isReadOnly(row) ? (
+                        isDanglingMetadata(row) ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            aria-label={`清理残留引用 ${row.ref}`}
+                            title="该引用只存在于 agents.defaults.models（别名/参数），目录里没有它；清理只摘掉这条残留"
+                            disabled={batchBusy}
+                            onClick={() => setCleanTarget(row)}
+                          >
+                            清理残留
+                          </Button>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">只读</span>
+                        )
                       ) : (
                       <div className="flex flex-wrap gap-1.5">
                         <Button variant="outline" size="sm" aria-label={`编辑模型 ${row.ref}`} onClick={() => setEditing(row)}>
@@ -374,6 +422,22 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
             </div>
           ) : null}
         </div>
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={Boolean(cleanTarget)}
+        title="清理残留引用"
+        message={`确认清理 ${cleanTarget?.ref ?? ""} 的残留引用？此操作将创建备份。`}
+        confirmLabel="清理残留引用"
+        danger
+        confirmDisabled={batchBusy || !cleanTarget || !isDanglingMetadata(cleanTarget)}
+        onCancel={() => setCleanTarget(null)}
+        onConfirm={() => void confirmCleanDangling()}
+      >
+        <p className="text-sm text-muted-foreground">
+          该引用只存在于 agents.defaults.models（别名 / 模型参数），Provider 目录、插件与运行时目录都没有它。
+          本次只删除这条残留，不改 modelPolicy.allow、不删目录条目、不删 API Key。
+        </p>
       </ConfirmDialog>
 
       <ConfirmDialog

@@ -3,6 +3,7 @@ import { defaultModelName } from "./openclaw-compat";
 import {
   ensureDefaults,
   hasKnownModel,
+  hasProviderModel,
   matchingAllowlistRefs,
   resolveProviderId,
   type OperationResult
@@ -345,6 +346,32 @@ export function removeProviderModel(
   }
 
   return { config, warnings };
+}
+
+/**
+ * 悬空 metadata 残留清理（2026-10-04）：只摘 `agents.defaults.models` 中该 ref 的别名 / 模型参数。
+ *
+ * 与 `removeProviderModel` 的区别是语义收窄且 fail closed：
+ * - 目标必须**仍然悬空**（config 目录里没有同名模型）。从打开确认框到提交之间，外部或另一个
+ *   标签页可能已把该模型补回目录；此时必须拒绝，绝不能顺手删掉刚补回的目录条目。
+ * - 绝不触碰 `models.providers`、`modelPolicy.allow` 与 `.env`，也不做任何大小写归一或去重。
+ * - primary / fallback 命中时拒绝：它们的 metadata 是合法配置，不是残留。
+ */
+export function removeDanglingModelMetadata(config: OpenClawConfig, ref: string): OperationResult {
+  const { providerId } = parseModelRef(ref);
+  if (!resolveProviderId(config, providerId)) throw new Error(`Provider ${providerId} not found`);
+  if (hasProviderModel(config, ref)) {
+    throw new Error(`Model ${ref} exists in the provider catalog; use model removal instead of metadata cleanup.`);
+  }
+  if (isPrimaryModelRef(config, ref)) {
+    throw new Error(`Model ${ref} is the current primary model; its agents.defaults.models entry is not a leftover.`);
+  }
+  assertFallbackRemovalAllowed(config, ref);
+  const leftoverRefs = matchingAllowlistRefs(config, ref);
+  if (leftoverRefs.length === 0) throw new Error(`No leftover agents.defaults.models entry for ${ref}`);
+  ensureDefaults(config);
+  for (const leftoverRef of leftoverRefs) delete config.agents!.defaults!.models![leftoverRef];
+  return { config, warnings: [] };
 }
 
 export function definedRefs(config: OpenClawConfig): string[] {
