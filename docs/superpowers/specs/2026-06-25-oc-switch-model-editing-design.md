@@ -171,6 +171,8 @@ export type ModelSelectionSource = "legacy" | "unrestricted" | "policy-exact" | 
 
 Model rename、Provider 删除/关闭、批量删除和「只保留已启用」都必须先评估 exact/wildcard 覆盖和 fallback 保护，再执行原子写入；任何无法保持用户 wildcard 原样的操作整单拒绝。
 
+2026-10-08 修正：保持启用且新旧 ref 被同一条现有 wildcard 覆盖时，允许模型 ID rename，所有 wildcard 原样保留；metadata / primary 迁移、旧 exact 清理沿用既有逻辑，不添加冗余 exact。必须检查所有 wildcard；跨出原通配、同时停用、fallback 命中及目标 ID 冲突仍拒绝。详见三层写模型规格 §2.1。
+
 ### 5.2 新增模型
 
 新增模型时：

@@ -231,7 +231,7 @@ describe("modelPolicy.allow 双向同步", () => {
     expect(JSON.stringify(config)).toBe(before);
   });
 
-  test("受限通配覆盖的 disable/rename 在任何写入前拒绝；remove 降级为成功 + warning", () => {
+  test("受限通配覆盖的 disable/改名并禁用在任何写入前拒绝；remove 降级为成功 + warning", () => {
     const disableConfig = migratedConfig();
     disableConfig.agents!.defaults!.modelPolicy!.allow = ["cpa/*", "other/o1"];
     const disableBefore = JSON.stringify(disableConfig);
@@ -243,7 +243,7 @@ describe("modelPolicy.allow 双向同步", () => {
     const renameConfig = migratedConfig();
     renameConfig.agents!.defaults!.modelPolicy!.allow = ["cpa/*", "other/o1"];
     const renameBefore = JSON.stringify(renameConfig);
-    expect(() => updateProviderModel(renameConfig, "cpa/m1", { id: "m1-renamed", enabled: true })).toThrow(
+    expect(() => updateProviderModel(renameConfig, "cpa/m1", { id: "m1-renamed", enabled: false })).toThrow(
       "Cannot rename cpa/m1 while agents.defaults.modelPolicy.allow contains cpa/*; narrow the policy first."
     );
     expect(JSON.stringify(renameConfig)).toBe(renameBefore);
@@ -259,6 +259,69 @@ describe("modelPolicy.allow 双向同步", () => {
     expect(removed.warnings).toHaveLength(1);
     expect(removed.warnings[0]).toContain("cpa/*");
     expect(readModelPolicyAllow(removeConfig)).toEqual(["cpa/*", "other/o1"]);
+  });
+
+  test("共享 Provider 通配允许启用改名，迁移 metadata/primary 并保留通配大小写、顺序与重复", () => {
+    const config = migratedConfig();
+    config.agents!.defaults!.modelPolicy!.allow = ["CPA/*", "cpa/m1", "other/o1", "CPA/*"];
+    config.agents!.defaults!.models!["cpa/m1"] = { alias: "m-one", params: { temperature: 0.5 } };
+    config.agents!.defaults!.model = { primary: "cpa/m1", fallbacks: ["other/o1"], custom: true };
+
+    updateProviderModel(config, "CPA/m1", { id: "m1-renamed", enabled: true, alias: "renamed" });
+
+    expect(readModelPolicyAllow(config)).toEqual(["CPA/*", "other/o1", "CPA/*"]);
+    expect(config.models!.providers!.cpa!.models!.map(model => model.id)).toEqual([
+      "m1-renamed", "vertex/gemini-3.8-flash", "m2"
+    ]);
+    expect(config.agents!.defaults!.models!["cpa/m1"]).toBeUndefined();
+    expect(config.agents!.defaults!.models!["cpa/m1-renamed"]).toEqual({ alias: "renamed", params: { temperature: 0.5 } });
+    expect(config.agents!.defaults!.model).toEqual({ primary: "cpa/m1-renamed", fallbacks: ["other/o1"], custom: true });
+  });
+
+  test("仅有共享 namespace 通配时允许启用改名，不添加冗余精确条目", () => {
+    const config = migratedConfig();
+    config.models!.providers!.cpa!.models![0] = { id: "legacy/m1" };
+    config.agents!.defaults!.modelPolicy!.allow = ["cpa/legacy/*"];
+
+    updateProviderModel(config, "cpa/legacy/m1", { id: "legacy/m1-renamed", enabled: true });
+
+    expect(readModelPolicyAllow(config)).toEqual(["cpa/legacy/*"]);
+    expect(config.models!.providers!.cpa!.models![0]!.id).toBe("legacy/m1-renamed");
+  });
+
+  test("先命中窄 namespace 时仍可使用后面的共享 Provider 通配改名", () => {
+    const config = migratedConfig();
+    config.models!.providers!.cpa!.models![0] = { id: "legacy/m1" };
+    const allow = ["cpa/legacy/*", "other/o1", "cpa/*"];
+    config.agents!.defaults!.modelPolicy!.allow = [...allow];
+
+    updateProviderModel(config, "cpa/legacy/m1", { id: "renamed/m1", enabled: true });
+
+    expect(readModelPolicyAllow(config)).toEqual(allow);
+    expect(config.models!.providers!.cpa!.models![0]!.id).toBe("renamed/m1");
+  });
+
+  test("新旧 ref 分别被不同 namespace 通配覆盖时仍拒绝改名且不写入", () => {
+    const config = migratedConfig();
+    config.models!.providers!.cpa!.models![0] = { id: "legacy/m1" };
+    config.agents!.defaults!.modelPolicy!.allow = ["cpa/legacy/*", "cpa/renamed/*", "other/o1"];
+    const before = JSON.stringify(config);
+
+    expect(() => updateProviderModel(config, "cpa/legacy/m1", { id: "renamed/m1", enabled: true })).toThrow(/Cannot rename/);
+    expect(JSON.stringify(config)).toBe(before);
+  });
+
+  test("共享通配不能绕过 fallback 或目标 ID 冲突保护", () => {
+    for (const fallback of [true, false]) {
+      const config = migratedConfig();
+      config.agents!.defaults!.modelPolicy!.allow = ["cpa/*", "other/o1"];
+      if (fallback) config.agents!.defaults!.model = { primary: "other/o1", fallbacks: ["cpa/m1"] };
+      const before = JSON.stringify(config);
+
+      expect(() => updateProviderModel(config, "cpa/m1", { id: fallback ? "m1-renamed" : "m2", enabled: true }))
+        .toThrow(fallback ? /fallbacks/ : /already exists/);
+      expect(JSON.stringify(config)).toBe(before);
+    }
   });
 
   test("rename 后同时禁用时也 preflight 新 ref 的 namespace wildcard", () => {

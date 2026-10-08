@@ -504,6 +504,53 @@ describe("server write endpoints", () => {
     });
   });
 
+  test("PUT /api/models 共享通配下启用改名并持久化引用迁移，保留 wildcard 与 env", async () => {
+    const ws = workspace();
+    const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    config.agents.defaults.modelPolicy = {
+      allow: ["NVIDIA/deepseek-ai/*", "nvidia/deepseek-ai/deepseek-v4-flash", "NVIDIA/deepseek-ai/*"]
+    };
+    config.agents.defaults.model = { primary: "nvidia/deepseek-ai/deepseek-v4-flash", custom: true };
+    writeFileSync(ws.paths.openclawPath, JSON.stringify(config));
+    writeFileSync(ws.paths.envPath, "# untouched fixture env\n");
+    const app = createTestApp(ws);
+
+    // 同一接口仍拒绝跨出 namespace 或同时停用，不产生配置写入。
+    for (const model of [
+      { id: "other/deepseek-v4-pro", enabled: true },
+      { id: "deepseek-ai/deepseek-v4-pro", enabled: false }
+    ]) {
+      const before = readFileSync(ws.paths.openclawPath, "utf8");
+      const { response } = await jsonRequest(app, "/api/models", {
+        method: "PUT",
+        body: JSON.stringify({ ref: "nvidia/deepseek-ai/deepseek-v4-flash", model })
+      });
+      expect(response.status).toBe(400);
+      expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+    }
+
+    const { response, json } = await jsonRequest(app, "/api/models", {
+      method: "PUT",
+      body: JSON.stringify({
+        ref: "nvidia/deepseek-ai/deepseek-v4-flash",
+        model: { id: "deepseek-ai/deepseek-v4-pro", enabled: true, alias: "ds-pro" }
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect(typeof json.backupId).toBe("string");
+    const saved = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
+    expect(saved.agents.defaults.modelPolicy.allow).toEqual(["NVIDIA/deepseek-ai/*", "NVIDIA/deepseek-ai/*"]);
+    expect(saved.agents.defaults.models["nvidia/deepseek-ai/deepseek-v4-flash"]).toBeUndefined();
+    expect(saved.agents.defaults.models["nvidia/deepseek-ai/deepseek-v4-pro"]).toMatchObject({
+      alias: "ds-pro", agentRuntime: { id: "codex" }
+    });
+    expect(saved.agents.defaults.model).toEqual({ primary: "nvidia/deepseek-ai/deepseek-v4-pro", custom: true });
+    expect(saved.models.providers.nvidia.models.some((model: { id: string }) => model.id === "deepseek-ai/deepseek-v4-flash")).toBe(false);
+    expect(saved.models.providers.nvidia.models.some((model: { id: string }) => model.id === "deepseek-ai/deepseek-v4-pro")).toBe(true);
+    expect(readFileSync(ws.paths.envPath, "utf8")).toBe("# untouched fixture env\n");
+  });
+
   test("POST/PUT /api/models round-trip contextTokens into provider models, not allowlist", async () => {
     const ws = workspace();
     const app = createTestApp(ws);

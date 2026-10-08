@@ -30,7 +30,13 @@
 
 - `removeProviderModel` / `batchRemoveProviderModels` / `removeProvider` **不再**调用 `assertNoPolicyWildcardForRef` / `assertNoPolicyWildcardForProvider`。
 - 删除成功但被删 ref 仍被 wildcard 覆盖时，在 `OperationResult.warnings` 携带提示：「仍被 `<wildcard>` 覆盖——重新加入目录将自动恢复可选，且精确输入仍可显式选中」。这是 wildcard 的忠实含义，降级为提示而非硬阻断。
-- **保留不动的 fail-closed**：disable / rename / 删 policy exact 引用（`removeModelPolicyExactRef`）的 wildcard guard；primary/fallback 命中保护（`force` 不可绕过）；删除最后一条 restricted exact 的防清空；unknown 可用性门禁。
+- **保留不动的 fail-closed**：disable / 删 policy exact 引用（`removeModelPolicyExactRef`）的 wildcard guard；primary/fallback 命中保护（`force` 不可绕过）；删除最后一条 restricted exact 的防清空；unknown 可用性门禁。rename 的限定放宽见下节。
+
+#### 2026-10-08：共享 wildcard 下安全改 ID
+
+- 保持启用（`enabled:true`）且新旧 ref 被**同一条现有 wildcard** 覆盖时，允许 rename；Provider 通配和 namespace 通配均适用，检查全部规则以支持重叠覆盖。
+- wildcard 的大小写、顺序、重复次数原样保留；沿用既有 metadata / primary 迁移与旧 exact 清理，不为已被 wildcard 覆盖的新 ref 添加冗余 exact。
+- 新 ref 跨出原 wildcard（即使由另一条 wildcard 覆盖）、同时停用、fallback 命中或目标 ID 已存在时仍在 mutation 前拒绝。无 wildcard 的既有改名路径不变。
 
 ### 2.2 删除分级：临时移除 vs 彻底清理
 

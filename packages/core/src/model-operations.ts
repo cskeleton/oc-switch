@@ -13,7 +13,9 @@ import {
   assertNoPolicyWildcardForRef,
   assertPolicyExactRefsRemovalAllowed,
   findPolicyWildcardForRef,
-  removePolicyAllow
+  readModelPolicyAllow,
+  removePolicyAllow,
+  wildcardEntryMatches
 } from "./model-policy";
 import { isPrimaryModelRef, readFallbackModelRefs, readPrimaryModelRef, writePrimaryModelRef } from "./primary-model";
 import type { PluginProvider } from "./plugin-catalog";
@@ -244,7 +246,12 @@ export function updateProviderModel(config: OpenClawConfig, ref: string, input: 
   // 改名会使旧 ref 从目录消失：若被 fallbacks 引用则拒绝（先于任何 mutation）
   if (input.id !== modelId) {
     assertFallbackRemovalAllowed(config, ref);
-    assertNoPolicyWildcardForRef(config, ref, "rename");
+    // 保持启用且新旧 ref 被同一条通配覆盖时，可原样保留 policy 完成改名。
+    // 检查所有规则，避免先命中较窄 namespace 而漏掉后面的共享通配。
+    const sharedWildcard = input.enabled && (readModelPolicyAllow(config) ?? []).some(
+      (rule) => wildcardEntryMatches(rule, ref) && wildcardEntryMatches(rule, nextRef)
+    );
+    if (!sharedWildcard) assertNoPolicyWildcardForRef(config, ref, "rename");
     if (!input.enabled) {
       assertNoPolicyWildcardForRef(config, nextRef, "disable");
       assertPolicyExactRefsRemovalAllowed(config, [ref, nextRef], "rename", ref);
