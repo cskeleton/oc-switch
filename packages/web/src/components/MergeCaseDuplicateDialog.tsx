@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { OperationProgress } from "./OperationProgress";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ApiClient, CaseDuplicateGroup, ConfigDiffSummary, ModelSummary } from "../api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { Button } from "./ui/button";
@@ -24,6 +25,8 @@ export function MergeCaseDuplicateDialog({ open, group, client, onCancel, onMerg
   const [keep, setKeep] = useState<Record<string, boolean>>({});
   const [diff, setDiff] = useState<ConfigDiffSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const requestSeq = useRef(0);
   const [busy, setBusy] = useState(false);
 
   // 组内并集模型 id（来自 provider 块与 allowlist 两侧）
@@ -45,7 +48,10 @@ export function MergeCaseDuplicateDialog({ open, group, client, onCancel, onMerg
     setCanonicalId(group.canonicalId);
     setDiff(null);
     setError(null);
-    void client.getModels().then(({ models: list }) => setModels(list)).catch(() => setModels([]));
+    const seq = ++requestSeq.current;
+    setLoading(true);
+    void client.getModelConfig().then(({ models: list }) => { if (seq === requestSeq.current) setModels(list); }).catch(err => { if (seq === requestSeq.current) setError(err instanceof Error ? err.message : "本地配置读取失败"); }).finally(() => { if (seq === requestSeq.current) setLoading(false); });
+    return () => { requestSeq.current += 1; };
   }, [open, group, client]);
 
   useEffect(() => {
@@ -68,6 +74,7 @@ export function MergeCaseDuplicateDialog({ open, group, client, onCancel, onMerg
   }
 
   async function submit() {
+    if (busy || loading) return;
     setBusy(true);
     setError(null);
     try {
@@ -86,11 +93,14 @@ export function MergeCaseDuplicateDialog({ open, group, client, onCancel, onMerg
       title={`合并 Provider「${group.groupKey}」`}
       message={`将 ${removeIds.join(", ")} 合并到 ${canonicalId}。已选模型与启用项会迁移，不会删除 API Key。`}
       danger
-      confirmDisabled={busy || removeIds.length === 0 || keepModelIds.length === 0}
+      confirmDisabled={busy || loading || removeIds.length === 0 || keepModelIds.length === 0}
       onCancel={onCancel}
       onConfirm={() => void submit()}
     >
       <div className="grid gap-3 text-sm">
+        {loading ? <OperationProgress phase="saving" message="正在读取本地配置…" /> : null}
+        {busy ? <OperationProgress phase="saving" /> : null}
+
         <label className="grid gap-1">
           <span className="text-muted-foreground">保留哪个大小写（canonical）</span>
           <select

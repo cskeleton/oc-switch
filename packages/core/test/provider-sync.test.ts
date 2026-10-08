@@ -9,8 +9,51 @@ import {
   type FetchImpl
 } from "../src/provider-sync";
 import type { OpenClawConfig } from "../src/types";
+import type { RuntimeModelSnapshot } from "../src/runtime-model-catalog";
 
 const sampleConfig = sample as OpenClawConfig;
+
+describe("原生 OpenAI/Codex 目录发现", () => {
+  const config: OpenClawConfig = { models: { providers: { openai: { models: [{ id: "configured" }] } } } };
+  const snapshot: RuntimeModelSnapshot = { configuredModels: [], allModels: [
+    { ref: "openai/configured", tags: [] }, { ref: "openai/discovered", name: "Discovered", tags: [] },
+    { ref: "openai/discovered", tags: [] }, { ref: "other/unrelated", tags: [] },
+    { ref: "openai/missing", missing: true, tags: [] }
+  ], allowedRefs: [], fallbackRefs: [], capturedAt: "fixture", completeness: { status: false, configuredList: false, allList: true }, diagnostics: [] };
+  test("从公开运行目录发现，状态探测失败不阻止完整目录读取，且不发API请求", async () => {
+    let calls = 0;
+    const result = await discoverProviderModels(config, "OPENAI", { runtimeSnapshot: snapshot,
+      pluginProviders: [{ pluginId: "openai", providerId: "openai", enabled: true, origin: "bundled", models: [], apiKeyEnvVars: ["OPENAI_API_KEY"] }],
+      envContent: "", fetchImpl: async () => { calls += 1; throw new Error("unexpected HTTP request"); }
+    });
+    expect(result.catalogSource).toBe("openclaw-runtime");
+    expect(result.remoteModels).toEqual([{ id: "configured" }, { id: "discovered", name: "Discovered" }]);
+    expect(result.alreadyAddedIds).toEqual(["configured"]);
+    expect(calls).toBe(0);
+  });
+  test("目录证据不完整时明确提示原生鉴权，不误报缺Key或尝试HTTP", async () => {
+    const result = await discoverProviderModels(config, "openai", { runtimeSnapshot: { ...snapshot, completeness: { ...snapshot.completeness, allList: false } },
+      fetchImpl: async () => { throw new Error("unexpected HTTP request"); }
+    });
+    expect(result.remoteModels).toEqual([]);
+    expect(result.unsupportedReason).toContain("原生鉴权");
+    expect(result.unsupportedReason).toContain("无需添加 OPENAI_API_KEY");
+  });
+  test("显式OpenAI兼容地址和API Key保持HTTP发现语义", async () => {
+    let called = false;
+    const result = await discoverProviderModels({ models: { providers: { openai: { baseUrl: "https://fixture.example/v1", apiKey: "${FIXTURE_KEY}", models: [] } } } }, "openai", {
+      runtimeSnapshot: snapshot, envContent: "FIXTURE_KEY=fixture-value", fetchImpl: async (url, init) => {
+        called = true;
+        expect(String(url)).toBe("https://fixture.example/v1/models");
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer fixture-value");
+        return Response.json({ data: [{ id: "http-model" }] });
+      }
+    });
+    expect(called).toBe(true);
+    expect(result.remoteModels).toEqual([{ id: "http-model" }]);
+    expect(result.catalogSource).toBeUndefined();
+  });
+});
 
 type MockModel = string | { id: string; name?: string };
 

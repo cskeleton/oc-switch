@@ -42,3 +42,19 @@ export function modelSummary({ ref, ...overrides }: ModelSummaryInput): ModelSum
     ...overrides
   };
 }
+
+/** 完整静态 DTO fixture；能力由用例显式覆盖，不作在线可用性推断。 */
+export function staticSnapshot(overrides: Partial<import("./api").StaticModelConfigSnapshot> = {}): import("./api").StaticModelConfigSnapshot {
+  return {
+    schemaVersion: 1, capturedAt: "2026-10-08T00:00:00Z", policyMode: "restricted", policyRevision: "v1:fixture",
+    providers: [], models: [], policyRules: [],
+    status: { providerCount: 0, providerModelCount: 0, allowlistModelCount: 0, modelPolicyMode: "restricted", effectiveModelCount: 0 },
+    ...overrides
+  };
+}
+export function staticModel(input: ModelSummaryInput, overrides: Partial<import("./api").StaticModelSummary> = {}): import("./api").StaticModelSummary {
+  return { ...modelSummary(input), catalogConfigured: true, capabilities: { canSetPrimary: true, canTogglePolicy: true, canEditCatalogEntry: true, canRemoveCatalogEntry: true }, ...overrides };
+}
+export function emptyExtensions(): import("./api").PluginExtensionsSnapshot {
+  return { schemaVersion: 1, capturedAt: "2026-10-08T00:00:00Z", providers: [], plugins: [], diagnostics: [] };
+}

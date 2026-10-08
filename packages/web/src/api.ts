@@ -196,6 +196,41 @@ export interface ModelSummary {
   input?: string[];
 }
 
+/** 本地配置快照与插件目录各自独立，均不声明在线可用性。 */
+export interface StaticModelSummary extends ModelSummary {
+  catalogConfigured: boolean;
+  capabilities: { canSetPrimary: boolean; canTogglePolicy: boolean; canEditCatalogEntry: boolean; canRemoveCatalogEntry: boolean };
+}
+export type StaticModelPolicyRuleEntry = Omit<ModelPolicyRuleEntry, "matchedModelCount" | "unavailableModelCount">;
+export interface StaticModelConfigSnapshot {
+  schemaVersion: 1;
+  capturedAt: string;
+  primaryModel?: string;
+  policyMode: ModelPolicyMode;
+  policyRevision: string;
+  providers: ProviderSummary[];
+  models: StaticModelSummary[];
+  policyRules: StaticModelPolicyRuleEntry[];
+  status: Omit<StatusResponse, "ok">;
+}
+export interface PluginExtensionProvider {
+  pluginId: string;
+  providerId: string;
+  origin: string;
+  enabled: boolean;
+  baseUrl?: string;
+  api?: ApiType;
+  models: Array<{ id: string; name?: string; api?: ApiType; contextWindow?: number; maxTokens?: number; reasoning?: boolean; input?: string[] }>;
+  apiKeyEnvVars: string[];
+}
+export interface PluginExtensionsSnapshot {
+  schemaVersion: 1;
+  capturedAt: string;
+  providers: PluginExtensionProvider[];
+  plugins: ModelPluginDescriptor[];
+  diagnostics: string[];
+}
+
 export interface PresetEntry {
   id: string;
   name: string;
@@ -430,6 +465,7 @@ export interface RemoteModelInfo {
 
 /** POST /api/providers/:id/discover 响应 */
 export interface ProviderDiscoverResponse {
+  catalogSource?: "openclaw-runtime";
   ok: boolean;
   providerId: string;
   remoteModels: RemoteModelInfo[];
@@ -800,7 +836,14 @@ export interface ModelInventory {
 }
 
 /** 写入类端点的统一确认结果：ok:true 表示写入已成功（含备份）。 */
+export interface SavedWriteStatus {
+  onlineStatusPending?: boolean;
+  runtimeConfirmed?: boolean;
+  inventory?: unknown;
+}
+
 export interface MutationResult {
+  onlineStatusPending?: boolean;
   ok: true;
   backupId: string;
   diagnostics?: RuntimeModelDiagnostic[];
@@ -926,6 +969,12 @@ export function createApiClient(options: ApiClientOptions) {
       // GET/refresh 与写响应消费同一校验：非法 DTO 视为版本不兼容，不得回退为旧告警逻辑
       parseModelInventory(result);
     }
+    if (path === "/api/model-config" && (result?.schemaVersion !== 1 || !Array.isArray(result.providers) || !Array.isArray(result.models) || !Array.isArray(result.policyRules) || !result.status)) {
+      throw new Error("本地配置协议不兼容，请更新服务后重试。");
+    }
+    if (path === "/api/model-extensions" && (result?.schemaVersion !== 1 || !Array.isArray(result.providers) || !Array.isArray(result.plugins) || !Array.isArray(result.diagnostics))) {
+      throw new Error("插件目录协议不兼容，请更新服务后重试。");
+    }
     return result as T;
   }
 
@@ -934,6 +983,8 @@ export function createApiClient(options: ApiClientOptions) {
     getModelAttention: () => request<ModelAttentionReport>("/api/model-attention"),
     setAttentionIgnored: (issue: ModelAttentionIssue, ignored: boolean) => request<ModelAttentionReport>("/api/model-attention/decision", { method: "PATCH", body: JSON.stringify({ issueId: issue.id, revision: issue.revision, ignored }) }),
     getStatus: () => request<StatusResponse>("/api/status"),
+    getModelConfig: () => request<StaticModelConfigSnapshot>("/api/model-config"),
+    getModelExtensions: () => request<PluginExtensionsSnapshot>("/api/model-extensions"),
     getProviders: () => request<{ providers: ProviderSummary[] }>("/api/providers"),
     getProviderSecretRefMigrations: () =>
       request<ProviderSecretRefMigrationPreview>("/api/providers/secret-ref-migrations"),
@@ -947,38 +998,38 @@ export function createApiClient(options: ApiClientOptions) {
       ),
     getModels: () => request<{ models: ModelSummary[] }>("/api/models"),
     setPrimary: (ref: string) =>
-      request<{ ok: boolean; ref: string }>("/api/models/primary", {
+      request<SavedWriteStatus & { ok: boolean; ref: string }>("/api/models/primary", {
         method: "PUT",
-        body: JSON.stringify({ ref })
+        body: JSON.stringify({ ref, confirmRuntime: false })
       }),
     patchModel: (ref: string, enabled: boolean) =>
-      request<{ ok: boolean; ref: string; enabled: boolean }>("/api/models", {
+      request<SavedWriteStatus & { ok: boolean; ref: string; enabled: boolean }>("/api/models", {
         method: "PATCH",
-        body: JSON.stringify({ ref, enabled })
+        body: JSON.stringify({ ref, enabled, confirmRuntime: false })
       }),
     createModel: (providerId: string, model: ProviderModelInput) =>
-      request<{ ok: boolean; ref: string; backupId?: string }>("/api/models", {
+      request<SavedWriteStatus & { ok: boolean; ref: string; backupId?: string }>("/api/models", {
         method: "POST",
-        body: JSON.stringify({ providerId, model })
+        body: JSON.stringify({ providerId, model, confirmRuntime: false })
       }),
     updateModel: (ref: string, model: ProviderModelInput) =>
-      request<{ ok: boolean; ref: string; backupId?: string }>("/api/models", {
+      request<SavedWriteStatus & { ok: boolean; ref: string; backupId?: string }>("/api/models", {
         method: "PUT",
-        body: JSON.stringify({ ref, model })
+        body: JSON.stringify({ ref, model, confirmRuntime: false })
       }),
     deleteModel: (ref: string, body: { force?: boolean; newPrimary?: string; layers?: RemovalLayers } = {}) =>
-      request<{ ok: boolean; ref: string; warnings: string[]; backupId?: string }>("/api/models", {
+      request<SavedWriteStatus & { ok: boolean; ref: string; warnings: string[]; backupId?: string }>("/api/models", {
         method: "DELETE",
-        body: JSON.stringify({ ref, ...body })
+        body: JSON.stringify({ ref, ...body, confirmRuntime: false })
       }),
     /**
      * 悬空 metadata 残留清理：只摘 agents.defaults.models 的别名/参数。
      * 不复用 deleteModel —— 后者始终会删同名目录条目，且会归一化无关的 policy 规则。
      */
     removeDanglingModelMetadata: (ref: string) =>
-      request<{ ok: boolean; ref: string; warnings: string[]; backupId?: string }>("/api/models/dangling-metadata", {
+      request<SavedWriteStatus & { ok: boolean; ref: string; warnings: string[]; backupId?: string }>("/api/models/dangling-metadata", {
         method: "DELETE",
-        body: JSON.stringify({ ref })
+        body: JSON.stringify({ ref, confirmRuntime: false })
       }),
     /** 查询 Models.dev 参考参数建议（只读；Provider/Model 仅在本地匹配） */
     getModelMetadataSuggestions: (
@@ -1009,7 +1060,7 @@ export function createApiClient(options: ApiClientOptions) {
     ) =>
       request<{ ok: boolean; backupId?: string; envWrite?: EnvWriteVerification; gatewayEnvSync?: GatewayEnvSyncResult }>("/api/providers", {
         method: "POST",
-        body: JSON.stringify({ presetId, apiKey, models, ...flags })
+        body: JSON.stringify({ presetId, apiKey, models, ...flags, confirmRuntime: false })
       }),
     previewCustomProvider: (input: CustomProviderInput) =>
       request<ConfigDiffSummary & { envPreview?: EnvPreview }>("/api/providers/custom/preview", {
@@ -1023,7 +1074,7 @@ export function createApiClient(options: ApiClientOptions) {
     ) =>
       request<{ ok: boolean; backupId?: string; envWrite?: EnvWriteVerification; gatewayEnvSync?: GatewayEnvSyncResult }>("/api/providers/custom", {
         method: "POST",
-        body: JSON.stringify({ ...input, apiKey, ...flags })
+        body: JSON.stringify({ ...input, apiKey, ...flags, confirmRuntime: false })
       }),
     previewUpdateProvider: (id: string, changes: { baseUrl?: string; api?: ApiType; includeApiKeyEnv?: boolean }) =>
       request<ConfigDiffSummary & { envPreview?: EnvPreview }>(`/api/providers/${id}/preview`, {
@@ -1033,19 +1084,19 @@ export function createApiClient(options: ApiClientOptions) {
     updateProvider: (id: string, changes: { baseUrl?: string; api?: ApiType; apiKey?: string; confirmMigration?: boolean; confirmComplex?: boolean }) =>
       request<{ ok: boolean; backupId?: string; envWrite?: EnvWriteVerification; gatewayEnvSync?: GatewayEnvSyncResult }>(`/api/providers/${id}`, {
         method: "PUT",
-        body: JSON.stringify(changes)
+        body: JSON.stringify({ ...changes, confirmRuntime: false })
       }),
     deleteProvider: (id: string, body: { force?: boolean; newPrimary?: string; removePolicyWildcard?: boolean } = {}) =>
       request<{ ok: boolean; warnings: string[] }>(`/api/providers/${id}`, {
         method: "DELETE",
-        body: JSON.stringify(body)
+        body: JSON.stringify({ ...body, confirmRuntime: false })
       }),
     patchProviderState: (id: string, enabled: boolean, cleanupMetadata = false) =>
       request<{ ok: boolean; providerId: string; enabled: boolean; runtimeConfirmed?: boolean; disabledModelCount?: number; restoredModelCount?: number; backupId?: string }>(
         `/api/providers/${id}/state`,
         {
           method: "PATCH",
-          body: JSON.stringify({ enabled, ...(cleanupMetadata ? { cleanupMetadata } : {}) })
+          body: JSON.stringify({ enabled, confirmRuntime: false, ...(cleanupMetadata ? { cleanupMetadata } : {}) })
         }
       ),
     /** 发现远端模型目录（只读，不写盘） */
@@ -1063,17 +1114,17 @@ export function createApiClient(options: ApiClientOptions) {
     batchAddProviderModels: (id: string, body: BatchAddProviderModelsInput) =>
       request<BatchAddProviderModelsResponse>(`/api/providers/${id}/models/batch-add`, {
         method: "POST",
-        body: JSON.stringify(body)
+        body: JSON.stringify({ ...body, confirmRuntime: false })
       }),
     batchRemoveProviderModels: (id: string, body: BatchRemoveProviderModelsInput) =>
       request<BatchRemoveProviderModelsResponse>(`/api/providers/${id}/models/batch-remove`, {
         method: "POST",
-        body: JSON.stringify(body)
+        body: JSON.stringify({ ...body, confirmRuntime: false })
       }),
     syncProviderModelMetadata: (id: string, body: { modelIds?: string[] }) =>
       request<SyncModelMetadataResponse>(`/api/providers/${id}/models/sync-metadata`, {
         method: "POST",
-        body: JSON.stringify(body)
+        body: JSON.stringify({ ...body, confirmRuntime: false })
       }),
     getModelMetadataSyncQueue: (providerId?: string) => {
       const params = new URLSearchParams();
@@ -1096,49 +1147,49 @@ export function createApiClient(options: ApiClientOptions) {
     removeModelPolicyExactRef: (ref: string, removeMetadata: boolean) =>
       request<MutationResult>("/api/model-policy/exact-ref", {
         method: "DELETE",
-        body: JSON.stringify({ ref, removeMetadata })
+        body: JSON.stringify({ ref, removeMetadata, confirmRuntime: false })
       }),
     /** POST /api/model-policy/rules：添加 policy 规则（exact 或 wildcard 由服务端权威识别） */
     addModelPolicyRule: (rule: string) =>
       request<AddModelPolicyRuleResult>("/api/model-policy/rules", {
         method: "POST",
-        body: JSON.stringify({ rule })
+        body: JSON.stringify({ rule, confirmRuntime: false })
       }),
     /** DELETE /api/model-policy/wildcard：按完全相同字符串删除 wildcard 规则（含全部重复副本） */
     removeModelPolicyWildcard: (value: string) =>
       request<RemoveModelPolicyWildcardResult>("/api/model-policy/wildcard", {
         method: "DELETE",
-        body: JSON.stringify({ value })
+        body: JSON.stringify({ value, confirmRuntime: false })
       }),
     /** PATCH /api/model-policy/rules：原子替换单条规则（携带打开对话框时冻结的 expectedRevision） */
     replaceModelPolicyRule: (value: string, rule: string, expectedRevision: string) =>
       request<ReplaceModelPolicyRuleResult>("/api/model-policy/rules", {
         method: "PATCH",
-        body: JSON.stringify({ value, rule, expectedRevision })
+        body: JSON.stringify({ value, rule, expectedRevision, confirmRuntime: false })
       }),
     /** DELETE /api/model-policy/rules：纯规则删除（不改目录/metadata，含全部相同副本） */
     removeModelPolicyRule: (value: string, expectedRevision: string) =>
       request<RemoveModelPolicyRuleResult>("/api/model-policy/rules", {
         method: "DELETE",
-        body: JSON.stringify({ value, expectedRevision })
+        body: JSON.stringify({ value, expectedRevision, confirmRuntime: false })
       }),
     /** POST /api/model-policy/rules/batch-remove：批量纯规则删除（单事务原子；守卫失败 400 带 details.refs） */
     batchRemoveModelPolicyRules: (values: string[], expectedRevision: string) =>
       request<BatchRemoveModelPolicyRulesResult>("/api/model-policy/rules/batch-remove", {
         method: "POST",
-        body: JSON.stringify({ values, expectedRevision })
+        body: JSON.stringify({ values, expectedRevision, confirmRuntime: false })
       }),
     /** POST /api/models/materialize：把运行时可用模型补全为 config Provider 目录项 */
     materializeRuntimeModel: (ref: string, input: ProviderModelInput & { enabled: boolean }) =>
       request<MutationResult>("/api/models/materialize", {
         method: "POST",
-        body: JSON.stringify({ ref, input })
+        body: JSON.stringify({ ref, input, confirmRuntime: false })
       }),
     /** PATCH /api/plugins/:pluginId/state：插件级启停（confirm 恒为 true；runtimeConfirmed:false 不是失败） */
     setPluginState: (pluginId: string, enabled: boolean, cleanupMetadata = false) =>
       request<PluginStateMutationResult>(`/api/plugins/${encodeURIComponent(pluginId)}/state`, {
         method: "PATCH",
-        body: JSON.stringify({ enabled, confirm: true, ...(cleanupMetadata ? { cleanupMetadata } : {}) })
+        body: JSON.stringify({ enabled, confirm: true, confirmRuntime: false, ...(cleanupMetadata ? { cleanupMetadata } : {}) })
       }),
     getBackups: () => request<{ backups: BackupEntry[] }>("/api/backups"),
     restoreBackup: (id: string, target?: "backup" | "current") =>
@@ -1225,3 +1276,11 @@ export function createApiClient(options: ApiClientOptions) {
 }
 
 export type ApiClient = ReturnType<typeof createApiClient>;
+
+/** 完成一次 HTTP 检查不代表 Gateway 已确认使用配置。 */
+export function runtimeConfirmationIssue(inventory: ModelInventory): string | null {
+  const reasons = inventory.diagnostics.map(item => item.message);
+  if (inventory.summary.unknownCount > 0) reasons.push(`${inventory.summary.unknownCount} 个模型的在线状态无法确认`);
+  if (inventory.pickerSource !== "gateway") reasons.push("尚未确认与在线 Gateway 一致；如配置仍未生效，可在设置中同步并重启 Gateway");
+  return reasons.length ? [...new Set(reasons)].join("；") : null;
+}

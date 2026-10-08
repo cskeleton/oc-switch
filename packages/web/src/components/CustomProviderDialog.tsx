@@ -1,3 +1,5 @@
+import { OperationProgress } from "./OperationProgress";
+import { Button } from "./ui/button";
 import { Plus, Search, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ApiClient, ApiType, ConfigDiffSummary, CustomProviderInput, CustomProviderModelInput, EnvPreview, EnvWriteVerification, GatewayEnvSyncResult, RemoteModelInfo } from "../api";
@@ -144,6 +146,8 @@ export function CustomProviderDialog({ open, client, initialProviderId, initialM
   const [envPreview, setEnvPreview] = useState<EnvPreview | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [confirmingClose, setConfirmingClose] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [discoverOpen, setDiscoverOpen] = useState(false);
 
@@ -211,6 +215,7 @@ export function CustomProviderDialog({ open, client, initialProviderId, initialM
   }
 
   function requestClose() {
+    if (saving || previewing) return;
     if (isFormDirty({
       displayName,
       providerId,
@@ -247,6 +252,8 @@ export function CustomProviderDialog({ open, client, initialProviderId, initialM
   };
 
   async function preview() {
+    if (saving || previewing) return;
+    setPreviewing(true);
     setError(null);
     try {
       const nextInput = input();
@@ -256,10 +263,12 @@ export function CustomProviderDialog({ open, client, initialProviderId, initialM
       setConfirming(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "预览失败");
-    }
+    } finally { setPreviewing(false); }
   }
 
   async function confirm(flags?: { confirmMigration?: boolean; confirmComplex?: boolean }) {
+    if (saving) return;
+    setSaving(true);
     setError(null);
     try {
       const result = await client.addCustomProvider(input(), apiKey, flags);
@@ -272,7 +281,7 @@ export function CustomProviderDialog({ open, client, initialProviderId, initialM
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "添加失败");
-    }
+    } finally { setSaving(false); }
   }
 
   function envConfirmFlags(preview: EnvPreview | null) {
@@ -457,14 +466,10 @@ export function CustomProviderDialog({ open, client, initialProviderId, initialM
             {diff ? <div className="md:col-span-2 mt-2"><DiffSummary diff={diff} /></div> : null}
           </div>
 
+          {previewing ? <OperationProgress phase="saving" message="正在预览本地配置变更…" /> : null}
           <DialogFooter>
-            <button type="button" onClick={requestClose} className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground">
-              取消
-            </button>
-            <button type="button" onClick={() => void preview()} className="inline-flex items-center gap-1 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
-              <Plus className="h-4 w-4" />
-              预览并添加
-            </button>
+            <Button variant="outline" disabled={saving || previewing} onClick={requestClose}>取消</Button>
+            <Button disabled={saving || previewing} onClick={() => void preview()}><Plus className="h-4 w-4" />{previewing ? "预览中…" : "预览并添加"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -472,21 +477,29 @@ export function CustomProviderDialog({ open, client, initialProviderId, initialM
       {envPreview?.requiresConfirmation ? (
         <EnvMigrationConfirmDialog
           open={confirming}
+          busy={saving}
           warnings={envPreview.warnings}
           confirmMigration={envPreview.requiresMigration}
           confirmComplex={envPreview.requiresComplex}
           title="确认添加 Provider"
           onCancel={() => setConfirming(false)}
           onConfirm={() => void confirm(envConfirmFlags(envPreview))}
-        />
+        >
+          {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
+        </EnvMigrationConfirmDialog>
       ) : (
         <ConfirmDialog
           open={confirming}
           title="确认添加 Provider"
           message="以下变更将在确认后写入配置，并自动创建备份。"
-          onCancel={() => setConfirming(false)}
+          confirmDisabled={saving}
+          confirmLabel={saving ? "保存中…" : "确认"}
+          onCancel={() => { if (!saving) setConfirming(false); }}
           onConfirm={() => void confirm()}
-        />
+        >
+          {saving ? <OperationProgress phase="saving" /> : null}
+          {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
+        </ConfirmDialog>
       )}
       <ConfirmDialog
         open={confirmingClose}

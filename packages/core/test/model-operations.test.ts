@@ -624,3 +624,22 @@ describe("悬空 metadata 残留清理 removeDanglingModelMetadata", () => {
     expect(Object.keys(config.agents!.defaults!.models!)).toEqual(["cpa/gone", "cpa/gone-fb"]);
   });
 });
+
+
+describe("编辑模型不能绕过停用依赖保护", () => {
+  for (const role of ["primary", "fallback"] as const) {
+    for (const id of ["protected", "renamed"] as const) {
+      test(`${role} 在编辑表单 enabled:false 时拒绝（id=${id}），不修改目录或policy`, () => {
+        const config: OpenClawConfig = {
+          models: { providers: { p: { models: [{ id: "protected" }, { id: "other" }] } } },
+          agents: { defaults: { model: role === "primary" ? "p/protected" : { primary: "p/other", fallbacks: ["p/protected"] },
+            models: { "p/protected": { alias: "keep" }, "p/other": {} }, modelPolicy: { allow: ["p/protected", "p/other"] } } }
+        };
+        const before = structuredClone(config);
+        expect(() => updateProviderModel(config, "p/protected", { id, name: "Changed", enabled: false }))
+          .toThrow(role === "primary" ? /primary model/ : /fallbacks/);
+        expect(config).toEqual(before);
+      });
+    }
+  }
+});

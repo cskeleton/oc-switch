@@ -36,6 +36,12 @@ oc-switch 是用于本地 **OpenClaw** provider/model 配置管理与清理的 B
 
 ## 领域约定
 
+### 静态配置与异步运行时确认（2026-10-08 起）
+
+规格见 `docs/superpowers/specs/2026-10-08-static-config-and-runtime-confirmation-design.md`。此节优先于后文历史 fresh/unknown 写门禁：`models.providers` 中明确存在的配置目录模型，主模型切换、启停、编辑/删除采用配置层校验，在线 availability 留到显式「检查并确认」；不伪造 available。primary/fallback、Provider 停用、wildcard、防清空、revision、备份与文件变化保护保持。metadata-only 引用不算目录模型；runtime-only/插件启用设主模型、materialize、悬空 metadata fresh 复核、Provider/插件选择协调仍取必要的运行时事实。
+
+Web 静态首屏使用 `/api/model-config`，插件公开目录用 `/api/model-extensions`，完整 inventory 在后台读取。普通保存只刷新静态视图，`confirmRuntime:false` 跳过写后完整确认；未传保持旧响应语义。所有耗时操作显示真实进行中状态，保存后写「在线状态待确认」（OpenClaw 可能热加载），「检查并确认」不自动重启 Gateway。保持配置行与插件分组独立、响应代次保护和已有缓存，不新增轮询或工作流框架。
+
 ### ModelRef 与 Allowlist
 
 - **ModelRef**：仅在第一个 `/` 处拆分 provider 与 model，**保留大小写**。

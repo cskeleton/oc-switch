@@ -51,17 +51,17 @@ describe("createApiClient", () => {
 
     expect(calls[0]?.url).toBe("http://localhost:7420/api/models");
     expect(calls[0]?.init.method).toBe("POST");
-    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({ confirmRuntime: false,
       providerId: "nvidia",
       model: { id: "vendor/model", enabled: true, alias: "vm" }
     });
     expect(calls[1]?.init.method).toBe("PUT");
-    expect(JSON.parse(String(calls[1]?.init.body))).toEqual({
+    expect(JSON.parse(String(calls[1]?.init.body))).toEqual({ confirmRuntime: false,
       ref: "nvidia/vendor/model",
       model: { id: "vendor/model-renamed", enabled: true }
     });
     expect(calls[2]?.init.method).toBe("DELETE");
-    expect(JSON.parse(String(calls[2]?.init.body))).toEqual({
+    expect(JSON.parse(String(calls[2]?.init.body))).toEqual({ confirmRuntime: false,
       ref: "nvidia/vendor/model-renamed",
       newPrimary: "minimax-portal/MiniMax-M3"
     });
@@ -180,7 +180,7 @@ test("patchProviderState sends enabled flag to provider state route", async () =
 
   expect(calls[0]!.url).toBe("http://localhost:7420/api/providers/nvidia/state");
   expect(calls[0]!.init.method).toBe("PATCH");
-  expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ enabled: false });
+  expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ confirmRuntime: false, enabled: false });
 });
 
 test("discover 与 batch-add/remove 使用正确路径与 JSON body", async () => {
@@ -223,13 +223,13 @@ test("discover 与 batch-add/remove 使用正确路径与 JSON body", async () =
   });
   expect(calls[2]!.url).toBe("http://localhost:7420/api/providers/nvidia/discover");
   expect(calls[3]!.url).toBe("http://localhost:7420/api/providers/nvidia/models/batch-add");
-  expect(JSON.parse(String(calls[3]!.init.body))).toEqual({
+  expect(JSON.parse(String(calls[3]!.init.body))).toEqual({ confirmRuntime: false,
     models: [{ id: "openai/gpt-4o", name: "GPT-4o" }],
     enable: true
   });
   expect(calls[4]!.url).toBe("http://localhost:7420/api/providers/nvidia/models/batch-remove");
-  expect(JSON.parse(String(calls[4]!.init.body))).toEqual({ modelIds: ["openai/gpt-4o"] });
-  expect(JSON.parse(String(calls[5]!.init.body))).toEqual({ keepEnabledOnly: true });
+  expect(JSON.parse(String(calls[4]!.init.body))).toEqual({ confirmRuntime: false, modelIds: ["openai/gpt-4o"] });
+  expect(JSON.parse(String(calls[5]!.init.body))).toEqual({ confirmRuntime: false, keepEnabledOnly: true });
 });
 
 test("getModelMetadataSuggestions 使用 URLSearchParams 编码斜杠/空格/大小写", async () => {
@@ -330,7 +330,7 @@ test("syncProviderModelMetadata posts modelIds and parses report", async () => {
   const result = await client.syncProviderModelMetadata("openrouter", { modelIds: ["openai/gpt-5.2"] });
   expect(calls[0]!.url).toBe("http://localhost:7420/api/providers/openrouter/models/sync-metadata");
   expect(calls[0]!.init.method).toBe("POST");
-  expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ modelIds: ["openai/gpt-5.2"] });
+  expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ confirmRuntime: false, modelIds: ["openai/gpt-5.2"] });
   expect(result.updated[0]!.filled.contextWindow).toBe(400000);
 });
 
@@ -565,7 +565,7 @@ describe("runtime model inventory API client", () => {
     expect(calls[0]?.method).toBe("DELETE");
     // 写方法与读方法共用 request helper，同样携带 Bearer
     expect(calls[0]?.headers.get("Authorization")).toBe("Bearer policy-token");
-    expect(JSON.parse(await calls[0]!.clone().text())).toEqual({ ref: "cpa/m2", removeMetadata: true });
+    expect(JSON.parse(await calls[0]!.clone().text())).toEqual({ ref: "cpa/m2", removeMetadata: true, confirmRuntime: false });
     expect(result.ok).toBe(true);
     expect(result.backupId).toBe("2026-09-09T00-00-00");
   });
@@ -595,7 +595,7 @@ describe("runtime model inventory API client", () => {
     expect(calls[0]?.url).toBe("http://localhost:7420/api/model-policy/rules");
     expect(calls[0]?.method).toBe("POST");
     expect(calls[0]?.headers.get("Authorization")).toBe("Bearer policy-token");
-    expect(JSON.parse(await calls[0]!.clone().text())).toEqual({ rule: "cpa/m4" });
+    expect(JSON.parse(await calls[0]!.clone().text())).toEqual({ rule: "cpa/m4", confirmRuntime: false });
     expect(result.ok).toBe(true);
     expect(result.kind).toBe("exact");
     expect(result.backupId).toBe("2026-09-13T00-00-00");
@@ -627,7 +627,7 @@ describe("runtime model inventory API client", () => {
 
     expect(calls[0]!.url).toBe("http://localhost:7420/api/model-policy/wildcard");
     expect(calls[0]!.init.method).toBe("DELETE");
-    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ value: "cpa/*" });
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ confirmRuntime: false, value: "cpa/*" });
     expect(result.ok).toBe(true);
     expect(result.removedCount).toBe(2);
     // runtimeConfirmed:false 不是 HTTP 失败：200 + ok:true 正常返回
@@ -677,7 +677,7 @@ describe("runtime model inventory API client", () => {
 
     expect(calls[0]!.url).toBe("http://localhost:7420/api/model-policy/rules");
     expect(calls[0]!.init.method).toBe("PATCH");
-    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ value: "cpa/m2", rule: "cpa/m9", expectedRevision: "v1:abc" });
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ confirmRuntime: false, value: "cpa/m2", rule: "cpa/m9", expectedRevision: "v1:abc" });
     expect(result.ok).toBe(true);
     expect(result.rule).toBe("cpa/m9");
     expect(result.kind).toBe("exact");
@@ -709,7 +709,7 @@ describe("runtime model inventory API client", () => {
 
     expect(calls[0]!.url).toBe("http://localhost:7420/api/model-policy/rules");
     expect(calls[0]!.init.method).toBe("DELETE");
-    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ value: "cpa/m2", expectedRevision: "v1:abc" });
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ confirmRuntime: false, value: "cpa/m2", expectedRevision: "v1:abc" });
     expect(result.ok).toBe(true);
     expect(result.removedCount).toBe(1);
     // runtimeConfirmed:false 不是 HTTP 失败：200 + ok:true 正常返回
@@ -737,7 +737,7 @@ describe("runtime model inventory API client", () => {
 
     expect(calls[0]!.url).toBe("http://localhost:7420/api/model-policy/rules/batch-remove");
     expect(calls[0]!.init.method).toBe("POST");
-    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ values: ["ghost/m1", "cpa/dangling"], expectedRevision: "v1:abc" });
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ confirmRuntime: false, values: ["ghost/m1", "cpa/dangling"], expectedRevision: "v1:abc" });
     expect(result.ok).toBe(true);
     expect(result.removedCount).toBe(3);
     expect(result.backupId).toBe("2026-09-19T00-00-00");
@@ -802,7 +802,7 @@ describe("runtime model inventory API client", () => {
 
     expect(calls[0]?.url).toBe("http://localhost:7420/api/models/materialize");
     expect(calls[0]?.init.method).toBe("POST");
-    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({ confirmRuntime: false,
       ref: "cpa/m3",
       input: { id: "m3", enabled: true }
     });
@@ -833,7 +833,7 @@ describe("runtime model inventory API client", () => {
 
     expect(calls[0]?.url).toBe("http://localhost:7420/api/plugins/xiaomi-miot/state");
     expect(calls[0]?.init.method).toBe("PATCH");
-    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({ enabled: false, confirm: true });
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({ confirmRuntime: false, enabled: false, confirm: true });
     expect(result.pluginId).toBe("xiaomi-miot");
     expect(result.affectedProviderIds).toEqual(["xiaomi-speech", "xiaomi-contract"]);
     expect(result.runtimeConfirmed).toBe(true);

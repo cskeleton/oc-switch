@@ -1,3 +1,4 @@
+import { OperationProgress } from "./OperationProgress";
 import { useState } from "react";
 import type { ApiClient, ModelAttentionIssue, ModelAttentionReport, ModelInventory } from "../api";
 import { cn } from "../lib/utils";
@@ -17,11 +18,13 @@ interface Props {
    * 显式「重新探测」会把 refresh 返回的 inventory 透传进来，父页面直接消费、不再 GET。
    */
   onChanged?: (refreshedInventory?: ModelInventory) => void | Promise<void>;
+  onSaved?: (result: unknown) => void | Promise<void>;
+  onReport?: (report: ModelAttentionReport) => void;
   onConfigure?: ((providerId: string) => void) | undefined;
 }
 
 /** 三个页面共享同一问题源与操作器；不会从 availability 猜测待办。 */
-export function ModelAttentionPanel({ client, inventory, report, loadError, onChanged, onConfigure }: Props) {
+export function ModelAttentionPanel({ client, inventory, report, loadError, onChanged, onSaved, onReport, onConfigure }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [showIgnored, setShowIgnored] = useState(false);
   const [target, setTarget] = useState<ModelAttentionIssue | null>(null);
@@ -42,10 +45,11 @@ export function ModelAttentionPanel({ client, inventory, report, loadError, onCh
     setBusy(true); setError(null); setNotice(null);
     try {
       if (action === "ignore" || action === "restore") {
-        await client.setAttentionIgnored(target, action === "ignore");
+        const nextReport = await client.setAttentionIgnored(target, action === "ignore");
         setTarget(null);
         // 决定只改提醒状态：由父页面统一重取一轮报告
-        await onChanged?.();
+        if (onReport) onReport(nextReport);
+        else await onChanged?.();
       } else if (action === "retry") {
         const next = await client.refreshModelInventory();
         setTarget(null);
@@ -53,13 +57,15 @@ export function ModelAttentionPanel({ client, inventory, report, loadError, onCh
         await onChanged?.(next);
       } else {
         let confirmation: boolean | undefined;
-        if (action === "replace") { if (!replacement) throw new Error("请选择新的主模型"); await client.setPrimary(replacement); }
-        else if (target.ownerType === "plugin") confirmation = (await client.setPluginState(target.ownerId, false, cleanupMetadata)).runtimeConfirmed;
-        else if (target.ownerType === "provider") confirmation = (await client.patchProviderState(target.ownerId, false, cleanupMetadata)).runtimeConfirmed;
-        else await client.removeModelPolicyExactRef(target.refs[0]!, cleanupMetadata);
+        let written: unknown;
+        if (action === "replace") { if (!replacement) throw new Error("请选择新的主模型"); written = await client.setPrimary(replacement); }
+        else if (target.ownerType === "plugin") { const result = await client.setPluginState(target.ownerId, false, cleanupMetadata); written = result; confirmation = result.runtimeConfirmed; }
+        else if (target.ownerType === "provider") { const result = await client.patchProviderState(target.ownerId, false, cleanupMetadata); written = result; confirmation = result.runtimeConfirmed; }
+        else written = await client.removeModelPolicyExactRef(target.refs[0]!, cleanupMetadata);
         if (confirmation === false) setNotice("配置已保存，等待 Gateway 应用/核验；请稍后刷新。API Key 已保留。");
         setTarget(null);
-        await onChanged?.();
+        if (onSaved) await onSaved(written);
+        else await onChanged?.();
       }
     } catch (err) { setError(err instanceof Error ? err.message : "操作失败"); }
     finally { setBusy(false); }
@@ -121,6 +127,7 @@ export function ModelAttentionPanel({ client, inventory, report, loadError, onCh
           {target.canIgnore ? <div className="space-y-1"><Button variant="outline" disabled={busy} onClick={() => void decide(ignored ? "restore" : "ignore")}>{ignored ? "恢复提醒" : "本问题不再提醒"}</Button><p className="text-xs text-muted-foreground">只改变 oc-switch 提醒，不改变 OpenClaw 或 IM 选项；可在已忽略中恢复。</p></div> : null}
           {error ? <p role="alert" className="text-danger">{error}</p> : null}
         </div> : null}
+        {busy ? <OperationProgress phase="saving" message="正在处理模型配置…" /> : null}
         <DialogFooter><Button variant="ghost" disabled={busy} onClick={() => { setTarget(null); setError(null); }}>暂不处理</Button></DialogFooter>
       </DialogContent>
     </Dialog>

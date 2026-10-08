@@ -1,3 +1,6 @@
+import { runtimeConfirmationIssue } from "../api";
+import { OperationProgress } from "../components/OperationProgress";
+import { inventoryFromWriteResponse, type PluginExtensionsSnapshot } from "../api";
 import { ModelAttentionPanel } from "../components/ModelAttentionPanel";
 import { Cpu, Edit3, KeyRound, ListChecks, MoreHorizontal, Plus, Power, PowerOff, RefreshCw, Search, Sparkles, Star, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -77,6 +80,15 @@ interface ProvidersViewProps {
 /** Provider 列表与管理：搜索 + 排序（已关闭沉底）+ 操作收敛为 2+1；插件 Provider 按插件分组展示 */
 export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedProviderId, onRequestHandled }: ProvidersViewProps) {
   const toast = useToast();
+  const [staticReady, setStaticReady] = useState(false);
+  const [extensions, setExtensions] = useState<PluginExtensionsSnapshot | null>(null);
+  const [extensionsLoading, setExtensionsLoading] = useState(false);
+  const [extensionsError, setExtensionsError] = useState<string | null>(null);
+  const [runtimeLoading, setRuntimeLoading] = useState(false);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [onlinePending, setOnlinePending] = useState(false);
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
   /** 统一 inventory 是状态事实来源；请求失败明确报错，不回落为旧插件语义。 */
   const [inventory, setInventory] = useState<ModelInventory | null>(null);
@@ -140,66 +152,93 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
    * 每轮携带递增序号，迟到的旧响应不得覆盖更新的页面结果。
    */
   const loadSeq = useRef(0);
-  const load = useCallback(async (propagateError = false, presetInventory?: ModelInventory) => {
-    const seq = ++loadSeq.current;
-    setError(null);
-    setAuxErrors({});
+  const loadStatic = useCallback(async (seq: number) => {
     setLoading(true);
-    // 读/写响应共用同一递增代次：所有成功/失败状态更新都在代次检查之后统一应用，迟到的旧轮一律作废
-    const auxNext: { health?: string; migrations?: string; queue?: string } = {};
-    let attentionFetchError: string | null = null;
-    const auxMessage = (err: unknown): string => err instanceof Error ? err.message : "读取失败";
+    setError(null);
     try {
-      const [list, health, migrationPreview, queue, inventoryResult, attentionResult] = await Promise.all([
-        client.getProviders(),
-        client.getHealth().catch((err: unknown) => { auxNext.health = auxMessage(err); return null; }),
-        client.getProviderSecretRefMigrations().catch((err: unknown) => { auxNext.migrations = auxMessage(err); return null; }),
-        // 队列计数失败不阻塞主列表
-        client.getModelMetadataSyncQueue().catch((err: unknown) => { auxNext.queue = auxMessage(err); return null; }),
-        // 新读路径不可用时明确报错，不能以旧 config-only 列表冒充完整 inventory。
-        presetInventory ? Promise.resolve(presetInventory) : client.getModelInventory(),
-        client.getModelAttention().catch((err: unknown) => { attentionFetchError = err instanceof Error ? err.message : "无法读取问题状态"; return null; })
-      ]);
+      const snapshot = await client.getModelConfig();
       if (seq !== loadSeq.current) return;
-      setProviders(list.providers);
-      setInventory(inventoryResult);
-      setAuxErrors(auxNext);
-      if (attentionResult) {
-        if (Array.isArray(attentionResult.pending) && Array.isArray(attentionResult.ignored)) {
-          setAttention(attentionResult);
-          setAttentionError(null);
-        } else {
-          setAttentionError("提醒协议不兼容，请重启服务。");
-        }
-      } else if (attentionFetchError) {
-        setAttentionError(attentionFetchError);
-      }
-      setDuplicateGroups(health?.caseDuplicateGroups ?? []);
-      setSecretRefMigrations(
-        migrationPreview?.summary && Array.isArray(migrationPreview.candidates)
-          ? migrationPreview
-          : null
-      );
-      const counts: Record<string, number> = {};
-      if (queue && Array.isArray(queue.items)) {
-        for (const item of queue.items) {
-          if (item.dismissed) continue;
-          // 队列项可能存着归一化前的大写 providerId；聚合 key 统一小写折叠（同 core normalizeProviderId 语义）
-          const key = item.providerId.toLowerCase();
-          counts[key] = (counts[key] ?? 0) + 1;
-        }
-      }
-      setQueueCounts(counts);
+      setProviders(snapshot.providers);
+      setStaticReady(true);
     } catch (err) {
-      if (seq !== loadSeq.current) return;
-      setError(err instanceof Error ? err.message : "加载失败");
-      // 写后刷新失败保留上次视图和插件写入结果；让调用方单独报告刷新失败。
-      if (propagateError) throw err;
+      if (seq === loadSeq.current) setError(err instanceof Error ? err.message : "本地配置读取失败");
     } finally {
-      // 只由最新一轮收尾，迟到的旧轮不得提前解除加载态
       if (seq === loadSeq.current) setLoading(false);
     }
+    void (async () => {
+      const results = await Promise.allSettled([client.getHealth(), client.getProviderSecretRefMigrations(), client.getModelMetadataSyncQueue()]);
+      if (seq !== loadSeq.current) return;
+      const [health, migrations, queue] = results;
+      const message = (result: PromiseSettledResult<unknown>) => result.status === "rejected" ? (result.reason instanceof Error ? result.reason.message : "读取失败") : undefined;
+      setAuxErrors({ ...(message(health) ? { health: message(health)! } : {}), ...(message(migrations) ? { migrations: message(migrations)! } : {}), ...(message(queue) ? { queue: message(queue)! } : {}) });
+      setDuplicateGroups(health.status === "fulfilled" ? health.value.caseDuplicateGroups ?? [] : []);
+      setSecretRefMigrations(migrations.status === "fulfilled" && migrations.value.summary && Array.isArray(migrations.value.candidates) ? migrations.value : null);
+      const counts: Record<string, number> = {};
+      if (queue.status === "fulfilled" && Array.isArray(queue.value.items)) for (const item of queue.value.items) {
+        if (!item.dismissed) { const key = item.providerId.toLowerCase(); counts[key] = (counts[key] ?? 0) + 1; }
+      }
+      setQueueCounts(counts);
+    })();
   }, [client]);
+  const loadExtensions = useCallback(async (seq: number) => {
+    setExtensionsLoading(true);
+    setExtensionsError(null);
+    try {
+      const next = await client.getModelExtensions();
+      if (seq === loadSeq.current) setExtensions(next);
+    } catch (err) {
+      if (seq === loadSeq.current) setExtensionsError(err instanceof Error ? err.message : "插件目录读取失败");
+    } finally { if (seq === loadSeq.current) setExtensionsLoading(false); }
+  }, [client]);
+  const loadRuntime = useCallback(async (seq: number, preset?: ModelInventory, force = false) => {
+    setRuntimeLoading(true);
+    setRuntimeError(null);
+    try {
+      const next = preset ?? await (force ? client.refreshModelInventory() : client.getModelInventory());
+      if (seq !== loadSeq.current) return;
+      setInventory(next);
+      setStateNotice(null);
+      const confirmationIssue = runtimeConfirmationIssue(next);
+      setOnlinePending(confirmationIssue !== null);
+      setRuntimeError(confirmationIssue);
+      const report = await client.getModelAttention().catch(err => { if (seq === loadSeq.current) setAttentionError(err instanceof Error ? err.message : "无法读取问题状态"); return null; });
+      if (!report) return;
+      if (seq !== loadSeq.current) return;
+      if (Array.isArray(report.pending) && Array.isArray(report.ignored)) { setAttention(report); setAttentionError(null); }
+      else setAttentionError("提醒协议不兼容，请重启服务。");
+    } catch (err) {
+      if (seq === loadSeq.current) setRuntimeError(err instanceof Error ? err.message : "运行时状态未确认");
+    } finally { if (seq === loadSeq.current) setRuntimeLoading(false); }
+  }, [client]);
+  const load = useCallback(async (_propagateError = false, preset?: ModelInventory) => {
+    const seq = ++loadSeq.current;
+    await Promise.all([loadStatic(seq), loadExtensions(seq), loadRuntime(seq, preset)]);
+  }, [loadStatic, loadExtensions, loadRuntime]);
+  const saved = useCallback(async (result?: unknown, preserveRuntime = false) => {
+    const seq = ++loadSeq.current;
+    const next = inventoryFromWriteResponse(result && typeof result === "object" ? result : {});
+    setInventory(previous => next ?? (preserveRuntime ? previous : null));
+    if (result && typeof result === "object" && "pluginId" in result && "enabled" in result && typeof result.pluginId === "string" && typeof result.enabled === "boolean") {
+      const { pluginId, enabled } = result;
+      setExtensions(previous => previous ? { ...previous, plugins: previous.plugins.map(plugin => plugin.id === pluginId ? { ...plugin, enabled } : plugin), providers: previous.providers.map(provider => provider.pluginId === pluginId ? { ...provider, enabled } : provider) } : previous);
+    }
+    setRuntimeLoading(false);
+    setExtensionsLoading(false);
+    if (!preserveRuntime) setAttention({ pending: [], ignored: [] });
+    setAttentionError(null);
+    setRuntimeError(null);
+    setOnlinePending(!next);
+    setStateNotice(next ? "本地配置已保存" : "本地配置已保存，在线状态待确认");
+    await loadStatic(seq);
+    if (next) await loadRuntime(seq, next);
+  }, [loadStatic, loadRuntime]);
+  async function checkRuntime() {
+    if (checking || saving) return;
+    setChecking(true);
+    const seq = ++loadSeq.current;
+    try { await Promise.all([loadStatic(seq), loadExtensions(seq), loadRuntime(seq, undefined, true)]); }
+    finally { if (seq === loadSeq.current) setChecking(false); }
+  }
 
   const groupByProviderId = useMemo(() => {
     const map = new Map<string, CaseDuplicateGroup>();
@@ -210,18 +249,19 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
   // config 表保留连接信息 CRUD；运行时来源和插件贡献关系只消费 inventory。
   const allPluginGroups = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return (inventory?.plugins ?? []).filter(plugin => plugin.providerIds.length > 0).map(plugin => ({
+    return (inventory?.plugins ?? extensions?.plugins ?? []).filter(plugin => plugin.providerIds.length > 0).map(plugin => ({
       plugin,
       // 同名 config Provider 也必须出现在插件组和停用影响面中。
       providers: (inventory?.providers ?? []).filter(provider => provider.pluginIds.includes(plugin.id)),
+      extensions: (extensions?.providers ?? []).filter(provider => provider.pluginId === plugin.id),
       models: (inventory?.models ?? []).filter(model => plugin.providerIds.some(id => id.toLowerCase() === model.providerId.toLowerCase()))
     })).filter(group => !q || [group.plugin.id, group.plugin.name ?? "", ...group.plugin.providerIds].some(value => value.toLowerCase().includes(q)));
-  }, [inventory, query]);
+  }, [inventory, extensions, query]);
 
   // 有效使用 = 插件启用且至少一个 Provider 未被 oc-switch 关闭。
   // 插件启用但 Provider 已关闭（如 nvidia）不算「当前使用」，避免与 IM 实际可见性矛盾。
   const isPluginGroupActive = (group: (typeof allPluginGroups)[number]): boolean =>
-    group.plugin.enabled && group.providers.some(provider => !provider.disabled);
+    group.plugin.enabled && (group.providers.length > 0 ? group.providers.some(provider => !provider.disabled) : group.plugin.providerIds.some(id => !providers.find(provider => provider.id.toLowerCase() === id.toLowerCase())?.disabled));
 
   const pluginGroups = useMemo(
     () => allPluginGroups.filter(group => scope === "all" || (scope === "disabled" ? !isPluginGroupActive(group) : isPluginGroupActive(group))),
@@ -230,7 +270,7 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
 
   const filteredProviders = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return providers.filter(row => row.source === "config" && (scope === "all" || (scope === "disabled" ? row.disabled : !row.disabled)) && !pluginGroups.some(group => group.plugin.providerIds.some(id => id.toLowerCase() === row.id.toLowerCase())) &&
+    return providers.filter(row => row.source === "config" && (scope === "all" || (scope === "disabled" ? row.disabled : !row.disabled)) &&
       (!q || row.id.toLowerCase().includes(q) || (row.baseUrl ?? "").toLowerCase().includes(q)));
   }, [providers, query, pluginGroups, scope]);
 
@@ -244,33 +284,40 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
     (!query.trim() || provider.providerId.toLowerCase().includes(query.trim().toLowerCase())));
 
 
-  /** 插件 Provider 的 API Key 环境变量名：来自 legacy providers 列表的 manifest 声明（inventory DTO 不含密钥字段） */
+  /** 插件 Provider 的 API Key 环境变量名：来自独立 extensions 的 manifest 声明（inventory DTO 不含密钥字段） */
   const pluginApiKeyEnv = useCallback((providerId: string): string | null => {
-    const match = providers.find((provider) => provider.id.toLowerCase() === providerId.toLowerCase() && provider.source === "plugin");
-    return match?.apiKeyEnv ?? null;
-  }, [providers]);
+    const match = extensions?.providers.find(provider => provider.providerId.toLowerCase() === providerId.toLowerCase());
+    return match?.apiKeyEnvVars[0] ?? null;
+  }, [extensions]);
 
   useEffect(() => {
     void load();
+    return () => { loadSeq.current += 1; };
   }, [load]);
 
   function configureProvider(id: string) {
     const row = providers.find(p => p.id.toLowerCase() === id.toLowerCase());
     setScope("all");
-    const owner = inventory?.plugins.find(p => p.providerIds.some(providerId => providerId.toLowerCase() === id.toLowerCase()));
+    const owner = (inventory?.plugins ?? extensions?.plugins ?? []).find(p => p.providerIds.some(providerId => providerId.toLowerCase() === id.toLowerCase()));
     setFocusedPlugin(owner?.id ?? null);
     if (row?.source === "config") openEdit(row);
     else if (row?.apiKeyEnv) openPluginKey(row);
+    else if (pluginApiKeyEnv(id)) {
+      const declared = extensions?.providers.find(provider => provider.providerId.toLowerCase() === id.toLowerCase());
+      openPluginKey({ id, source: "plugin", api: declared?.api, baseUrl: declared?.baseUrl, disabled: declared?.enabled === false, containsPrimary: false, modelCount: declared?.models.length ?? 0, enabledModelCount: 0, apiKeyEnv: pluginApiKeyEnv(id), apiKeyEnvManaged: false, apiKeyEnvStatus: "missing" });
+    }
     else if (owner) setStateNotice(`${id} 未声明可编辑的 API Key，请使用 OpenClaw 的认证入口；也可在本页停用该插件或忽略非关键提示。`);
     else { setRepairProviderId(id); setRepairModelId(inventory?.models.find(m => m.providerId.toLowerCase() === id.toLowerCase())?.modelId); setAddingProvider(true); }
   }
   const [repairModelId, setRepairModelId] = useState<string | undefined>();
   const [repairProviderId, setRepairProviderId] = useState<string | undefined>();
   useEffect(() => {
-    if (!requestedProviderId || !inventory) return;
+    if (!requestedProviderId || !staticReady) return;
+    // 配置 Provider 可立即编辑；非配置目标先等独立插件目录，避免误开新增表单。
+    if (!providers.some(provider => provider.id.toLowerCase() === requestedProviderId.toLowerCase()) && extensionsLoading) return;
     configureProvider(requestedProviderId);
     onRequestHandled?.();
-  }, [requestedProviderId, inventory, providers]);
+  }, [requestedProviderId, staticReady, inventory, providers, extensions, extensionsLoading]);
 
   async function openDelete(row: ProviderSummary) {
     setError(null);
@@ -280,7 +327,7 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
     setSelectedNewPrimary("");
     if (!row.containsPrimary) return;
     try {
-      const { models } = await client.getModels();
+      const { models } = await client.getModelConfig();
       const candidates = models.filter((model) => model.providerId !== row.id);
       setNewPrimaryCandidates(candidates);
       setSelectedNewPrimary(candidates[0]?.ref ?? "");
@@ -295,6 +342,8 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
       toast.error("删除包含 primary 的 Provider 前请选择新的主模型");
       return;
     }
+    if (saving) return;
+    setSaving(true);
     try {
       const result = await client.deleteProvider(deleteTarget.id, {
         ...(deleteTarget.containsPrimary ? { newPrimary: selectedNewPrimary } : {}),
@@ -306,12 +355,12 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
       setSelectedNewPrimary("");
       toast.success(`Provider ${deleteTarget.id} 已删除`);
       for (const warning of result.warnings ?? []) toast.warning(warning);
-      await load();
+      await saved(result);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "删除失败");
       setDeleteTarget(null);
       setRemovePolicyWildcard(false);
-    }
+    } finally { setSaving(false); }
   }
 
   function openEdit(row: ProviderSummary) {
@@ -361,7 +410,7 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
       setGatewayApply(null);
       toast.success(`Provider ${providerId} 已更新`);
     }
-    await load();
+    await saved(result);
   }
 
   async function confirmEdit() {
@@ -383,6 +432,8 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
       return;
     }
     setEditError(null);
+    if (saving) return;
+    setSaving(true);
     try {
       if (changes.apiKey) {
         const preview = await client.previewUpdateProvider(editTarget.id, {
@@ -407,7 +458,7 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
     } catch (err) {
       // 表单内错误留在弹窗中展示
       setEditError(err instanceof Error ? err.message : "保存失败");
-    }
+    } finally { setSaving(false); }
   }
 
   async function confirmEnvMigration() {
@@ -421,6 +472,8 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
       await confirmPluginKey(flags);
       return;
     }
+    if (saving) return;
+    setSaving(true);
     try {
       await submitProviderUpdate(pendingEnvConfirm.providerId, {
         ...pendingEnvConfirm.changes,
@@ -429,33 +482,38 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "保存失败");
       setPendingEnvConfirm(null);
-    }
+    } finally { setSaving(false); }
   }
 
   async function runSyncMetadata(row: ProviderSummary) {
+    if (saving) return;
+    setSaving(true);
     try {
       const result = await client.syncProviderModelMetadata(row.id, {});
       toast.success(`已回填 ${result.updated.length}，待确认 ${result.queued.length}，未匹配 ${result.unmatched.length}，齐全跳过 ${result.skipped.length}`);
-      await load();
+      // 参数同步不改变模型身份或选择规则；保留上次在线视图，避免插件组切回静态表格。
+      await saved(result, true);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "同步参数失败");
-    }
+    } finally { setSaving(false); }
   }
 
   async function confirmProviderStateChange() {
     if (!stateTarget) return;
     setError(null);
+    if (saving) return;
+    setSaving(true);
     try {
       // stateTarget.disabled 为 true 时恢复（enabled: true），为 false 时关闭（enabled: false）
       const result = cleanupMetadata ? await client.patchProviderState(stateTarget.id, stateTarget.disabled, true) : await client.patchProviderState(stateTarget.id, stateTarget.disabled);
       setStateNotice(result.runtimeConfirmed === false ? "配置已保存；尚未确认 Gateway 已应用。请刷新，或到设置中应用 Gateway 配置。" : null);
       setStateTarget(null);
       toast.success(stateTarget.disabled ? `Provider ${stateTarget.id} 已恢复` : `Provider ${stateTarget.id} 已关闭`);
-      await load();
+      await saved(result);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "更新 Provider 状态失败");
       setStateTarget(null);
-    }
+    } finally { setSaving(false); }
   }
 
   function openPluginKey(row: ProviderSummary) {
@@ -481,6 +539,8 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
       return;
     }
     setPluginKeyError(null);
+    if (saving) return;
+    setSaving(true);
     try {
       const preview = await client.previewEnvVar({ type: "upsert", envVar });
       if (preview.requiresConfirmation && !flags.confirmMigration && !flags.confirmComplex) {
@@ -511,12 +571,12 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
         fallback: `Provider ${providerId} 的 API Key 已写入 ${envVar}`
       }));
       showGatewayApply(result);
-      await load();
+      await saved(result);
     } catch (err) {
       // 迁移确认分支失败时必须一并关掉确认框，否则错误被盖在弹窗下面看不到
       setPendingEnvConfirm(null);
       setPluginKeyError(err instanceof Error ? err.message : "保存失败");
-    }
+    } finally { setSaving(false); }
   }
 
   async function confirmSecretRefMigration() {
@@ -525,17 +585,19 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
       .map((candidate) => candidate.providerId) ?? [];
     if (providerIds.length === 0) return;
     setError(null);
+    if (saving) return;
+    setSaving(true);
     try {
       const result = await client.migrateProviderSecretRefs(providerIds);
       setShowSecretRefMigration(false);
       toast.success(
         `已将 ${result.migratedProviderIds.length} 个 Provider API Key 引用迁移为 SecretRef；请重启 Gateway 使运行时快照生效。`
       );
-      await load();
+      await saved(result);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "SecretRef 迁移失败");
       setShowSecretRefMigration(false);
-    }
+    } finally { setSaving(false); }
   }
 
   function secretRefBlockerLabel(blocker: ProviderSecretRefMigrationBlocker): string {
@@ -567,7 +629,7 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
                     variant="ghost"
                     size="icon"
                     aria-label={`${row.disabled ? "恢复" : "关闭"} Provider ${row.id}`}
-                    disabled={isPlugin || (!row.disabled && row.containsPrimary)}
+                    disabled={saving || isPlugin || (!row.disabled && row.containsPrimary)}
                     title={
                       isPlugin
                         ? PLUGIN_STATE_HINT
@@ -668,13 +730,19 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
               <Plus className="h-4 w-4" />
               添加 Provider
             </Button>
-            <Button variant="outline" size="icon" aria-label="刷新" title={loading ? "正在加载…" : undefined} onClick={() => void load()}>
+            <Button variant="outline" size="sm" disabled={checking || saving} onClick={() => void checkRuntime()}>{checking ? "检查中…" : "检查并确认"}</Button>
+            <Button variant="outline" disabled={loading || saving || checking} size="icon" aria-label="刷新" title={loading ? "正在加载…" : undefined} onClick={() => void load()}>
               <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
             </Button>
           </>
         }
       />
 
+      <div className="mb-3 space-y-2">
+        <OperationProgress phase={saving ? "saving" : runtimeLoading ? "checking-runtime" : onlinePending ? "partial" : runtimeError ? "error" : inventory ? "success" : "idle"} message={!saving && !runtimeLoading && runtimeError ? `运行时未确认：${runtimeError}` : undefined} />
+        <OperationProgress phase={extensionsLoading ? "loading-plugin" : extensionsError ? "error" : "idle"} message={extensionsError ? `插件目录未取得：${extensionsError}` : undefined} />
+        {extensions?.diagnostics.length ? <p className="text-xs text-warning">插件目录提示：{extensions.diagnostics.join("；")}</p> : null}
+      </div>
       {error ? <p role="alert" className="mb-3 text-sm text-destructive">{error}</p> : null}
       {stateNotice ? <p role="status" className="mb-3 text-sm text-warning">{stateNotice}</p> : null}
       {/* 可选辅助读取失败：明示「未取得」并提供重试，不阻塞主列表、不假装成 0 项 */}
@@ -712,7 +780,7 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
           </button>
         ))}
       </div>
-      <div className="mb-3"><ModelAttentionPanel client={client} inventory={inventory} report={attention} loadError={attentionError} onChanged={(next) => load(false, next)} onConfigure={configureProvider} /></div>
+      <div className="mb-3"><ModelAttentionPanel client={client} inventory={inventory} report={attention} onReport={setAttention} onSaved={async (result) => { await saved(result); }} loadError={attentionError} onChanged={(next) => load(false, next)} onConfigure={configureProvider} /></div>
       {gatewayApply ? (
         <GatewayApplyBanner
           client={client}
@@ -738,14 +806,14 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
       ) : null}
 
       {/* 自定义 Provider（config 来源）：连接信息 CRUD + 模型目录管理 */}
-      <section aria-label="自定义 Provider">
+      <section data-testid="static-providers" aria-label="自定义 Provider">
         <h2 className="mb-2 text-xs font-semibold tracking-wider text-muted-foreground">自定义 Provider</h2>
       {/* 首轮加载提示：inventory 未取得前不渲染空表格，避免把「读取中」误显为「暂无 Provider」 */}
-      {inventory === null ? (
+      {!staticReady ? (
         error ? null : (
           <LoadingNotice
             title="正在加载服务商…"
-            description="读取本地配置、插件目录与运行时状态；首次冷探测可能需要几秒。"
+            description="读取本地配置文件。"
           />
         )
       ) : (
@@ -827,7 +895,7 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
             align: "right",
             wrap: "nowrap",
             className: "hidden md:table-cell",
-            render: (row) => manageCatalog ? inventoryProviders.get(row.id.toLowerCase())?.policyAllowedModelCount ?? row.enabledModelCount : (inventory?.models ?? []).filter(model => model.pickerVisible && model.policyAllowed && model.providerId.toLowerCase() === row.id.toLowerCase()).length
+            render: (row) => inventory ? (manageCatalog ? inventoryProviders.get(row.id.toLowerCase())?.policyAllowedModelCount ?? row.enabledModelCount : inventory.models.filter(model => model.pickerVisible && model.policyAllowed && model.providerId.toLowerCase() === row.id.toLowerCase()).length) : row.enabledModelCount
           },
           {
             key: "status",
@@ -861,17 +929,17 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
       {pluginGroups.length > 0 ? (
         <section aria-label="插件 Provider" className="mt-6 space-y-2">
           <h2 className="text-xs font-semibold tracking-wider text-muted-foreground">插件 Provider</h2>
-          {pluginGroups.map(({ plugin, providers: groupProviders, models: groupModels }) => (
+          {pluginGroups.map(({ plugin, providers: groupProviders, extensions: groupExtensions, models: groupModels }) => (
             <PluginProviderGroup
               key={plugin.id}
               plugin={plugin}
               providers={groupProviders}
               models={groupModels}
+              extensionProviders={groupExtensions}
+              runtimeReady={inventory !== null}
               onOpenSettings={onOpenSettings}
               onSetPluginState={client.setPluginState}
-              onMutated={async () => {
-                await load(true);
-              }}
+              onMutated={async (result) => { await saved(result); }}
               forceExpanded={focusedPlugin === plugin.id}
               renderProviderActions={(provider) => {
                 const configured = providers.find(row => row.source === "config" && row.id.toLowerCase() === provider.providerId.toLowerCase());
@@ -929,8 +997,9 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
         providers={providers}
         client={client}
         onCancel={() => setModelTarget(null)}
+        onMetadataChanged={() => { void saved(undefined, true); }}
         onChanged={() => {
-          void load();
+          void saved();
         }}
       />
 
@@ -946,7 +1015,7 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
               ? `已添加并启用 ${addedCount} 个模型`
               : `已添加 ${addedCount} 个模型`
           );
-          void load();
+          void saved();
         }}
       />
 
@@ -957,7 +1026,7 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
         onClose={() => setQueueTarget(null)}
         onChanged={() => {
           // 只刷新数据不关框：对话框内已连续处理多项，关框只走 onClose
-          void load();
+          void saved(undefined, true);
         }}
       />
 
@@ -976,7 +1045,7 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
             fallback: `Provider ${result.providerId} 已添加`
           }));
           showGatewayApply(result);
-          void load();
+          void saved();
         }}
       />
 
@@ -985,6 +1054,8 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
         title="删除 Provider"
         message={`确认删除 ${deleteTarget?.id ?? ""}？此操作将创建备份。`}
         danger
+        confirmDisabled={saving}
+        confirmLabel={saving ? "保存中…" : "确认"}
         onCancel={() => {
           setDeleteTarget(null);
           setRemovePolicyWildcard(false);
@@ -993,6 +1064,7 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
         }}
         onConfirm={() => void confirmDelete()}
       >
+        {saving ? <OperationProgress phase="saving" /> : null}
         <div className="space-y-4">
           {deleteTarget?.containsPrimary ? (
             <label className="block text-sm">
@@ -1033,7 +1105,9 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
             ? "将恢复关闭前保存的模型选择规则。目录和 API Key 保留。"
             : `该 Provider 的 ${stateTarget?.enabledModelCount ?? 0} 个有效可选模型将从 OpenClaw 菜单中隐藏。Provider 配置和模型目录会保留，可稍后恢复。`
         }
-        onCancel={() => setStateTarget(null)}
+        confirmDisabled={saving}
+        confirmLabel={saving ? "保存中…" : "确认"}
+        onCancel={() => { if (!saving) setStateTarget(null); }}
         onConfirm={() => void confirmProviderStateChange()}
       >
         {!stateTarget?.disabled ? <div className="space-y-2 text-sm">
@@ -1044,7 +1118,7 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
       </ConfirmDialog>
 
       {/* 编辑 Provider：统一使用 Radix Dialog */}
-      <Dialog open={Boolean(editTarget)} onOpenChange={(val) => { if (!val) closeEdit(); }}>
+      <Dialog open={Boolean(editTarget)} onOpenChange={(val) => { if (!val && !saving) closeEdit(); }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>编辑 Provider</DialogTitle>
@@ -1090,17 +1164,18 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
             ) : null}
             {editError ? <p className="text-sm text-destructive">{editError}</p> : null}
           </div>
+          {saving ? <OperationProgress phase="saving" /> : null}
           <DialogFooter>
-            <Button variant="outline" onClick={closeEdit}>
+            <Button variant="outline" disabled={saving} onClick={closeEdit}>
               取消
             </Button>
-            <Button onClick={() => void confirmEdit()}>保存 Provider</Button>
+            <Button disabled={saving} onClick={() => void confirmEdit()}>{saving ? "保存中…" : "保存 Provider"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       {/* 插件 Provider 的 API Key：只写 .env 托管块中 manifest 声明的环境变量 */}
-      <Dialog open={Boolean(pluginKeyTarget)} onOpenChange={(val) => { if (!val) closePluginKey(); }}>
+      <Dialog open={Boolean(pluginKeyTarget)} onOpenChange={(val) => { if (!val && !saving) closePluginKey(); }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>设置插件 Provider 的 API Key</DialogTitle>
@@ -1129,16 +1204,18 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
             ) : null}
             {pluginKeyError ? <p className="text-sm text-destructive">{pluginKeyError}</p> : null}
           </div>
+          {saving ? <OperationProgress phase="saving" /> : null}
           <DialogFooter>
-            <Button variant="outline" onClick={closePluginKey}>
+            <Button variant="outline" disabled={saving} onClick={closePluginKey}>
               取消
             </Button>
-            <Button onClick={() => void confirmPluginKey()}>保存 API Key</Button>
+            <Button disabled={saving} onClick={() => void confirmPluginKey()}>{saving ? "保存中…" : "保存 API Key"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       <EnvMigrationConfirmDialog
+        busy={saving}
         open={Boolean(pendingEnvConfirm)}
         warnings={pendingEnvConfirm?.warnings ?? []}
         {...(pendingEnvConfirm?.confirmMigration ? { confirmMigration: true } : {})}
@@ -1153,7 +1230,7 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
         title="迁移 Provider API Key 引用"
         message="只修改 openclaw.json 中的引用格式，不改动 .env 中的 Key；写入前会创建备份。"
         confirmLabel={`迁移 ${secretRefMigrations?.summary.readyCount ?? 0} 项`}
-        confirmDisabled={!secretRefMigrations?.summary.readyCount}
+        confirmDisabled={saving || !secretRefMigrations?.summary.readyCount}
         onCancel={() => setShowSecretRefMigration(false)}
         onConfirm={() => void confirmSecretRefMigration()}
       >
@@ -1173,7 +1250,7 @@ export function ProvidersView({ client, onOpenSettings, onOpenModels, requestedP
         group={mergeTarget}
         client={client}
         onCancel={() => setMergeTarget(null)}
-        onMerged={() => { setMergeTarget(null); void load(); }}
+        onMerged={() => { setMergeTarget(null); void saved(); }}
       />
     </section>
   );

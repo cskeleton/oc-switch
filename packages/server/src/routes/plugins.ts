@@ -2,7 +2,7 @@ import { setModelPluginEnabled, writeOpenClawTransaction, suspendModelProviders,
 import type { Hono } from "hono";
 import { readDisabledProviderIds, type AppRuntime } from "../context";
 import { jsonError } from "../errors";
-import { requireJsonObject, requirePluginStateInput } from "../schemas";
+import { requireJsonObject, requireBooleanDefault, requirePluginStateInput } from "../schemas";
 
 /**
  * 插件级启停端点（spec §9 / Task 5）。
@@ -24,6 +24,7 @@ export function registerPluginRoutes(app: Hono, runtime: AppRuntime): void {
       const pluginId = c.req.param("pluginId");
       const body = await requireJsonObject(c.req);
       const { enabled } = requirePluginStateInput(body);
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       if (body.cleanupMetadata !== undefined && typeof body.cleanupMetadata !== "boolean") throw new Error("cleanupMetadata must be boolean");
 
       const paths = runtime.currentPaths();
@@ -65,6 +66,10 @@ export function registerPluginRoutes(app: Hono, runtime: AppRuntime): void {
 
       // 写后：同时失效两个缓存（插件状态 + 运行时模型目录），避免新插件状态与旧模型目录混用
       runtime.invalidateCatalogCaches();
+      if (!confirmRuntime) return c.json({
+        ok: true, pluginId, enabled, backupId: result.backupDir.split("/").pop(),
+        affectedProviderIds, warnings: capturedWarnings, runtimeConfirmed: false, onlineStatusPending: true, diagnostics: []
+      });
       let runtimeConfirmed = false;
       let diagnostics: { command: string; code: string; message: string }[];
       try {

@@ -5,6 +5,7 @@ export * from "./provider-states";
 export * from "./model-ref";
 export * from "./config-normalization";
 export * from "./config-adapter";
+export * from "./model-config-snapshot";
 export * from "./primary-model";
 export * from "./env-manager";
 export * from "./operations";

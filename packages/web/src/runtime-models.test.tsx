@@ -21,7 +21,7 @@ import { UnavailableModelsPanel } from "./components/UnavailableModelsPanel";
 import { PluginProviderGroup } from "./components/PluginProviderGroup";
 import { ModelsView } from "./views/ModelsView";
 import { ProvidersView } from "./views/ProvidersView";
-import { modelSummary, providerSummary } from "./test-fixtures";
+import { modelSummary, providerSummary, staticSnapshot, staticModel, emptyExtensions } from "./test-fixtures";
 
 afterEach(() => {
   cleanup();
@@ -117,8 +117,14 @@ function clientFor(data: ModelInventory, overrides: Partial<ApiClient> = {}): Ap
   });
   return {
     ...client,
+    getModelConfig: async () => {
+      const providers = overrides.getProviders ? (await overrides.getProviders()).providers : data.providers.filter(provider => provider.sources.includes("config")).map(provider => providerSummary({ id: provider.providerId, disabled: provider.disabled }));
+      const models = overrides.getModels ? (await overrides.getModels()).models : [];
+      return staticSnapshot({ providers, models: models.map(model => staticModel(model)), policyRules: data.policyRules, policyMode: data.policyMode ?? "restricted", policyRevision: data.policyRevision ?? "v1:fixture" });
+    },
+    getModelExtensions: async () => ({ ...emptyExtensions(), plugins: data.plugins }),
     getModelInventory: async () => data,
-    refreshModelInventory: async () => data,
+    refreshModelInventory: overrides.getModelInventory ?? (async () => data),
     getProviders: async () => ({ providers: [providerSummary({ id: "local" })] }),
     getModelAttention: async () => ({ pending: [], ignored: [] }),
     ...overrides
@@ -187,6 +193,7 @@ test("默认模型列表仅显示 IM 可见选项，闲置配置不列待处理"
     model("idle/unused", { availability: "unavailable", pickerVisible: false, inactive: true, needsAttention: false })
   ], { pickerSource: "gateway", providers: [provider("local"), provider("idle")] });
   const view = renderModels(data);
+  await userEvent.click(await view.findByRole("button", { name: /^local/ }));
   await view.findByText("local/visible");
   expect(view.queryByText("idle/unused") === null).toBe(true);
   expect(view.queryByTestId("pending-models-panel") === null).toBe(true);
@@ -237,11 +244,10 @@ describe("runtime Web review regressions", () => {
     const gate = new Promise<ModelInventory>((resolve) => { release = resolve; });
     const view = renderModels(data, { getModelInventory: () => gate });
 
-    expect(await view.findByText("正在加载模型…")).toBeTruthy();
-    // 加载中不渲染 Provider 导航项与模型空态,避免把「读取中」误显为空
-    expect(await view.findByText("正在加载…")).toBeTruthy();
-    expect(view.queryByText("请在左侧选择一个 Provider 进行管理。")).toBeNull();
-    expect(view.queryByText("没有匹配的模型")).toBeNull();
+    expect(await view.findByText("正在检查 OpenClaw / Gateway…")).toBeTruthy();
+    expect(await view.findByRole("button", { name: /^local/ })).toBeTruthy();
+    expect(await view.findByTestId("static-models")).toBeTruthy();
+    expect(view.queryByText("正在读取本地模型配置…")).toBeNull();
 
     release(data);
     await waitFor(() => expect(view.queryByText("正在加载模型…")).toBeNull());
@@ -260,10 +266,10 @@ describe("runtime Web review regressions", () => {
     });
     const navigation = await view.findByRole("button", { name: /^MixedVendor/ });
     expect(within(navigation).getByLabelText("模型数 2")).toBeTruthy();
-    expect(await view.findByText(upper.ref)).toBeTruthy();
-    expect(await view.findByText(lower.ref)).toBeTruthy();
+    expect(await view.findByText("MixedVendor/Vendor/Model")).toBeTruthy();
+    expect(await view.findByText("MixedVendor/vendor/model")).toBeTruthy();
     expect(view.queryByRole("button", { name: /^补全 Provider 配置 / }) === null).toBe(true);
-    await userEvent.click(view.getByRole("button", { name: `编辑模型 ${upper.ref}` }));
+    await userEvent.click(view.getByRole("button", { name: "编辑模型 MixedVendor/Vendor/Model" }));
     expect((await view.findByLabelText("Name") as HTMLInputElement).value).toBe("Right model");
   });
 
@@ -289,6 +295,7 @@ describe("runtime Web review regressions", () => {
     for (const ref of ["local/primary", "local/fallback"]) {
       await userEvent.click(await view.findByRole("switch", { name: `启用 ${ref}` }));
       await waitFor(() => expect(patch).toHaveBeenCalledWith(ref, true));
+      await userEvent.click(await view.findByRole("button", { name: "检查并确认" }));
       await waitFor(() => expect(view.queryByRole("switch", { name: `启用 ${ref}` }) === null).toBe(true));
       expect(view.queryByRole("switch", { name: `禁用 ${ref}` }) === null).toBe(true);
       expect(view.queryByRole("button", { name: `删除模型 ${ref}` }) === null).toBe(true);
@@ -315,6 +322,7 @@ describe("runtime Web review regressions", () => {
     expect(toggle.getAttribute("aria-checked")).toBe("false");
     await userEvent.click(toggle);
     await waitFor(() => expect(patchModel).toHaveBeenCalledWith(row.ref, true));
+    await userEvent.click(await view.findByRole("button", { name: "检查并确认" }));
     await userEvent.click(await view.findByRole("button", { name: `设为主模型 ${row.ref}` }));
     await waitFor(() => expect(setPrimary).toHaveBeenCalledWith(row.ref));
     expect(view.queryByRole("button", { name: `编辑模型 ${row.ref}` }) === null).toBe(true);
@@ -332,7 +340,7 @@ describe("runtime Web review regressions", () => {
     expect(view.queryByText(/Provider 拒绝/) === null).toBe(true);
   });
 
-  test("Provider 模型管理也阻止 unknown 清理，但可以显式选择其它已知模型", async () => {
+  test("配置模型的目录管理不等待在线 availability，仍可显式选择清理目标", async () => {
     const unknown = model("local/unknown", { catalogSources: ["config"], availability: "unknown", availabilityReasons: ["probe-failed"] });
     const known = model("local/known", { catalogSources: ["config"], availability: "available", availabilityReasons: [], referenceSources: [], policyAllowed: false });
     known.capabilities.canEditCatalogEntry = true;
@@ -343,9 +351,9 @@ describe("runtime Web review regressions", () => {
     });
     await userEvent.click(await view.findByRole("button", { name: "管理模型 local" }));
     const unknownSelect = await view.findByRole("checkbox", { name: "选择本地模型 unknown" }) as HTMLInputElement;
-    expect(unknownSelect.disabled).toBe(true);
-    expect(view.queryByRole("button", { name: `删除模型 ${unknown.ref}` }) === null).toBe(true);
-    expect((view.getByRole("button", { name: "只保留已启用模型" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(unknownSelect.disabled).toBe(false);
+    expect(view.getByRole("button", { name: `删除模型 ${unknown.ref}` })).toBeTruthy();
+    expect((view.getByRole("button", { name: "只保留已启用模型" }) as HTMLButtonElement).disabled).toBe(false);
     const knownSelect = view.getByRole("checkbox", { name: "选择本地模型 known" }) as HTMLInputElement;
     expect(knownSelect.disabled).toBe(false);
     await userEvent.click(knownSelect);
@@ -404,7 +412,8 @@ describe("runtime Web review regressions", () => {
     await userEvent.click(dialog.getByRole("button", { name: "确认" }));
     await waitFor(() => expect(deleteModel).toHaveBeenCalledWith(row.ref, { layers: { metadata: false, policyExact: false } }));
 
-    // 勾选两个层级后：三层全删
+    // 勾选两个层级后：三层全删（测试写fixture未删目录；显式重新检查后再操作）
+    await userEvent.click(await view.findByRole("button", { name: "检查并确认" }));
     await userEvent.click(await view.findByRole("button", { name: `删除模型 ${row.ref}` }));
     dialog = within(view.getByRole("dialog"));
     await userEvent.click(dialog.getByRole("checkbox", { name: /连同使用配置/ }));
@@ -609,7 +618,7 @@ describe("runtime Web review regressions", () => {
       await userEvent.type(dialog.getByLabelText("规则"), "local/new-model");
       await userEvent.click(dialog.getByRole("button", { name: "添加规则" }));
       await waitFor(() => expect(addRule).toHaveBeenCalledTimes(1));
-      expect(await view.findByText("配置已保存，未取得最新视图；请点击「刷新」重试。")).toBeTruthy();
+      expect((await view.findAllByText(/在线状态待确认/)).length).toBeGreaterThan(0);
       // 不自动重试写入，也不自动 GET inventory；后续读取交给用户手动刷新
       expect(addRule).toHaveBeenCalledTimes(1);
       expect(loadInventory).toHaveBeenCalledTimes(1);
@@ -746,7 +755,7 @@ describe("runtime Web review regressions", () => {
       // 确认前 inventory 变化（如另一处写入后的 load 把最新守卫结果带回来）：
       // modal 对话框使背景按钮不可及，这里用 fireEvent 触发刷新作为测试扳手
       removable = false;
-      fireEvent.click(view.getByText("刷新探测").closest("button")!);
+      fireEvent.click(view.getByText("检查并确认").closest("button")!);
       await waitFor(() => {
         const dialog = within(view.getByRole("dialog"));
         expect((dialog.getByRole("button", { name: "删除规则" }) as HTMLButtonElement).disabled).toBe(true);
@@ -844,7 +853,6 @@ describe("runtime Web review regressions", () => {
     const row = model("local/configured", { catalogSources: ["config"], availability: "available", availabilityReasons: [] });
     row.capabilities.canEditCatalogEntry = true;
     const view = renderModels(inventory([row]), { getModels: async () => { throw new Error("Catalog read failed"); } });
-    await userEvent.click(await view.findByRole("button", { name: `编辑模型 ${row.ref}` }));
     expect(await view.findByText("Catalog read failed")).toBeTruthy();
     expect(view.queryByRole("dialog") === null).toBe(true);
   });
@@ -852,11 +860,13 @@ describe("runtime Web review regressions", () => {
   test("刷新删除已选 Provider 后自动选择仍存在的 Provider", async () => {
     const row = model("local/old", { availability: "available", availabilityReasons: [] });
     const next = model("replacement/new", { availability: "available", availabilityReasons: [] });
+    let refreshed = false;
     const view = renderModels(inventory([row]), {
-      refreshModelInventory: async () => inventory([next], { providers: [provider("replacement")] })
+      getModelConfig: async () => staticSnapshot({ providers: [] }),
+      refreshModelInventory: async () => { refreshed = true; return inventory([next], { providers: [provider("replacement")] }); }
     });
     await view.findByText(row.ref);
-    await userEvent.click(view.getByRole("button", { name: "刷新探测" }));
+    await userEvent.click(view.getByRole("button", { name: "检查并确认" }));
     expect(await view.findByText(next.ref)).toBeTruthy();
     expect(view.queryByRole("heading", { name: "local" }) === null).toBe(true);
   });
@@ -868,7 +878,7 @@ describe("runtime Web review regressions", () => {
     });
     expect(view.queryByText("全部可用") === null).toBe(true);
     reject(new Error("Inventory unavailable"));
-    expect(await view.findByText("Inventory unavailable")).toBeTruthy();
+    expect(await view.findByText(/运行时未确认：Inventory unavailable/)).toBeTruthy();
     expect(view.queryByText("全部可用") === null).toBe(true);
   });
 
@@ -1055,7 +1065,9 @@ describe("runtime Web review regressions", () => {
     });
     await userEvent.click(await view.findByRole("switch", { name: "停用插件 shared-plugin" }));
     await userEvent.click(view.getByRole("button", { name: "确认" }));
-    expect(await view.findByText("Inventory reload unavailable")).toBeTruthy();
-    expect(await view.findByText(/配置已写入.*刷新失败.*Inventory reload unavailable/)).toBeTruthy();
+    expect((await view.findAllByText(/在线状态待确认/)).length).toBeGreaterThan(0);
+    expect(view.queryByText("Inventory reload unavailable") === null).toBe(true);
+    await userEvent.click(await view.findByRole("tab", { name: /已停用/ }));
+    expect(await view.findByText("已停用")).toBeTruthy();
   });
 });

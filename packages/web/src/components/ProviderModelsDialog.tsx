@@ -1,6 +1,7 @@
+import { OperationProgress } from "./OperationProgress";
 import { Edit3, Plus, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import type { ApiClient, ModelInventoryEntry, ModelSummary, ProviderModelInput, ProviderSummary } from "../api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ApiClient, ModelInventoryEntry, ModelSummary, ProviderModelInput, ProviderSummary, StaticModelSummary } from "../api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DataTable } from "./DataTable";
 import { ModelDeleteLayers } from "./ModelDeleteLayers";
@@ -19,6 +20,7 @@ interface ProviderModelsDialogProps {
   inventoryModels?: ModelInventoryEntry[];
   onCancel: () => void;
   onChanged: () => void;
+  onMetadataChanged?: () => void;
 }
 
 /** 本地模型排序：主模型 → 已启用 → 未启用；同组内按 modelId 稳定排序 */
@@ -29,8 +31,10 @@ export function sortLocalModels(a: ModelSummary, b: ModelSummary): number {
 }
 
 /** Provider 专属模型管理弹窗 */
-export function ProviderModelsDialog({ open, provider, providers, client, inventoryModels = [], onCancel, onChanged }: ProviderModelsDialogProps) {
+export function ProviderModelsDialog({ open, provider, providers, client, inventoryModels = [], onCancel, onChanged, onMetadataChanged }: ProviderModelsDialogProps) {
   const toast = useToast();
+  const [staticModels, setStaticModels] = useState<StaticModelSummary[]>([]);
+  const [loading, setLoading] = useState(false);
   const [models, setModels] = useState<ModelSummary[]>([]);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<ModelSummary | null>(null);
@@ -46,41 +50,57 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
   const [batchBusy, setBatchBusy] = useState(false);
   /** 清理残留 metadata 的目标行：与「删除目录条目」是两回事，单独确认 */
   const [cleanTarget, setCleanTarget] = useState<ModelSummary | null>(null);
+  const [referenceTarget, setReferenceTarget] = useState<ModelSummary | null>(null);
+  const [checkedModels, setCheckedModels] = useState<ModelInventoryEntry[] | null>(null);
+  const [checkingReferences, setCheckingReferences] = useState(false);
 
+  const loadSeq = useRef(0);
   async function load() {
+    const seq = ++loadSeq.current;
     if (!provider) return;
     setError(null);
+    setLoading(true);
     try {
-      const { models: list } = await client.getModels();
+      const snapshot = await client.getModelConfig();
+      if (seq !== loadSeq.current) return;
+      const list = snapshot.models;
+      setStaticModels(list);
       setModels(list);
       const candidates = list.filter((entry) => entry.ref !== deleteTarget?.ref);
       setNewPrimary(candidates[0]?.ref ?? "");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "加载模型失败");
-    }
+      if (seq === loadSeq.current) setError(err instanceof Error ? err.message : "加载模型失败");
+    } finally { if (seq === loadSeq.current) setLoading(false); }
   }
 
   useEffect(() => {
     if (open) {
+      setCheckedModels(null);
+      setCheckingReferences(false);
+      setReferenceTarget(null);
       setSelectedModelIds(new Set());
       setConfirmBatchDelete(false);
       setConfirmKeepEnabledOnly(false);
       setError(null);
       void load();
     }
+    return () => { loadSeq.current += 1; };
   }, [open, provider?.id]);
 
   const scopedModels = useMemo(
-    () => models.filter((entry) => entry.providerId.toLowerCase() === provider?.id.toLowerCase()).slice().sort(sortLocalModels),
-    [models, provider?.id]
+    () => (provider?.source === "plugin" ? inventoryModels.map(model => ({ ref: model.ref, providerId: model.providerId, modelId: model.modelId, name: undefined, alias: undefined, enabled: model.policyAllowed, isPrimary: model.referenceSources.includes("primary") })) : models).filter((entry) => entry.providerId.toLowerCase() === provider?.id.toLowerCase()).slice().sort(sortLocalModels),
+    [models, inventoryModels, provider?.id, provider?.source]
   );
   const inventoryByModelId = useMemo(() => new Map(inventoryModels
     .filter(entry => entry.providerId.toLowerCase() === provider?.id.toLowerCase())
     .map(entry => [entry.modelId, entry])), [inventoryModels, provider?.id]);
+  const checkedByModelId = useMemo(() => new Map((checkedModels ?? []).filter(entry => entry.providerId.toLowerCase() === provider?.id.toLowerCase()).map(entry => [entry.modelId, entry])), [checkedModels, provider?.id]);
+  const modelEvidence = (row: ModelSummary) => checkedByModelId.get(row.modelId) ?? inventoryByModelId.get(row.modelId);
 
-  // 兼容弹窗也必须遵守新 inventory 的只读能力，不能绕回旧列表清理 unknown 行。
+  // 配置目录使用静态编辑能力；非目录行继续遵守运行时只读能力。
   function isReadOnly(row: ModelSummary): boolean {
-    return inventoryByModelId.get(row.modelId)?.capabilities.canEditCatalogEntry === false;
+    const local = staticModels.find(model => model.ref === row.ref);
+    return local?.catalogConfigured ? !local.capabilities.canEditCatalogEntry : modelEvidence(row)?.capabilities.canEditCatalogEntry !== true;
   }
   /**
    * 悬空 metadata 残留：该 ref 只存在于 agents.defaults.models（别名/参数），
@@ -88,7 +108,35 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
    * 能力由 Core 推导；旧后端缺字段按 false 处理（保持「只读」，不自行猜测）。
    */
   function isDanglingMetadata(row: ModelSummary): boolean {
-    return inventoryByModelId.get(row.modelId)?.capabilities.canRemoveDanglingMetadata === true;
+    return modelEvidence(row)?.capabilities.canRemoveDanglingMetadata === true;
+  }
+  function canRemoveReference(row: ModelSummary): boolean {
+    return !staticModels.find(model => model.ref === row.ref)?.catalogConfigured && modelEvidence(row)?.capabilities.canRemovePolicyExactRef === true;
+  }
+  async function checkReferences() {
+    if (checkingReferences) return;
+    const seq = loadSeq.current;
+    setCheckingReferences(true);
+    setError(null);
+    try {
+      const inventory = await client.refreshModelInventory();
+      if (seq === loadSeq.current) setCheckedModels(inventory.models);
+    } catch (err) {
+      if (seq === loadSeq.current) setError(err instanceof Error ? err.message : "引用检查失败");
+    } finally { if (seq === loadSeq.current) setCheckingReferences(false); }
+  }
+  async function removeReference() {
+    if (!referenceTarget || batchBusy || !canRemoveReference(referenceTarget)) return;
+    setBatchBusy(true);
+    try {
+      await client.removeModelPolicyExactRef(referenceTarget.ref, true);
+      setReferenceTarget(null);
+      setCheckedModels(null);
+      toast.success("已移除使用引用；插件与运行时目录、API Key 保留");
+      await load();
+      onChanged();
+    } catch (err) { setError(err instanceof Error ? err.message : "移除引用失败"); }
+    finally { setBatchBusy(false); }
   }
   const hasReadOnlyModels = scopedModels.some(isReadOnly);
   const hasReadOnlySelection = scopedModels.some(row => selectedModelIds.has(row.modelId) && isReadOnly(row));
@@ -110,6 +158,7 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
   }
 
   async function saveCreate(providerId: string, model: ProviderModelInput) {
+    loadSeq.current += 1;
     await client.createModel(providerId, model);
     setCreating(false);
     toast.success(`已添加模型 ${providerId}/${model.id}`);
@@ -119,6 +168,7 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
 
   async function saveEdit(_providerId: string, model: ProviderModelInput) {
     if (!editing) return;
+    loadSeq.current += 1;
     await client.updateModel(editing.ref, model);
     setEditing(null);
     toast.success(`模型 ${editing.ref} 已更新`);
@@ -127,13 +177,14 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
   }
 
   async function confirmDelete() {
-    if (!deleteTarget) return;
+    if (!deleteTarget || batchBusy) return;
     if (deleteTarget.isPrimary && !newPrimary) {
       toast.error("删除当前主模型前请选择新的主模型");
       return;
     }
     // wildcard 覆盖行不存在可删的 exact 条目，policyExact 恒为 false
-    const wildcardCovered = inventoryByModelId.get(deleteTarget.modelId)?.referenceSources.includes("policy-wildcard") === true;
+    const wildcardCovered = staticModels.find(model => model.ref === deleteTarget.ref)?.selectionSource === "policy-wildcard" || inventoryByModelId.get(deleteTarget.modelId)?.referenceSources.includes("policy-wildcard") === true;
+    setBatchBusy(true);
     try {
       const result = await client.deleteModel(deleteTarget.ref, {
         ...(deleteTarget.isPrimary ? { newPrimary } : {}),
@@ -146,7 +197,7 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
       onChanged();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "删除模型失败");
-    }
+    } finally { setBatchBusy(false); }
   }
 
   /** 只删 agents.defaults.models 的别名/参数残留；目录、策略与 API Key 不动。 */
@@ -203,7 +254,7 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
       const result = await client.syncProviderModelMetadata(provider.id, body);
       toast.success(`已回填 ${result.updated.length}，待确认 ${result.queued.length}，未匹配 ${result.unmatched.length}`);
       await load();
-      onChanged();
+      (onMetadataChanged ?? onChanged)();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "同步参数失败");
     } finally {
@@ -223,6 +274,8 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
       {provider && (
         <Dialog open={open} onOpenChange={(val) => { if (!val) onCancel(); }}>
           <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+            {loading ? <OperationProgress phase="saving" message="正在读取本地模型配置…" /> : null}
+            {batchBusy ? <OperationProgress phase="saving" /> : null}
             <DialogHeader className="flex-row items-center justify-between space-y-0">
               <div className="flex flex-col space-y-1.5">
                 <DialogTitle>{provider.id} 模型</DialogTitle>
@@ -288,6 +341,7 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
             </DialogHeader>
 
             {error ? <p className="mb-3 text-sm text-destructive font-medium">{error}</p> : null}
+            {checkingReferences ? <OperationProgress phase="checking-runtime" message="正在检查模型引用的目录来源…" /> : null}
 
             <div className="py-2">
               <DataTable
@@ -324,12 +378,15 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
                     header: "状态",
                     wrap: "nowrap",
                     render: (row) => {
-                      const inventoryRow = inventoryByModelId.get(row.modelId);
+                      const inventoryRow = modelEvidence(row);
                       if (inventoryRow?.availability === "unknown") return <Pill variant="warning">无法确认</Pill>;
                       if (row.isPrimary) return <Pill variant="brand">主模型</Pill>;
                       // 仅引用：目录 / 插件 / 运行时都没有该模型，只剩 agents.defaults.models 的别名或参数
                       if (inventoryRow && inventoryRow.catalogSources.length === 0) {
                         return <Pill variant="muted" title="Provider 目录里没有该模型；这条只是 agents.defaults.models 的别名/参数残留">仅引用</Pill>;
+                      }
+                      if (!staticModels.find(model => model.ref === row.ref)?.catalogConfigured && !isPlugin) {
+                        return <Pill variant="muted">使用引用</Pill>;
                       }
                       return row.enabled
                         ? <Pill variant="success">已启用</Pill>
@@ -343,6 +400,8 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
                     render: (row) => (
                       isPlugin ? (
                         <span className="text-xs text-muted-foreground">只读</span>
+                      ) : canRemoveReference(row) ? (
+                        <Button variant="outline" size="sm" aria-label={`移除使用引用 ${row.ref}`} disabled={batchBusy} onClick={() => setReferenceTarget(row)}>移除引用</Button>
                       ) : isReadOnly(row) ? (
                         isDanglingMetadata(row) ? (
                           <Button
@@ -356,7 +415,7 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
                             清理残留
                           </Button>
                         ) : (
-                          <span className="text-xs text-muted-foreground">只读</span>
+                          !modelEvidence(row) ? <Button variant="outline" size="sm" disabled={checkingReferences} onClick={() => void checkReferences()} aria-label={`检查引用 ${row.ref}`}>{checkingReferences ? "检查中…" : "检查引用"}</Button> : <span className="text-xs text-muted-foreground">目录只读</span>
                         )
                       ) : (
                       <div className="flex flex-wrap gap-1.5">
@@ -438,6 +497,14 @@ export function ProviderModelsDialog({ open, provider, providers, client, invent
           该引用只存在于 agents.defaults.models（别名 / 模型参数），Provider 目录、插件与运行时目录都没有它。
           本次只删除这条残留，不改 modelPolicy.allow、不删目录条目、不删 API Key。
         </p>
+      </ConfirmDialog>
+
+      <ConfirmDialog open={Boolean(referenceTarget)} title="移除使用引用"
+        message={`确认移除 ${referenceTarget?.ref ?? ""} 的使用引用？此操作将创建备份。`}
+        confirmLabel={batchBusy ? "移除中…" : "移除引用"} danger
+        confirmDisabled={batchBusy || !referenceTarget || !canRemoveReference(referenceTarget)}
+        onCancel={() => { if (!batchBusy) setReferenceTarget(null); }} onConfirm={() => void removeReference()}>
+        <p className="text-sm text-muted-foreground">只移除 modelPolicy.allow 中的精确放行及 agents.defaults.models 中的别名/参数。插件与运行时目录中的模型保留，API Key 保留。</p>
       </ConfirmDialog>
 
       <ConfirmDialog

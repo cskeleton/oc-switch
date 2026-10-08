@@ -7,6 +7,8 @@ import {
   createConfigAdapter,
   disableProvider,
   discoverProviderModels,
+  usesNativeModelCatalog,
+  resolveProviderId,
   editProvider,
   mergeProviderCaseDuplicates,
   mergeModelSelectionEntries,
@@ -386,8 +388,12 @@ export function registerProviderCommands(program: Command, context: CommandConte
       const config = context.readConfig();
       const fetchImpl = context.mockSyncFetch();
       const envContent = context.readEnvContent();
+      const resolvedId = resolveProviderId(config, name);
+      const runtimeSnapshot = usesNativeModelCatalog(name, resolvedId ? config.models?.providers?.[resolvedId] : undefined)
+        ? await context.runtimeModelSnapshot() : undefined;
       const result = await discoverProviderModels(config, name, {
         fetchImpl: fetchImpl ?? fetch,
+        ...(runtimeSnapshot ? { runtimeSnapshot } : {}),
         ...(envContent !== undefined ? { envContent } : {})
       });
       if (result.unsupportedReason) {
@@ -403,7 +409,7 @@ export function registerProviderCommands(program: Command, context: CommandConte
         console.log(addedSet.has(model.id) ? `${label} [已添加]` : label);
       }
       console.log(
-        `发现 ${result.remoteModels.length} 个远端模型，其中 ${result.alreadyAddedIds.length} 个已添加`
+        `发现 ${result.remoteModels.length} 个${result.catalogSource === "openclaw-runtime" ? "OpenClaw 目录" : "远端"}模型，其中 ${result.alreadyAddedIds.length} 个已添加`
       );
     });
 

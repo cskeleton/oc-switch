@@ -1,6 +1,7 @@
+import { OperationProgress } from "./OperationProgress";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
-import type { ModelInventoryEntry, ModelPluginDescriptor, PluginStateMutationResult, ProviderInventoryEntry } from "../api";
+import type { ModelInventoryEntry, ModelPluginDescriptor, PluginStateMutationResult, ProviderInventoryEntry, PluginExtensionProvider } from "../api";
 import { DataTable, type Column } from "./DataTable";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { CATALOG_SOURCE_LABELS, AVAILABILITY_REASON_LABELS } from "./ModelStateBadges";
@@ -14,9 +15,11 @@ interface PluginProviderGroupProps {
   forceExpanded?: boolean;
   /** 包括 config 同名来源；不能因其在 config 表中出现而漏报插件影响面。 */
   providers: ProviderInventoryEntry[];
+  extensionProviders?: PluginExtensionProvider[];
+  runtimeReady?: boolean;
   models?: ModelInventoryEntry[];
   onSetPluginState: (pluginId: string, enabled: boolean, cleanupMetadata?: boolean) => Promise<PluginStateMutationResult>;
-  onMutated?: () => void | Promise<void>;
+  onMutated?: (result: PluginStateMutationResult) => void | Promise<void>;
   onOpenSettings?: (() => void) | undefined;
   renderProviderActions?: (provider: ProviderInventoryEntry) => ReactNode;
 }
@@ -29,7 +32,7 @@ const NON_MODEL_CAPABILITY_LABELS: Record<string, string> = {
 };
 
 /** 一个插件一个开关；写入结果和运行时确认独立展示，失败不静默降级。 */
-export function PluginProviderGroup({ plugin, providers, models = [], onSetPluginState, onMutated, onOpenSettings, renderProviderActions, forceExpanded }: PluginProviderGroupProps) {
+export function PluginProviderGroup({ plugin, providers, models = [], onSetPluginState, onMutated, onOpenSettings, renderProviderActions, forceExpanded, extensionProviders = [], runtimeReady = true }: PluginProviderGroupProps) {
   const toast = useToast();
   const [expanded, setExpanded] = useState(false);
   useEffect(() => { if (forceExpanded) setExpanded(true); }, [forceExpanded]);
@@ -88,7 +91,7 @@ export function PluginProviderGroup({ plugin, providers, models = [], onSetPlugi
       if (written.runtimeConfirmed) toast.success(`已${targetLabel}插件 ${plugin.id}`);
       // HTTP 写入成功不能因随后的列表刷新失败而被报告成写入失败。
       try {
-        await onMutated?.();
+        await onMutated?.(written);
       } catch (err) {
         setRefreshError(`配置已写入，但刷新失败：${err instanceof Error ? err.message : String(err)}`);
       }
@@ -116,7 +119,7 @@ export function PluginProviderGroup({ plugin, providers, models = [], onSetPlugi
         ) : null}
         <Switch
           checked={plugin.enabled}
-          disabled={mutating}
+          disabled={mutating || !runtimeReady}
           aria-label={`${plugin.enabled ? "停用" : "启用"}插件 ${plugin.id}`}
           onCheckedChange={checked => { setPendingEnabled(checked); setCleanupMetadata(false); setError(null); setConfirming(true); }}
         />
@@ -124,9 +127,11 @@ export function PluginProviderGroup({ plugin, providers, models = [], onSetPlugi
           <Button variant="outline" size="sm" aria-label={`移出残留模型选项 ${plugin.id}`} onClick={() => { setPendingEnabled(false); setCleanupMetadata(false); setError(null); setConfirming(true); }}>移出残留模型选项</Button>
         ) : null}
       </header>
+      {mutating ? <OperationProgress phase="saving" className="mx-3 mb-3" message="正在校验并保存插件配置…" /> : null}
+      {!runtimeReady ? <p className="px-3 pb-2 text-xs text-muted-foreground">插件目录已读取，在线状态待确认；启停操作等待运行时证据。</p> : null}
       {result && (!result.runtimeConfirmed || result.warnings.length > 0 || result.diagnostics?.length || refreshError) ? (
         <div role="status" className="m-4 space-y-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-warning">
-          {!result.runtimeConfirmed ? <p>已{result.enabled ? "启用" : "停用"}插件 {plugin.id}；运行时状态未能确认，待应用/重启。请到设置中选择运行实例后同步/重启 Gateway，再刷新探测。</p> : null}
+          {!result.runtimeConfirmed ? <p>已{result.enabled ? "启用" : "停用"}插件 {plugin.id}；在线状态待确认。请点击「检查并确认」；若配置仍未生效，可到设置中同步并重启 Gateway。</p> : null}
           <ul className="list-inside list-disc break-words">
             {result.warnings.map((warning, index) => <li key={`warning-${index}`}>{warning}</li>)}
             {result.diagnostics?.map((diagnostic, index) => <li key={`diagnostic-${index}`}>{diagnostic.message}</li>)}
@@ -135,7 +140,11 @@ export function PluginProviderGroup({ plugin, providers, models = [], onSetPlugi
           {!result.runtimeConfirmed && onOpenSettings ? <Button variant="outline" size="sm" onClick={onOpenSettings}>前往设置</Button> : null}
         </div>
       ) : null}
-      {expanded && (plugin.enabled || providers.some(p => p.sources.includes("config"))) ? <div className="border-t border-border px-3 py-2">
+      {expanded && !runtimeReady ? <div className="border-t border-border px-3 py-2"><DataTable rows={extensionProviders} rowKey={row => row.providerId} minWidthClass="min-w-[18rem]" columns={[
+        { key: "providerId", header: "Provider", wrap: "anywhere", render: row => row.providerId },
+        { key: "models", header: "目录模型", wrap: "normal", render: row => <span>{row.models.map(model => model.id).join("、") || "无模型声明"}</span> },
+        { key: "state", header: "在线状态", wrap: "nowrap", render: () => <Pill variant="muted">待确认</Pill> }
+      ]} /></div> : expanded && (plugin.enabled || providers.some(p => p.sources.includes("config"))) ? <div className="border-t border-border px-3 py-2">
         <DataTable columns={columns} rows={plugin.enabled ? providers : providers.filter(p => p.sources.includes("config"))} rowKey={row => row.providerId} defaultSort={{ key: "providerId", dir: "asc" }} minWidthClass="min-w-[18rem] md:min-w-[28rem]" emptyMessage="该插件未贡献任何 Provider" rowClassName={row => (row.disabled ? "opacity-60" : undefined)} />
       </div> : null}
       {expanded ? <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground">{plugin.name ?? plugin.id} · {plugin.origin} · Provider：{plugin.providerIds.join("、")}{plugin.nonModelCapabilities.length ? ` · 还影响 ${plugin.nonModelCapabilities.map(c => NON_MODEL_CAPABILITY_LABELS[c]).join("、")}` : ""}</p> : null}

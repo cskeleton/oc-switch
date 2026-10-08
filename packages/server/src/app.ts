@@ -7,6 +7,7 @@ import { registerGatewayRoutes } from "./routes/gateway";
 import { registerHealthRoutes } from "./routes/health";
 import { registerModelMetadataRoutes } from "./routes/model-metadata";
 import { registerModelInventoryRoutes } from "./routes/model-inventory";
+import { registerModelConfigRoutes } from "./routes/model-config";
 import { registerModelAttentionRoutes } from "./routes/model-attention";
 import { randomUUID } from "node:crypto";
 import { registerModelRoutes } from "./routes/models";
@@ -49,6 +50,7 @@ export function createApp(options: AppOptions) {
   registerModelRoutes(app, runtime);
   registerModelMetadataRoutes(app, runtime);
   registerModelInventoryRoutes(app, runtime);
+  registerModelConfigRoutes(app, runtime);
   app.get("/api/meta", c => c.json(identity));
   registerModelAttentionRoutes(app, runtime);
   registerPluginRoutes(app, runtime);

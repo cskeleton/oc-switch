@@ -673,7 +673,7 @@ describe("server write endpoints", () => {
       .toEqual(["deepseek-ai/deepseek-v4-flash", "z-ai/glm5.1"]);
   });
 
-  test("DELETE /api/models：探测未知不锁死无目录来源的行，仍保护目录条目", async () => {
+  test("DELETE /api/models：本地目录与metadata保存不依赖在线探测，仍由Core校验", async () => {
     const ws = workspace();
     seedDanglingMetadata(ws);
     // 探测不完整 → 所有行 availability = unknown
@@ -683,8 +683,8 @@ describe("server write endpoints", () => {
       method: "DELETE",
       body: JSON.stringify({ ref: "nvidia/z-ai/glm5.1" })
     });
-    expect(blocked.response.status).toBe(400);
-    expect(String(blocked.json.error)).toContain("availability is unknown");
+    expect(blocked.response.status).toBe(200);
+    expect(blocked.json.backupId).toBeTruthy();
 
     const cleaned = await jsonRequest(app, "/api/models", {
       method: "DELETE",
@@ -694,7 +694,7 @@ describe("server write endpoints", () => {
     const config = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
     expect(config.agents.defaults.models["nvidia/ghost/model"]).toBeUndefined();
     expect(config.models.providers.nvidia.models.map((model: { id: string }) => model.id))
-      .toEqual(["deepseek-ai/deepseek-v4-flash", "z-ai/glm5.1"]);
+      .toEqual(["deepseek-ai/deepseek-v4-flash"]);
   });
 
   test("POST /api/providers adds provider from preset without leaking key", async () => {
@@ -4691,19 +4691,18 @@ describe("server policy 规则编辑 endpoints", () => {
 
   test("预检期间 policy 被外部修改：prepare 重做不能绕过旧 expectedRevision（409，无写入、外部状态保留）", async () => {
     const ws = policyEditWorkspace();
-    const base = policyEditRuntimeProvider();
     let fired = false;
-    // 注入缝：第一次探测时模拟外部进程改写 policy（事务预检会检测到文件变化并重做一次）
-    const provider: RuntimeModelCatalogProvider = async (paths) => {
+    // 注入缝：事务关联读取时模拟外部进程改写 policy（事务预检会检测到文件变化并重做一次）
+    const provider: RuntimeDiscoveryProvider = () => {
       if (!fired) {
         fired = true;
         const current = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
         current.agents!.defaults!.modelPolicy!.allow!.push("external/added-rule");
         writeFileSync(ws.paths.openclawPath, `${JSON.stringify(current, null, 2)}\n`);
       }
-      return base(paths);
+      return gatewayRuntimeDiscovery(ws, expectedGatewayEnvPath(ws.dir))();
     };
-    const app = createTestApp(ws, undefined, { runtimeModelCatalogProvider: provider });
+    const app = createTestApp(ws, undefined, { runtimeDiscoveryProvider: provider });
     const staleRevision = revisionFromDisk(ws);
 
     const { response, json } = await jsonRequest(app, "/api/model-policy/rules", {
@@ -4723,19 +4722,18 @@ describe("server policy 规则编辑 endpoints", () => {
 
   test("预检期间无关变化（primary 切换）：revision 不变但保护按事务内最新 config 判定（400，无写入）", async () => {
     const ws = policyEditWorkspace({ allow: ["nvidia/*", "minimax-portal/MiniMax-M3"] });
-    const base = policyEditRuntimeProvider();
     let fired = false;
     // 注入缝：外部只切换主模型到仅由 nvidia/* 覆盖的模型（不触碰 policy → revision 不变）
-    const provider: RuntimeModelCatalogProvider = async (paths) => {
+    const provider: RuntimeDiscoveryProvider = () => {
       if (!fired) {
         fired = true;
         const current = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")) as OpenClawConfig;
         current.agents!.defaults!.model = "nvidia/z-ai/glm5.1";
         writeFileSync(ws.paths.openclawPath, `${JSON.stringify(current, null, 2)}\n`);
       }
-      return base(paths);
+      return gatewayRuntimeDiscovery(ws, expectedGatewayEnvPath(ws.dir))();
     };
-    const app = createTestApp(ws, undefined, { runtimeModelCatalogProvider: provider });
+    const app = createTestApp(ws, undefined, { runtimeDiscoveryProvider: provider });
     // revision 在无关变化前后保持一致（primary 不参与 policy 指纹）
     const revision = revisionFromDisk(ws);
 
@@ -4761,14 +4759,8 @@ describe("server policy 规则编辑 endpoints", () => {
 
   test("PATCH 写后探测失败：配置已保存仍返回 ok:true、runtimeConfirmed:false", async () => {
     const ws = policyEditWorkspace();
-    const base = policyEditRuntimeProvider();
-    let probeCount = 0;
-    // 第一次探测（mutate 前置读取）完整；写入后的确认探测降级为抛错
-    const provider: RuntimeModelCatalogProvider = (paths) => {
-      probeCount += 1;
-      if (probeCount > 1) throw new Error("post-write probe failed");
-      return base(paths);
-    };
+    // 纯规则编辑不再做 runtime 预检；唯一的写后确认探测失败。
+    const provider: RuntimeModelCatalogProvider = () => { throw new Error("post-write probe failed"); };
     const app = createTestApp(ws, undefined, { runtimeModelCatalogProvider: provider });
 
     const { response, json } = await jsonRequest(app, "/api/model-policy/rules", {

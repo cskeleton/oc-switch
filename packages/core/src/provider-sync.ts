@@ -3,6 +3,7 @@ import { normalizeProviderId } from "./model-ref";
 import { providerEnvVar } from "./openclaw-compat";
 import { resolveProviderId } from "./operation-common";
 import type { PluginProvider } from "./plugin-catalog";
+import type { RuntimeModelSnapshot } from "./runtime-model-catalog";
 import type { OpenClawConfig, OpenClawProvider } from "./types";
 
 /** 远端模型条目（发现结果，不写盘） */
@@ -19,6 +20,7 @@ export interface ProviderDiscoverResult {
   truncated: boolean;
   truncationReason?: string;
   unsupportedReason?: string;
+  catalogSource?: "openclaw-runtime";
 }
 
 /** 单次 discover 允许返回的远端模型条数上限 */
@@ -57,6 +59,14 @@ export interface ProviderDiscoverOptions {
   envContent?: string;
   /** 当前插件目录（server/CLI 注入）；用于 config 无可用 Key 时回退 manifest 声明的 env 变量。 */
   pluginProviders?: PluginProvider[];
+  /** 原生 Provider 的公开运行时目录；不读取或转发 OAuth 凭据。 */
+  runtimeSnapshot?: RuntimeModelSnapshot;
+}
+
+/** 原生 OpenAI/Codex 目录使用 OpenClaw 鉴权；显式连接的第三方渠道仍走 HTTP discover。 */
+export function usesNativeModelCatalog(providerId: string, provider: OpenClawProvider | undefined): boolean {
+  const id = normalizeProviderId(providerId);
+  return !!provider && (id === "openai" || id === "openai-codex") && !provider.baseUrl && !provider.apiKey && provider.api === undefined;
 }
 
 /** 基于表单凭证的临时 discover 输入（只读，不写盘） */
@@ -315,6 +325,23 @@ export async function discoverProviderModels(
   const provider = resolvedProviderId ? config.models?.providers?.[resolvedProviderId] : undefined;
   if (!provider) throw new Error(`Provider ${providerId} not found`);
   const canonicalProviderId = normalizeProviderId(resolvedProviderId!);
+
+  if (usesNativeModelCatalog(canonicalProviderId, provider)) {
+    const snapshot = typeof options === "function" ? undefined : options?.runtimeSnapshot;
+    if (!snapshot?.completeness.allList) {
+      return { providerId: canonicalProviderId, remoteModels: [], alreadyAddedIds: [], truncated: false,
+        unsupportedReason: "该 Provider 使用 OpenClaw/Codex 原生鉴权；完整模型目录尚未取得，请检查运行时后重试，无需添加 OPENAI_API_KEY。" };
+    }
+    const seen = new Set<string>();
+    const models = snapshot.allModels.flatMap(entry => {
+      const slash = entry.ref.indexOf("/");
+      const id = entry.ref.slice(slash + 1);
+      if (slash < 1 || normalizeProviderId(entry.ref.slice(0, slash)) !== canonicalProviderId || entry.missing || seen.has(id)) return [];
+      seen.add(id);
+      return [{ id, ...(entry.name ? { name: entry.name } : {}) }];
+    });
+    return { ...buildDiscoverResult(canonicalProviderId, provider, models, false), catalogSource: "openclaw-runtime" };
+  }
 
   const api = provider.api ?? "openai-completions";
   if (api === "google-generative-ai") {

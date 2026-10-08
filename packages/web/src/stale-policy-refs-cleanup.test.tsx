@@ -1,3 +1,4 @@
+import { staticSnapshot, emptyExtensions } from "./test-fixtures";
 import "./test-setup";
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { cleanup, render, waitFor } from "@testing-library/react";
@@ -25,7 +26,7 @@ function baseClient(overrides: Partial<ApiClient> = {}): ApiClient {
     token: "test",
     fetchImpl: async () => new Response(JSON.stringify({ ok: true }), { status: 200 })
   });
-  return { ...client, ...overrides };
+  return { ...client, getModelConfig: async () => staticSnapshot(), getModelExtensions: async () => emptyExtensions(), ...overrides };
 }
 
 const STALE_REFS: StalePolicyRef[] = [
@@ -226,7 +227,7 @@ describe("ModelsView 悬空引用清理入口（stale cleanup spec §6）", () =
     expect(getModelInventory).toHaveBeenCalledTimes(1);
   });
 
-  test("批量清理写后确认失败（inventory 为 {}）：提示保存成功、未取得新视图，不自动 GET 重试", async () => {
+  test("批量清理写后确认失败（inventory 为 {}）：静态保存后提示在线状态待确认，不自动 GET 重试", async () => {
     const getModelInventory = mock(async () => cleanupInventoryFixture());
     const getConfigStatus = mock(async () => configStatusFixture());
     const batchRemoveModelPolicyRules = mock(async () => ({ ok: true as const, removedCount: 2, backupId: "b1", warnings: [], runtimeConfirmed: false, inventory: {} }));
@@ -243,7 +244,7 @@ describe("ModelsView 悬空引用清理入口（stale cleanup spec §6）", () =
     await userEvent.click(getByText("清理所选 (2)"));
 
     await waitFor(() => expect(batchRemoveModelPolicyRules).toHaveBeenCalledTimes(1));
-    expect(await findByText("配置已保存，未取得最新视图；请点击「刷新」重试。")).toBeTruthy();
+    expect(await findByText("本地配置已保存，在线状态待确认")).toBeTruthy();
     // 不自动 GET inventory：后续读取交给用户手动刷新
     expect(getModelInventory).toHaveBeenCalledTimes(1);
   });

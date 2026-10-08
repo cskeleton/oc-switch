@@ -20,7 +20,7 @@ import { ProvidersView } from "./views/ProvidersView";
 import { PresetsView } from "./views/PresetsView";
 import { BackupsView } from "./views/BackupsView";
 import { SettingsView } from "./views/SettingsView";
-import { modelSummary, providerSummary } from "./test-fixtures";
+import { modelSummary, providerSummary, staticSnapshot, staticModel, emptyExtensions } from "./test-fixtures";
 import { GATEWAY_CONFIRM_SYNC_NEXT_STEP_HINT, GATEWAY_RESTART_NEXT_STEP_HINT } from "./env-feedback";
 
 afterEach(() => {
@@ -41,6 +41,14 @@ function mockClient(overrides: Partial<ApiClient> = {}): ApiClient {
   });
   return {
     ...base,
+    getModelConfig: async () => {
+      const providers = overrides.getProviders ? (await overrides.getProviders()).providers : [];
+      const models = overrides.getModels ? (await overrides.getModels()).models : [];
+      const status = overrides.getStatus ? await overrides.getStatus() : undefined;
+      const pluginIds = new Set(providers.filter(provider => provider.source === "plugin").map(provider => provider.id.toLowerCase()));
+      return staticSnapshot({ providers: providers.filter(provider => provider.source === "config"), models: models.filter(model => !pluginIds.has(model.providerId.toLowerCase())).map(model => staticModel(model)), ...(status ? { status } : {}) });
+    },
+    getModelExtensions: async () => emptyExtensions(),
     getModelInventory: async () => inventoryFixture(),
     getModelAttention: async () => ({ pending: [], ignored: [] }),
     ...overrides
@@ -123,7 +131,7 @@ describe("Dashboard", () => {
     expect(await findByText("3")).toBeTruthy();
     expect((await findAllByText("5")).length).toBe(2);
     expect(await findByText("4")).toBeTruthy();
-    expect(await findByText("有效可选模型（受限策略）")).toBeTruthy();
+    expect(await findByText("本地策略允许模型（受限策略）")).toBeTruthy();
     expect(await findByText("传统元数据条目")).toBeTruthy();
   });
 
@@ -381,7 +389,7 @@ describe("ModelsView", () => {
       models: []
     });
 
-    const { findByLabelText, findByRole, findByText, getByText } = renderModelsView(mockClient({ getModelInventory: async () => inventory, getModels: async () => ({ models: [] }), createModel }));
+    const { findByLabelText, findByRole, findByText, getByText } = renderModelsView(mockClient({ getModelInventory: async () => inventory, getProviders: async () => ({ providers: [providerSummary({ id: "nvidia" })] }), getModels: async () => ({ models: [] }), createModel }));
 
     // 空目录的 Provider 不在 IM 选项导航（pickerVisible 无命中）；管理目录视图保留全部 config Provider
     await userEvent.click(await findByText("管理配置目录"));
@@ -530,7 +538,7 @@ describe("ModelsView", () => {
       models: []
     });
 
-    const { findByLabelText, findByText, getByText } = renderModelsView(mockClient({ getModelInventory: async () => inventory, getModels: async () => ({ models: [] }), createModel }));
+    const { findByLabelText, findByText, getByText } = renderModelsView(mockClient({ getModelInventory: async () => inventory, getProviders: async () => ({ providers: [providerSummary({ id: "nvidia" })] }), getModels: async () => ({ models: [] }), createModel }));
 
     // 空目录的 Provider 不在 IM 选项导航；管理目录视图保留全部 config Provider
     await userEvent.click(await findByText("管理配置目录"));
@@ -591,7 +599,7 @@ describe("ModelsView", () => {
         expect(await findByText("通配覆盖")).toBeTruthy();
       } else {
         // exact 行无通配提示（提示文案只属于通配覆盖行）
-        expect(await findByLabelText("刷新探测")).toBeTruthy();
+        expect(await findByLabelText("检查并确认")).toBeTruthy();
       }
     });
   }
@@ -616,7 +624,7 @@ describe("ProvidersView", () => {
     // 挂起中的旧读取（慢轮），随后紧跟一轮拿到新数据的刷新
     await userEvent.click(getByRole("button", { name: "刷新" }));
     expect(calls).toBe(2);
-    await userEvent.click(getByRole("button", { name: "刷新" }));
+    await userEvent.click(getByRole("button", { name: "检查并确认" }));
     await findByText("https://new.invalid/v1");
 
     releaseSlow(oldList);
@@ -625,17 +633,16 @@ describe("ProvidersView", () => {
     expect(await findByText("https://new.invalid/v1")).toBeTruthy();
   });
 
-  test("首轮加载显示「正在加载服务商…」,期间不渲染表格,完成后切换为内容", async () => {
+  test("首轮静态服务商先显示，运行时延迟只显示独立检查提示", async () => {
     let release!: (value: ModelInventory) => void;
     const gate = new Promise<ModelInventory>((resolve) => { release = resolve; });
     const getModelInventory = mock(() => gate);
     const getProviders = mock(async () => ({ providers: [providerSummary({ id: "nvidia" })] }));
     const { findByText, queryByText } = renderProvidersView(mockClient({ getModelInventory, getProviders }));
 
-    expect(await findByText("正在加载服务商…")).toBeTruthy();
-    // 加载中不渲染表格/空态,避免把「读取中」误显为「暂无 Provider」
+    expect(await findByText("nvidia")).toBeTruthy();
+    expect(await findByText("正在检查 OpenClaw / Gateway…")).toBeTruthy();
     expect(queryByText("暂无 Provider")).toBeNull();
-    expect(queryByText("nvidia")).toBeNull();
 
     release(inventoryFixture());
     await waitFor(() => expect(queryByText("正在加载服务商…")).toBeNull());
@@ -2516,15 +2523,7 @@ describe("App shell", () => {
   });
 
   test("defaults API address to browser origin and keeps presets after main operating pages", async () => {
-    const fetchMock = mock(async () =>
-      new Response(JSON.stringify({
-        ok: true, protocolVersion: 2,
-        primaryModel: "minimax-portal/MiniMax-M3",
-        providerCount: 1,
-        providerModelCount: 1,
-        allowlistModelCount: 1
-      }), { headers: { "content-type": "application/json" } })
-    );
+    const fetchMock = okStatusFetch();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
     try {
       const disconnected = render(<App />);
@@ -2534,7 +2533,7 @@ describe("App shell", () => {
       window.sessionStorage.setItem("oc-switch-token", "token");
       const connected = render(<App />);
       await connected.findByText("minimax-portal/MiniMax-M3");
-      await connected.findByText("没有可比较备份");
+      await connected.findByText("与最近备份无差异");
       const navLabels = Array.from(connected.container.querySelectorAll("aside nav button")).map((button) =>
         button.textContent?.trim()
       );
@@ -2662,6 +2661,9 @@ describe("App shell", () => {
       // O1：写后由页面自行刷新一轮——/api/meta 不得再次请求（不重建连接、不重跑握手）；
       // 每个必要读端点相对基线至多新增一次（一轮刷新），不得出现第二轮重复读取
       expect(counts["/api/meta"]).toBe(baseline["/api/meta"]);
+      expect(counts["/api/model-inventory"]).toBe(baseline["/api/model-inventory"]);
+      expect(counts["/api/model-attention"]).toBe(baseline["/api/model-attention"]);
+      expect(counts["/api/model-extensions"]).toBe(baseline["/api/model-extensions"]);
       for (const endpoint of Object.keys(counts)) {
         expect(counts[endpoint]).toBeLessThanOrEqual((baseline[endpoint] ?? 0) + 1);
       }
@@ -2702,7 +2704,7 @@ describe("App shell", () => {
     }
   });
 
-  test("手动登录只用一次 /api/meta 握手；Dashboard 只读取其需要的一次 /api/status（登录计数）", async () => {
+  test("手动登录只用一次 /api/meta 握手；Dashboard 首屏只取一次model-config不取status（登录计数）", async () => {
     // review O1 遗漏回归：旧路径 getStatus 登录 + effect meta + Dashboard status 共计 status=2/meta=1
     const counts: Record<string, number> = {};
     globalThis.fetch = countingFetchRouter(counts) as unknown as typeof fetch;
@@ -2714,7 +2716,8 @@ describe("App shell", () => {
       // 等一拍：旧实现会在登录后由 effect 再补发一次握手请求，给这些 effect 落定时间
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 200)); });
       expect(counts["/api/meta"]).toBe(1);
-      expect(counts["/api/status"]).toBe(1);
+      expect(counts["/api/status"] ?? 0).toBe(0);
+      expect(counts["/api/model-config"]).toBe(1);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -2730,18 +2733,16 @@ function rememberedLogin(token: string) {
 
 /** App shell 用的宽松 fetch mock：所有请求都返回可渲染的 status 载荷 */
 function okStatusFetch() {
-  return mock(async () =>
-    new Response(
-      JSON.stringify({
-        ok: true, protocolVersion: 2,
-        primaryModel: "minimax-portal/MiniMax-M3",
-        providerCount: 1,
-        providerModelCount: 1,
-        allowlistModelCount: 1
-      }),
-      { headers: { "content-type": "application/json" } }
-    )
-  );
+  const router = countingFetchRouter({});
+  return mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(String(input)).pathname === "/api/model-config") {
+      return new Response(JSON.stringify(staticSnapshot({ status: {
+        primaryModel: "minimax-portal/MiniMax-M3", providerCount: 1, providerModelCount: 1,
+        allowlistModelCount: 1, modelPolicyMode: "restricted", effectiveModelCount: 1
+      } })), { headers: { "content-type": "application/json" } });
+    }
+    return router(input, init);
+  });
 }
 
 /**
@@ -2759,6 +2760,10 @@ function countingFetchRouter(counts: Record<string, number>, flags: { nvidiaDisa
     switch (url.pathname) {
       case "/api/meta":
         return json({ protocolVersion: 2, instanceId: "fixture", startedAt: "2026-09-26T00:00:00Z" });
+      case "/api/model-extensions":
+        return json(emptyExtensions());
+      case "/api/model-config":
+        return json(staticSnapshot({ providers: [providerSummary({ id: "nvidia", disabled: flags.nvidiaDisabled })], models: [staticModel({ ref: "nvidia/m" })], status: { primaryModel: "nvidia/m", providerCount: 1, providerModelCount: 1, allowlistModelCount: 1, modelPolicyMode: "restricted", effectiveModelCount: 1 } }));
       case "/api/status":
         return json({ ok: true, primaryModel: "nvidia/m", providerCount: 1, providerModelCount: 1, allowlistModelCount: 1, modelPolicyMode: "restricted", effectiveModelCount: 1 });
       case "/api/diff":
@@ -3272,7 +3277,7 @@ describe("ModelDialog 参考参数建议", () => {
       models: []
     });
 
-    const { findByLabelText, findByText, findByRole } = renderModelsView(mockClient({ getModelInventory: async () => inventory, getModels: async () => ({ models: [] }), getModelMetadataSuggestions }));
+    const { findByLabelText, findByText, findByRole } = renderModelsView(mockClient({ getModelInventory: async () => inventory, getProviders: async () => ({ providers: [providerSummary({ id: "nvidia" })] }), getModels: async () => ({ models: [] }), getModelMetadataSuggestions }));
 
     // 空目录的 Provider 不在 IM 选项导航；管理目录视图保留全部 config Provider
     await userEvent.click(await findByRole("button", { name: "管理配置目录" }));
@@ -3590,6 +3595,12 @@ describe("插件 Provider 的 Web 呈现", () => {
 
   function pluginClient(overrides: Partial<ApiClient> & Pick<ApiClient, "getProviders">): ApiClient {
     return mockClient({
+      getModelExtensions: async () => {
+        const { providers } = await overrides.getProviders();
+        const plugins = providers.filter(provider => provider.source === "plugin");
+        return { ...emptyExtensions(), plugins: plugins.map(provider => ({ id: provider.id, origin: "bundled", enabled: !provider.disabled, providerIds: [provider.id], nonModelCapabilities: [] })),
+          providers: plugins.map(provider => ({ pluginId: provider.id, providerId: provider.id, origin: "bundled", enabled: !provider.disabled, models: [], apiKeyEnvVars: provider.apiKeyEnv ? [provider.apiKeyEnv] : [] })) };
+      },
       getModelInventory: async () => {
         const { providers } = await overrides.getProviders();
         const data = legacyAsInventory({ providers, models: [] });
@@ -3783,7 +3794,7 @@ describe("插件 Provider 的 Web 呈现", () => {
           open
           provider={rows[0]!}
           providers={rows}
-          client={mockClient({ getModels, removeDanglingModelMetadata })}
+          client={mockClient({ getModelConfig: async () => staticSnapshot({ providers: rows, models: [staticModel({ ref: "cpa/mira/k3", name: "Mira Kimi K3" }), staticModel({ ref: "cpa/mira/kimi-k3", alias: "mira-k3" }, { catalogConfigured: false, capabilities: { canSetPrimary: false, canTogglePolicy: false, canEditCatalogEntry: false, canRemoveCatalogEntry: false } })] }), getModels, removeDanglingModelMetadata })}
           inventoryModels={inventoryModels}
           onCancel={() => {}}
           onChanged={() => {}}
@@ -3796,7 +3807,7 @@ describe("插件 Provider 的 Web 呈现", () => {
     // 只有真实目录行显示「已启用」，悬空行不显示
     expect(queryAllByText("已启用")).toHaveLength(1);
     // 目录删除入口不给悬空行；普通目录行不受影响
-    expect(queryByLabelText("删除模型 cpa/mira/kimi-k3")).toBeNull();
+    expect(queryByLabelText("删除模型 cpa/mira/kimi-k3") === null).toBe(true);
     expect(queryByLabelText("删除模型 cpa/mira/k3")).toBeTruthy();
 
     await userEvent.click(await findByLabelText("清理残留引用 cpa/mira/kimi-k3"));
@@ -3812,6 +3823,7 @@ describe("插件 Provider 的 Web 呈现", () => {
     const providers = [providerSummary({ id: "cpa" })];
     const removeDanglingModelMetadata = mock(async () => ({ ok: true, ref, warnings: [] }));
     const client = mockClient({
+      getModelConfig: async () => staticSnapshot({ providers, models: [staticModel({ ref }, { catalogConfigured: false, capabilities: { canSetPrimary: false, canTogglePolicy: false, canEditCatalogEntry: false, canRemoveCatalogEntry: false } })] }),
       getModels: async () => ({ models: [modelSummary({ ref })] }),
       removeDanglingModelMetadata
     });
@@ -4239,7 +4251,7 @@ describe("PluginProviderGroup", () => {
     await userEvent.click(getByText("确认"));
 
     // 写入已成功：不报错，而是提示运行时未确认
-    expect(await findByText(/已停用插件 xiaomi-miot；运行时状态未能确认/)).toBeTruthy();
+    expect(await findByText(/已停用插件 xiaomi-miot；在线状态待确认/)).toBeTruthy();
   });
 });
 
@@ -4608,6 +4620,8 @@ describe("ProvidersView（插件分组）", () => {
   /** ProvidersView 页面级 client：inventory 驱动插件分组 + 兼容期端点（config CRUD / 健康检查）全量 mock */
   function pluginGroupClient(overrides: Partial<ApiClient> = {}): ApiClient {
     return mockClient({
+      getModelExtensions: async () => ({ ...emptyExtensions(), plugins: pluginGroupInventoryFixture().plugins,
+        providers: ["xiaomi", "xiaomi-token-plan"].map(providerId => ({ pluginId: "xiaomi-miot", providerId, origin: "npm-global", enabled: true, models: [], apiKeyEnvVars: ["XIAOMI_MIOT_API_KEY"] })) }),
       getProviders: async () => ({
         providers: [
           providerSummary({ id: "nvidia", modelCount: 2, enabledModelCount: 2 }),
@@ -4696,8 +4710,11 @@ describe("ProvidersView（插件分组）", () => {
     await userEvent.click(await findByLabelText(/停用插件 xiaomi-miot/));
     await userEvent.click(getByText("确认"));
 
-    // 写入已成功：不报错，而是提示运行时未确认
-    expect(await findByText(/已停用插件 xiaomi-miot；运行时状态未能确认/)).toBeTruthy();
+    // 保存后立即更新插件配置态：停用组移到已停用列表，在线状态仍待确认。
+    await waitFor(() => expect(setPluginState).toHaveBeenCalledWith("xiaomi-miot", false));
+    expect((await screen.findAllByText("本地配置已保存，在线状态待确认")).length).toBeGreaterThan(0);
+    await userEvent.click(await screen.findByRole("tab", { name: /已停用/ }));
+    expect(await findByLabelText(/启用插件 xiaomi-miot/)).toBeTruthy();
   });
 
   test("插件停用后 Provider 行展示插件来源与不可用状态，不与 oc-switch 可逆关闭混用", async () => {
@@ -4715,7 +4732,7 @@ describe("ProvidersView（插件分组）", () => {
         : model
     );
     const { findAllByText, findByLabelText, queryByText, getByRole } = renderProvidersView(
-      pluginGroupClient({ getModelInventory: async () => inventory })
+      pluginGroupClient({ getModelInventory: async () => inventory, getModelExtensions: async () => ({ ...emptyExtensions(), plugins: inventory.plugins, providers: [] }) })
     );
     await userEvent.click(getByRole("tab", { name: /已停用/ }));
 
@@ -4846,7 +4863,7 @@ describe("布局验证（Step 6）", () => {
 
     // 页面渲染完成：直接等模型行内容出现（加载提示出现后表格才渲染，别用壳元素当就绪信号）
     await findByText(/deepseek-v4-flash-with-a-very-long-model-name/);
-    await findByLabelText("刷新探测");
+    await findByLabelText("检查并确认");
     const section = getByTestId("models-view");
     // happy-dom 不做真实排版，但可断言结构性约束：
     // 1. 长 ref 单元格使用 break-all（wrap: anywhere）而非 nowrap
@@ -4866,7 +4883,7 @@ describe("布局验证（Step 6）", () => {
 
   test("模型问题不再渲染全量待处理表格", async () => {
     const { queryByTestId, findByLabelText } = renderModelsView(mockClient({ getModelInventory: async () => longRefInventoryFixture() }));
-    await findByLabelText("刷新探测");
+    await findByLabelText("检查并确认");
     expect(queryByTestId("pending-models-panel") === null).toBe(true);
   });
 
@@ -4898,4 +4915,37 @@ describe("布局验证（Step 6）", () => {
       expect(await findAllByText(capability).then((nodes) => nodes.length)).toBeGreaterThan(0);
     }
   });
+});
+
+describe("attention 动作的独立刷新责任", () => {
+  for (const action of ["ignore", "disable"] as const) {
+    test(`Dashboard attention ${action} 不重读inventory/extensions/attention`, async () => {
+      const issue: ModelAttentionIssue = {
+        id: "model:idle/one:unavailable", revision: "v1", kind: "unavailable",
+        ownerType: "model", ownerId: "idle/one", providerIds: ["idle"], refs: ["idle/one"],
+        protectedRefs: [], title: "idle 模型不可用", detail: "可移出精确规则", canIgnore: true, canDisable: true
+      };
+      const getModelInventory = mock(async () => legacyAsInventory({ providers: [], models: [] }));
+      const getModelAttention = mock(async (): Promise<ModelAttentionReport> => ({ pending: [issue], ignored: [] }));
+      const getModelExtensions = mock(async () => emptyExtensions());
+      const getModelConfig = mock(async () => staticSnapshot());
+      const setAttentionIgnored = mock(async (): Promise<ModelAttentionReport> => ({ pending: [], ignored: [issue] }));
+      const removeModelPolicyExactRef = mock(async () => ({ ok: true as const, ref: "idle/one", backupId: "b1", runtimeConfirmed: false, onlineStatusPending: true }));
+      const view = render(<Dashboard client={mockClient({ getModelConfig, getModelInventory, getModelAttention, getModelExtensions, setAttentionIgnored, removeModelPolicyExactRef })} />);
+      await userEvent.click(await view.findByRole("button", { name: "需处理 1" }));
+      await userEvent.click(await view.findByRole("button", { name: "处理问题 idle/one" }));
+      await userEvent.click(await view.findByRole("button", { name: action === "ignore" ? "本问题不再提醒" : "不再使用，保留 Key" }));
+      if (action === "ignore") {
+        await view.findByRole("button", { name: "已忽略 1" });
+        expect(setAttentionIgnored).toHaveBeenCalledWith(issue, true);
+      } else {
+        await view.findByText("配置已保存，在线状态待确认");
+        await waitFor(() => expect(getModelConfig).toHaveBeenCalledTimes(2));
+        expect(removeModelPolicyExactRef).toHaveBeenCalledWith("idle/one", false);
+      }
+      expect(getModelInventory).toHaveBeenCalledTimes(1);
+      expect(getModelExtensions).toHaveBeenCalledTimes(1);
+      expect(getModelAttention).toHaveBeenCalledTimes(1);
+    });
+  }
 });

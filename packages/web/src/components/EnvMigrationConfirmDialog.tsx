@@ -1,3 +1,4 @@
+import { OperationProgress } from "./OperationProgress";
 import { Button } from "./ui/button";
 import {
   Dialog,
@@ -10,6 +11,7 @@ import {
 
 interface EnvMigrationConfirmDialogProps {
   open: boolean;
+  busy?: boolean;
   warnings: string[];
   confirmMigration?: boolean;
   confirmComplex?: boolean;
@@ -22,6 +24,7 @@ interface EnvMigrationConfirmDialogProps {
 /** Settings 与 Provider 流程共用的 env 迁移确认弹窗（Radix Dialog） */
 export function EnvMigrationConfirmDialog({
   open,
+  busy = false,
   warnings,
   confirmMigration,
   confirmComplex,
@@ -31,7 +34,7 @@ export function EnvMigrationConfirmDialog({
   children
 }: EnvMigrationConfirmDialogProps) {
   return (
-    <Dialog open={open} onOpenChange={(val) => { if (!val) onCancel(); }}>
+    <Dialog open={open} onOpenChange={(val) => { if (!val && !busy) onCancel(); }}>
       <DialogContent className="max-w-md" aria-label={title}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
@@ -51,11 +54,12 @@ export function EnvMigrationConfirmDialog({
           </ul>
         ) : null}
         {children}
+        {busy ? <OperationProgress phase="saving" /> : null}
         <DialogFooter>
-          <Button variant="outline" onClick={onCancel}>
+          <Button variant="outline" disabled={busy} onClick={onCancel}>
             取消
           </Button>
-          <Button onClick={onConfirm}>确认</Button>
+          <Button disabled={busy} onClick={onConfirm}>{busy ? "保存中…" : "确认"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

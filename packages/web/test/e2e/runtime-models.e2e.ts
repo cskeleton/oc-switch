@@ -84,6 +84,14 @@ async function readInventory(page: Page): Promise<ModelInventory> {
   return response.json();
 }
 
+/** 保存只更新本地配置；在线模型/规则计数由用户显式检查后更新。 */
+async function confirmRuntime(page: Page) {
+  const response = page.waitForResponse(result => new URL(result.url()).pathname === "/api/model-inventory/refresh" && result.request().method() === "POST");
+  await page.getByRole("button", { name: "检查并确认", exact: true }).click();
+  expect((await response).ok()).toBe(true);
+  await expect(page.getByText("正在检查 OpenClaw / Gateway…", { exact: true })).toHaveCount(0);
+}
+
 async function restoreFixture(page: Page, backupId: string) {
   const restored = await page.request.post(`${BASE_URL}/api/backups/${encodeURIComponent(backupId)}/restore`, { headers: fixtureHeaders, data: {} });
   expect(restored.ok(), "必须还原本用例写入前的 fixture").toBe(true);
@@ -344,7 +352,8 @@ test.describe("Runtime model inventory（统一 inventory 浏览器实测）", (
       expect(disabled.ok()).toBe(true);
       const written = await disabled.json() as PluginStateMutationResult;
       backupId = written.backupId;
-      expect(written.runtimeConfirmed).toBe(true);
+      expect(written.runtimeConfirmed).toBe(false);
+      expect((await disabled.request().postDataJSON()).confirmRuntime).toBe(false);
       await expect(page.getByRole("switch", { name: "启用插件 xiaomi", exact: true })).toHaveCount(0);
       const stopped = await readInventory(page);
       expect(stopped.policyRules.map(rule => rule.value)).toEqual(before.policyRules.map(rule => rule.value).filter(ref => !ref.startsWith("xiaomi/") && !ref.startsWith("xiaomi-token-plan/")));
@@ -353,6 +362,7 @@ test.describe("Runtime model inventory（统一 inventory 浏览器实测）", (
         expect(stopped.models.filter(model => model.providerId === providerId).every(model => !model.needsAttention && !model.pickerVisible)).toBe(true);
       }
       await page.getByRole("tab", { name: /^已停用/ }).click();
+      await confirmRuntime(page);
       await expect(page.getByRole("switch", { name: "启用插件 xiaomi", exact: true })).toBeVisible();
       // 未启用组只展示插件管理入口，不要求用户逐条处理模型。
       for (const providerId of xiaomi.providerIds) {
@@ -364,6 +374,7 @@ test.describe("Runtime model inventory（统一 inventory 浏览器实测）", (
       await page.getByRole("dialog").getByRole("button", { name: "确认", exact: true }).click();
       expect((await enabledResponse).ok()).toBe(true);
       await page.getByRole("tab", { name: "当前使用", exact: true }).click();
+      await confirmRuntime(page);
       await expect(page.getByRole("switch", { name: "停用插件 xiaomi", exact: true })).toBeVisible();
       await page.getByRole("button", { name: "展开插件 xiaomi", exact: true }).click();
       for (const providerId of xiaomi.providerIds) {
@@ -402,8 +413,7 @@ test.describe("Runtime model inventory（统一 inventory 浏览器实测）", (
       backupId = (await deleted.json() as { backupId: string }).backupId;
       await expect(page.getByRole("dialog")).toHaveCount(0);
       await expect(page.getByTestId("models-view").getByText(ref, { exact: true })).toHaveCount(0);
-      await page.getByRole("button", { name: "刷新探测", exact: true }).click();
-      await expect(page.getByText("已重新探测运行时模型状态", { exact: true })).toBeVisible();
+      await confirmRuntime(page);
       await expect(page.getByRole("button", { name: `处理 ${ref}`, exact: true })).toHaveCount(0);
       const after = await readInventory(page);
       expect(after.models.some(model => model.ref === ref)).toBe(false);
@@ -448,6 +458,9 @@ test.describe("Runtime model inventory（统一 inventory 浏览器实测）", (
       await expect(page.getByText(`已添加精确规则 ${newRule}（只改 modelPolicy.allow）`, { exact: true })).toBeVisible();
       await expect(policy.getByText(newRule, { exact: true })).toBeVisible();
 
+      // 保存后只显示静态规则；在线命中计数由显式检查补充。
+      await confirmRuntime(page);
+
       // 服务端 inventory 回读：新规则追加，既有规则原样保留
       const after = await readInventory(page);
       expect(after.policyRules.length).toBe(before.policyRules.length + 1);
@@ -480,6 +493,7 @@ test.describe("Runtime model inventory（统一 inventory 浏览器实测）", (
       const policy = page.getByRole("region", { name: "Policy 规则", exact: true });
 
       // removable wildcard 行提供删除入口；确认框展示命中计数与影响文案（2026-09-16 起统一走纯规则删除端点）
+      await confirmRuntime(page);
       const removeButton = policy.getByRole("button", { name: "删除规则 nvidia/*", exact: true });
       await removeButton.scrollIntoViewIfNeeded();
       await removeButton.click();
@@ -502,6 +516,9 @@ test.describe("Runtime model inventory（统一 inventory 浏览器实测）", (
       await expect(policy.getByText("nvidia/*", { exact: true })).toHaveCount(0);
       const after = await readInventory(page);
       expect(after.policyRules.map(rule => rule.value)).toEqual(before.policyRules.map(rule => rule.value).filter(value => value !== "nvidia/*"));
+
+      // 本地删除先更新静态规则；用户显式检查后再展示在线命中计数。
+      await confirmRuntime(page);
 
       // 删除后 Policy 表自身不横滚（沿用既有断言模式；桌面 + 手机 project 各跑一遍）
       await page.getByRole("button", { name: "删除规则 ghost-provider/policy-only-model", exact: true }).scrollIntoViewIfNeeded();
@@ -560,6 +577,8 @@ test.describe("Runtime model inventory（统一 inventory 浏览器实测）", (
       expect(after.policyRules.some(candidate => candidate.value === newRule && candidate.kind === "exact")).toBe(true);
       expect(after.policyRules.some(candidate => candidate.value === oldRule)).toBe(false);
       expect(after.policyRules.length).toBe(before.policyRules.length);
+
+      await confirmRuntime(page);
 
       // 编辑后 Policy 表自身不横滚（桌面 + 手机 project 各跑一遍）
       await page.getByRole("button", { name: `删除规则 ${newRule}`, exact: true }).scrollIntoViewIfNeeded();

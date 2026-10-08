@@ -60,6 +60,13 @@ e2eConfig.agents!.defaults!.modelPolicy = {
     "xiaomi/mi-1"
   ]
 };
+// 针对原生鉴权与运行时引用的专项浏览器夹具，不改变普通 E2E 数据集。
+if (process.env.E2E_PROVIDER_FIXES === "1") {
+  e2eConfig.models!.providers!.openai = { models: [{ id: "native-seed" }] };
+  e2eConfig.models!.providers!.opencode = { baseUrl: "https://opencode.fixture.example/v1", api: "openai-completions", models: [{ id: "big-pickle" }] };
+  e2eConfig.agents!.defaults!.models!["opencode/omen-alpha"] = {};
+  e2eConfig.agents!.defaults!.modelPolicy!.allow!.push("opencode/omen-alpha");
+}
 writeFileSync(openclawPath, `${JSON.stringify(e2eConfig, null, 2)}\n`);
 const customDir = join(stateDir, "presets", "custom");
 mkdirSync(customDir, { recursive: true });
@@ -125,6 +132,10 @@ function buildE2eRuntimeSnapshot(): RuntimeModelSnapshot {
   ]);
   const allModels = [
     ...configEntries, ...pluginEntries,
+    ...(process.env.E2E_PROVIDER_FIXES === "1" ? [
+      { ref: "openai/native-extra", available: true, tags: [] },
+      { ref: "opencode/omen-alpha", available: true, tags: [] }
+    ] : []),
     { ref: "nvidia/vendor/runtime-extra", available: true, tags: [] }
   ];
   const catalogRefs = new Set(allModels.map(entry => normalizeModelRefForIdentity(entry.ref)));

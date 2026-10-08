@@ -1,6 +1,8 @@
 import {
   addModelPolicyRule,
   assertModelPolicyRevision,
+  buildModelInventory,
+  normalizeProviderId,
   materializeRuntimeModel,
   normalizeModelRefForStorage,
   removeModelPolicyExactRef,
@@ -9,15 +11,17 @@ import {
   removeModelPolicyWildcard,
   replaceModelPolicyRule,
   writeOpenClawTransaction,
+  type OpenClawConfig,
   type OcSwitchPaths
 } from "@oc-switch/core";
 import type { Hono } from "hono";
-import { assertProviderCanEnable, type AppRuntime } from "../context";
+import { assertProviderCanEnable, emptyRuntimeSnapshot, readDisabledProviderIds, type AppRuntime } from "../context";
 import { jsonError } from "../errors";
 import {
   requireAddModelPolicyRuleInput,
   requireBatchRemoveModelPolicyRulesInput,
   requireJsonObject,
+  requireBooleanDefault,
   requireMaterializeModelInput,
   requireRemoveModelPolicyRuleInput,
   requireRemoveModelPolicyWildcardInput,
@@ -60,12 +64,14 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
    * 写入已成功时绝不把确认失败伪装成整体失败：
    * `ok: true, runtimeConfirmed: false, diagnostics: [...]`。
    */
-  async function postWriteConfirmation(paths: OcSwitchPaths): Promise<{
+  async function postWriteConfirmation(paths: OcSwitchPaths, confirmRuntime: boolean): Promise<{
     runtimeConfirmed: boolean;
+    onlineStatusPending?: boolean;
     diagnostics: { command: string; code: string; message: string }[];
-    inventory: Record<string, unknown>;
+    inventory?: Record<string, unknown>;
   }> {
     runtime.invalidateCatalogCaches();
+    if (!confirmRuntime) return { runtimeConfirmed: false, onlineStatusPending: true, diagnostics: [] };
     let inventory;
     try { inventory = await runtime.buildCurrentInventory({ refresh: true, paths }); }
     catch { return { runtimeConfirmed: false, diagnostics: [{ command: "status", code: "invalid-shape", message: "Write succeeded; runtime confirmation failed" }], inventory: {} }; }
@@ -79,9 +85,23 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
     };
   }
 
+
+  async function policyCatalog(config: OpenClawConfig, values: string[], paths: OcSwitchPaths) {
+    const configIds = Object.keys(config.models?.providers ?? {});
+    const knownConfigIds = new Set(configIds.map(normalizeProviderId));
+    const needsPlugins = values.some(value => !knownConfigIds.has(normalizeProviderId(value.trim().split("/")[0] ?? "")));
+    const pluginProviders = needsPlugins ? await runtime.currentPluginProviders({ paths }) : [];
+    return {
+      knownProviderIds: [...configIds, ...pluginProviders.map(provider => provider.providerId)],
+      // 这里只消费 models 的 ref 生成规则 warning；空 snapshot 绝不作为写入可用性证据。
+      inventory: buildModelInventory({ config, pluginProviders, disabledProviderIds: readDisabledProviderIds(paths), runtime: emptyRuntimeSnapshot() })
+    };
+  }
+
   app.delete("/api/model-policy/exact-ref", async (c) => {
     try {
       const body = await requireJsonObject(c.req);
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       const parsed = requireRemovePolicyExactRefInput(body);
       // warnings 在 mutate 内捕获后经闭包透出（事务只落盘 config）
       const paths = runtime.currentPaths();
@@ -92,8 +112,6 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
         reason: `remove policy exact ref ${parsed.ref}`,
         normalizeConfig: false,
         async mutate(config) {
-          const inventory = await runtime.buildCurrentInventory({ refresh: true, config, paths });
-          const entry = inventory.models.find(model => normalizeModelRefForStorage(model.ref) === normalizeModelRefForStorage(parsed.ref));
           // 精确引用停用只减少选择范围；保护与最后一条规则校验由 Core 执行，不依赖在线可用性。
           const operation = removeModelPolicyExactRef(config, parsed.ref, {
             ...(parsed.removeMetadata === undefined ? {} : { removeMetadata: parsed.removeMetadata })
@@ -102,7 +120,7 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
           return operation.config;
         }
       });
-      const confirmation = await postWriteConfirmation(paths);
+      const confirmation = await postWriteConfirmation(paths, confirmRuntime);
       return c.json({
         ok: true,
         ref: parsed.ref,
@@ -119,6 +137,7 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
   app.post("/api/model-policy/rules", async (c) => {
     try {
       const body = await requireJsonObject(c.req);
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       const parsed = requireAddModelPolicyRuleInput(body);
       // warnings 在 mutate 内捕获后经闭包透出（事务只落盘 config）
       const paths = runtime.currentPaths();
@@ -130,16 +149,14 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
         reason: `add model policy rule ${parsed.rule}`,
         normalizeConfig: false,
         async mutate(config) {
-          const inventory = await runtime.buildCurrentInventory({ refresh: true, config, paths });
-          const operation = addModelPolicyRule(config, parsed.rule, {
-            knownProviderIds: inventory.providers.map((provider) => provider.providerId)
-          });
+          const catalog = await policyCatalog(config, [parsed.rule], paths);
+          const operation = addModelPolicyRule(config, parsed.rule, { knownProviderIds: catalog.knownProviderIds });
           capturedWarnings = operation.warnings;
           stored = { rule: operation.rule, kind: operation.kind };
           return operation.config;
         }
       });
-      const confirmation = await postWriteConfirmation(paths);
+      const confirmation = await postWriteConfirmation(paths, confirmRuntime);
       return c.json({
         ok: true,
         rule: stored!.rule,
@@ -157,6 +174,7 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
   app.delete("/api/model-policy/wildcard", async (c) => {
     try {
       const body = await requireJsonObject(c.req);
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       const parsed = requireRemoveModelPolicyWildcardInput(body);
       // warnings 在 mutate 内捕获后经闭包透出（事务只落盘 config）
       const paths = runtime.currentPaths();
@@ -168,14 +186,14 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
         reason: `remove model policy wildcard ${parsed.value}`,
         normalizeConfig: false,
         async mutate(config) {
-          const inventory = await runtime.buildCurrentInventory({ refresh: true, config, paths });
+          const { inventory } = await policyCatalog(config, [parsed.value], paths);
           const operation = removeModelPolicyWildcard(config, parsed.value, { inventory });
           capturedWarnings = operation.warnings;
           removedCount = operation.removedCount;
           return operation.config;
         }
       });
-      const confirmation = await postWriteConfirmation(paths);
+      const confirmation = await postWriteConfirmation(paths, confirmRuntime);
       return c.json({
         ok: true,
         value: parsed.value,
@@ -197,6 +215,7 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
   app.patch("/api/model-policy/rules", async (c) => {
     try {
       const body = await requireJsonObject(c.req);
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       const parsed = requireReplaceModelPolicyRuleInput(body);
       // warnings 在 mutate 内捕获后经闭包透出（事务只落盘 config）
       const paths = runtime.currentPaths();
@@ -209,17 +228,14 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
         normalizeConfig: false,
         async mutate(config) {
           assertModelPolicyRevision(config, parsed.expectedRevision);
-          const inventory = await runtime.buildCurrentInventory({ refresh: true, config, paths });
-          const operation = replaceModelPolicyRule(config, parsed.value, parsed.rule, {
-            knownProviderIds: inventory.providers.map((provider) => provider.providerId),
-            inventory
-          });
+          const { inventory, knownProviderIds } = await policyCatalog(config, [parsed.value, parsed.rule], paths);
+          const operation = replaceModelPolicyRule(config, parsed.value, parsed.rule, { knownProviderIds, inventory });
           capturedWarnings = operation.warnings;
           stored = { rule: operation.rule, kind: operation.kind, replacedCount: operation.replacedCount };
           return operation.config;
         }
       });
-      const confirmation = await postWriteConfirmation(paths);
+      const confirmation = await postWriteConfirmation(paths, confirmRuntime);
       return c.json({
         ok: true,
         rule: stored!.rule,
@@ -241,6 +257,7 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
   app.delete("/api/model-policy/rules", async (c) => {
     try {
       const body = await requireJsonObject(c.req);
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       const parsed = requireRemoveModelPolicyRuleInput(body);
       // warnings 在 mutate 内捕获后经闭包透出（事务只落盘 config）
       const paths = runtime.currentPaths();
@@ -253,14 +270,14 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
         normalizeConfig: false,
         async mutate(config) {
           assertModelPolicyRevision(config, parsed.expectedRevision);
-          const inventory = await runtime.buildCurrentInventory({ refresh: true, config, paths });
+          const { inventory } = await policyCatalog(config, [parsed.value], paths);
           const operation = removeModelPolicyRule(config, parsed.value, { inventory });
           capturedWarnings = operation.warnings;
           removedCount = operation.removedCount;
           return operation.config;
         }
       });
-      const confirmation = await postWriteConfirmation(paths);
+      const confirmation = await postWriteConfirmation(paths, confirmRuntime);
       return c.json({
         ok: true,
         value: parsed.value,
@@ -283,9 +300,11 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
   app.post("/api/model-policy/rules/batch-remove", async (c) => {
     try {
       const body = await requireJsonObject(c.req);
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       const parsed = requireBatchRemoveModelPolicyRulesInput(body);
       const paths = runtime.currentPaths();
       if (parsed.values.length === 0) {
+        if (!confirmRuntime) return c.json({ ok: true, removedCount: 0, backupId: null, warnings: [], runtimeConfirmed: false, onlineStatusPending: true, diagnostics: [] });
         // 空批量删除：no-op、无备份；需要 inventory 时读正常缓存（暖缓存下不新增探测）
         const inventory = await runtime.buildCurrentInventory({ paths });
         const snapshot = await runtime.currentRuntimeModelSnapshot({ paths });
@@ -310,14 +329,14 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
         normalizeConfig: false,
         async mutate(config) {
           assertModelPolicyRevision(config, parsed.expectedRevision);
-          const inventory = await runtime.buildCurrentInventory({ refresh: true, config, paths });
+          const { inventory } = await policyCatalog(config, parsed.values, paths);
           const operation = removeModelPolicyRules(config, parsed.values, { inventory });
           capturedWarnings = operation.warnings;
           removedCount = operation.removedCount;
           return operation.config;
         }
       });
-      const confirmation = await postWriteConfirmation(paths);
+      const confirmation = await postWriteConfirmation(paths, confirmRuntime);
       return c.json({
         ok: true,
         removedCount,
@@ -333,6 +352,7 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
   app.post("/api/models/materialize", async (c) => {
     try {
       const body = await requireJsonObject(c.req);
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       const parsed = requireMaterializeModelInput(body);
       // inventory entry 由 server 端按 ref 从当前 inventory 取，不信客户端的可用性断言；
       // operation 自身会重新校验（availability / provider / 目录冲突）
@@ -354,7 +374,7 @@ export function registerModelInventoryRoutes(app: Hono, runtime: AppRuntime): vo
           return operation.config;
         }
       });
-      const confirmation = await postWriteConfirmation(paths);
+      const confirmation = await postWriteConfirmation(paths, confirmRuntime);
       return c.json({
         ok: true,
         ref: parsed.ref,

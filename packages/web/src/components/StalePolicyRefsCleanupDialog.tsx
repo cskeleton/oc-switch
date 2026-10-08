@@ -1,3 +1,4 @@
+import { OperationProgress } from "./OperationProgress";
 import { useEffect, useState } from "react";
 import { ApiRequestError, inventoryFromWriteResponse, isPolicyRevisionConflict, type ApiClient, type ModelInventory } from "../api";
 import { ConfirmDialog } from "./ConfirmDialog";

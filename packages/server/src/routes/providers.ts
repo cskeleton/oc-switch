@@ -8,6 +8,8 @@ import {
   disableProvider,
   discoverProviderModels,
   discoverProviderModelsFromCredentials,
+  usesNativeModelCatalog,
+  resolveProviderId,
   editProvider,
   inspectEnvFile,
   inspectGatewayServiceEnvKeyStates,
@@ -17,7 +19,6 @@ import {
   mergeProviderCaseDuplicates,
   mergeModelSelectionEntries,
   migrateProviderSecretRefs,
-  normalizeModelRefForStorage,
   normalizeProviderId,
   planProviderModelMetadataSync,
   previewEnvUpdates,
@@ -54,6 +55,7 @@ import {
   requireBatchRemoveProviderModelsInput,
   requireApiType,
   requireBoolean,
+  requireBooleanDefault,
   requireCustomProviderInput,
   requireProviderDiscoverPreviewInput,
   requireMergeCaseDuplicateInput,
@@ -166,9 +168,13 @@ async function handleProviderDiscover(c: Context, runtime: AppRuntime) {
   // 注入当前插件目录：config 条目缺 Key 时回退同名插件 manifest 声明的 env 变量；
   // currentPluginProviders 内部对目录探测失败降级为空结果，不抛错
   const pluginProviders = await runtime.currentPluginProviders();
+  const resolvedId = resolveProviderId(config, providerId);
+  const runtimeSnapshot = usesNativeModelCatalog(providerId, resolvedId ? config.models?.providers?.[resolvedId] : undefined)
+    ? await runtime.currentRuntimeModelSnapshot() : undefined;
   const discoverResult = await discoverProviderModels(config, providerId, {
     fetchImpl: runtime.fetchImpl,
     pluginProviders,
+    ...(runtimeSnapshot ? { runtimeSnapshot } : {}),
     ...(envContent !== undefined ? { envContent } : {})
   });
   if (discoverResult.unsupportedReason) {
@@ -187,6 +193,7 @@ async function handleProviderDiscover(c: Context, runtime: AppRuntime) {
     remoteModels: discoverResult.remoteModels,
     alreadyAddedIds: discoverResult.alreadyAddedIds,
     truncated: discoverResult.truncated,
+    ...(discoverResult.catalogSource ? { catalogSource: discoverResult.catalogSource } : {}),
     ...(discoverResult.truncationReason !== undefined
       ? { truncationReason: discoverResult.truncationReason }
       : {})
@@ -213,6 +220,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
   app.post("/api/providers/secret-ref-migrations", async (c) => {
     try {
       const body = await c.req.json() as Record<string, unknown>;
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       if (body.confirm !== true) throw new Error("SecretRef migration requires explicit confirmation");
       if (!Array.isArray(body.providerIds) || body.providerIds.length === 0) {
         throw new Error("providerIds must be a non-empty array");
@@ -241,6 +249,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       runtime.invalidateCatalogCaches();
       return c.json({
         ok: true,
+        ...(confirmRuntime ? {} : { onlineStatusPending: true, runtimeConfirmed: false }),
         migratedProviderIds: providerIds,
         backupId: result.backupDir.split("/").pop(),
         gatewayRestartRequired: true
@@ -287,6 +296,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
   app.post("/api/providers", async (c) => {
     try {
       const body = await c.req.json();
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       const presetId = requireString(body.presetId, "presetId");
       const apiKey = requireString(body.apiKey, "apiKey");
       const models = Array.isArray(body.models)
@@ -310,6 +320,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       runtime.invalidateCatalogCaches();
       return c.json({
         ok: true,
+        ...(confirmRuntime ? {} : { onlineStatusPending: true, runtimeConfirmed: false }),
         backupId: result.backupDir.split("/").pop(),
         ...(result.envWrite ? { envWrite: result.envWrite } : {}),
         ...(result.gatewayEnvSync ? { gatewayEnvSync: result.gatewayEnvSync } : {})
@@ -357,6 +368,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
   app.post("/api/providers/custom", async (c) => {
     try {
       const body = await c.req.json() as Record<string, unknown>;
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       const input = requireCustomProviderInput(body);
       const apiKey = requireString(body.apiKey, "apiKey");
       const result = await writeOpenClawTransaction({
@@ -385,6 +397,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       runtime.invalidateCatalogCaches();
       return c.json({
         ok: true,
+        ...(confirmRuntime ? {} : { onlineStatusPending: true, runtimeConfirmed: false }),
         backupId: result.backupDir.split("/").pop(),
         ...(result.envWrite ? { envWrite: result.envWrite } : {}),
         ...(result.gatewayEnvSync ? { gatewayEnvSync: result.gatewayEnvSync } : {})
@@ -441,6 +454,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
   app.post("/api/providers/merge-case-duplicates", async (c) => {
     try {
       const body = await c.req.json() as Record<string, unknown>;
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       const input = requireMergeCaseDuplicateInput(body);
       let warnings: string[] = [];
       const result = await writeOpenClawTransaction({
@@ -459,7 +473,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
         }
       });
       runtime.invalidateCatalogCaches();
-      return c.json({ ok: true, warnings, backupId: result.backupDir.split("/").pop() });
+      return c.json({ ok: true, ...(confirmRuntime ? {} : { onlineStatusPending: true, runtimeConfirmed: false }), warnings, backupId: result.backupDir.split("/").pop() });
     } catch (error) {
       return jsonError(c, error);
     }
@@ -469,6 +483,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
     try {
       const providerId = c.req.param("id");
       const body = await c.req.json() as Record<string, unknown>;
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       const enabled = requireBoolean(body.enabled, "enabled");
       const paths = runtime.currentPaths();
 
@@ -511,9 +526,10 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
         runtime.invalidateCatalogCaches();
         return c.json({
           ok: true,
+          ...(confirmRuntime ? {} : { onlineStatusPending: true, runtimeConfirmed: false }),
           providerId,
           enabled: false,
-          runtimeConfirmed: await confirmProviderVisibility(runtime, paths, providerId, false),
+          runtimeConfirmed: confirmRuntime ? await confirmProviderVisibility(runtime, paths, providerId, false) : false,
           disabledModelCount: disabledState?.policyEntries.length ?? 0,
           backupId: result.backupDir.split("/").pop()
         });
@@ -539,9 +555,10 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       runtime.invalidateCatalogCaches();
       return c.json({
         ok: true,
+        ...(confirmRuntime ? {} : { onlineStatusPending: true, runtimeConfirmed: false }),
         providerId,
         enabled: true,
-        runtimeConfirmed: await confirmProviderVisibility(runtime, paths, providerId, true),
+        runtimeConfirmed: confirmRuntime ? await confirmProviderVisibility(runtime, paths, providerId, true) : false,
         restoredModelCount: Object.keys(snapshot.allowlistEntries).length,
         backupId: result.backupDir.split("/").pop()
       });
@@ -576,6 +593,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
     try {
       const providerId = c.req.param("id");
       const body = await c.req.json();
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       const envUpdates: Record<string, string> = {};
       if (body.apiKey !== undefined) {
         const config = readConfig(runtime.currentPaths());
@@ -608,6 +626,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       runtime.invalidateCatalogCaches();
       return c.json({
         ok: true,
+        ...(confirmRuntime ? {} : { onlineStatusPending: true, runtimeConfirmed: false }),
         backupId: result.backupDir.split("/").pop(),
         ...(result.envWrite ? { envWrite: result.envWrite } : {}),
         ...(result.gatewayEnvSync ? { gatewayEnvSync: result.gatewayEnvSync } : {})
@@ -621,6 +640,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
     try {
       const providerId = c.req.param("id");
       const body = await c.req.json().catch(() => ({}));
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       const removeOptions: { force: boolean; newPrimary?: string; removePolicyWildcard?: boolean } = {
         force: Boolean(body.force)
       };
@@ -651,7 +671,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
         }
       });
       runtime.invalidateCatalogCaches();
-      return c.json({ ok: true, warnings, backupId: result.backupDir.split("/").pop() });
+      return c.json({ ok: true, ...(confirmRuntime ? {} : { onlineStatusPending: true, runtimeConfirmed: false }), warnings, backupId: result.backupDir.split("/").pop() });
     } catch (error) {
       return jsonError(c, error);
     }
@@ -677,6 +697,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
     try {
       const providerId = c.req.param("id");
       const body = await c.req.json() as Record<string, unknown>;
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       const input = requireBatchAddProviderModelsInput(body);
       const paths = runtime.currentPaths();
       // disable 状态下整单拒绝，即使 enable 为 false
@@ -697,6 +718,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       runtime.invalidateCatalogCaches();
       return c.json({
         ok: true,
+        ...(confirmRuntime ? {} : { onlineStatusPending: true, runtimeConfirmed: false }),
         addedModelIds,
         skippedModelIds,
         enabled: input.enable,
@@ -711,6 +733,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
     try {
       const providerId = c.req.param("id");
       const body = await c.req.json() as Record<string, unknown>;
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       const input = requireBatchRemoveProviderModelsInput(body);
       const paths = runtime.currentPaths();
       let removedModelIds: string[] = [];
@@ -720,14 +743,8 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `batch-remove models for provider ${providerId}`,
         async mutate(config) {
-          const inventory = await runtime.buildCurrentInventory({ refresh: true, config, paths });
+          // 此入口只删除本地 models.providers 条目；primary/fallback 与策略保护由 Core 校验。
           const batch = batchRemoveProviderModels(config, providerId, input);
-          // 仅校验本次确实会删除的模型，不能因未选中的 unknown 行锁死整份目录。
-          for (const modelId of batch.removedModelIds) {
-            const ref = normalizeModelRefForStorage(`${providerId}/${modelId}`);
-            const entry = inventory.models.find(model => normalizeModelRefForStorage(model.ref) === ref);
-            if (!entry || entry.availability === "unknown") throw new Error("Runtime model availability is unknown; refresh before cleaning its catalog entry.");
-          }
           removedModelIds = batch.removedModelIds;
           warnings = batch.warnings;
           return batch.config;
@@ -736,6 +753,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       runtime.invalidateCatalogCaches();
       return c.json({
         ok: true,
+        ...(confirmRuntime ? {} : { onlineStatusPending: true, runtimeConfirmed: false }),
         removedModelIds,
         warnings,
         backupId: result.backupDir.split("/").pop()
@@ -749,6 +767,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
     try {
       const providerId = c.req.param("id");
       const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       const input = requireSyncModelMetadataInput(body);
       const paths = runtime.currentPaths();
       // 纯元数据回填：已禁用 Provider 也允许（不触碰启用态，与批量删除同理）
@@ -781,6 +800,7 @@ export function registerProviderRoutes(app: Hono, runtime: AppRuntime): void {
       }
       return c.json({
         ok: true,
+        ...(confirmRuntime ? {} : { onlineStatusPending: true, runtimeConfirmed: false }),
         providerId: plan.providerId,
         updated,
         queued: plan.queued.map((item) => ({ modelId: item.modelId, candidateCount: item.candidates.length })),

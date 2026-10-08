@@ -2491,7 +2491,8 @@ describe("cli 运行时模型管理（inventory / reconcile / plugin）", () => 
       expect(config.agents!.defaults!.modelPolicy!.allow).toContain("external/added-rule");
       expect(config.agents!.defaults!.modelPolicy!.allow).toContain("nvidia/*");
       expect(existsSync(join(stateDir, "backups"))).toBe(false);
-      process.exitCode = previousExitCode;
+      // Bun 将 undefined 赋回 exitCode 时不会清掉 1，独立运行该文件会误报测试失败。
+      process.exitCode = previousExitCode ?? 0;
     });
   });
 

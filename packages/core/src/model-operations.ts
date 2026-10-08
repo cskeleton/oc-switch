@@ -98,9 +98,14 @@ export function setPrimaryModel(
   return { config, warnings: [] };
 }
 
-export function disableModel(config: OpenClawConfig, ref: string): OperationResult {
+/** 显式停用与编辑表单的 enabled:false 共用 primary/fallback 保护，先于任何 mutation。 */
+function assertProtectedModelCanDisable(config: OpenClawConfig, ref: string): void {
   if (isPrimaryModelRef(config, ref)) throw new Error(`Model ${ref} is the primary model; switch primary before disabling it.`);
   assertFallbackRemovalAllowed(config, ref);
+}
+
+export function disableModel(config: OpenClawConfig, ref: string): OperationResult {
+  assertProtectedModelCanDisable(config, ref);
   assertNoPolicyWildcardForRef(config, ref, "disable");
   assertPolicyExactRefsRemovalAllowed(config, [ref], "disable", ref);
   ensureDefaults(config);
@@ -243,6 +248,8 @@ export function updateProviderModel(config: OpenClawConfig, ref: string, input: 
   if (input.id !== modelId && models.some((model) => model.id === input.id)) {
     throw new Error(`Model ${nextRef} already exists`);
   }
+  // 编辑中的停用与单模型开关保持一致，不能移出 primary/fallback 的选择规则。
+  if (!input.enabled) assertProtectedModelCanDisable(config, ref);
   // 改名会使旧 ref 从目录消失：若被 fallbacks 引用则拒绝（先于任何 mutation）
   if (input.id !== modelId) {
     assertFallbackRemovalAllowed(config, ref);

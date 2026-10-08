@@ -40,7 +40,7 @@ export default defineConfig({
     {
       command: `bun run --cwd packages/web preview --port ${webPort} --strictPort`,
       port: webPort,
-      env: { VITE_PROXY_TARGET: apiUrl },
+      env: { VITE_PROXY_TARGET: apiUrl, ...(process.env.OC_SWITCH_WEB_DIST ? { OC_SWITCH_WEB_DIST: process.env.OC_SWITCH_WEB_DIST } : {}) },
       reuseExistingServer: false,
       timeout: 60_000
     }

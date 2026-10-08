@@ -9,6 +9,8 @@ const proxyTarget = process.env.VITE_PROXY_TARGET ?? "http://127.0.0.1:7420";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   build: {
+    // 隔离验证可构建到临时目录，避免更新常驻 serve 正在使用的 dist 指纹。
+    outDir: process.env.OC_SWITCH_WEB_DIST ?? "dist",
     rollupOptions: {
       output: {
         // vendor 分包：框架与组件库独立缓存，业务 chunk 随路由按需加载

@@ -1,7 +1,9 @@
+import { runtimeConfirmationIssue } from "../api";
+import { OperationProgress } from "../components/OperationProgress";
 import { ModelAttentionPanel } from "../components/ModelAttentionPanel";
 import { Box, Cpu, ListChecks, RefreshCw, Star } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ApiClient, CaseDuplicateGroup, ConfigDiffSummary, ConfigHealthReport, ModelAttentionReport, StatusResponse, ModelInventory } from "../api";
+import type { ApiClient, CaseDuplicateGroup, ConfigDiffSummary, ConfigHealthReport, ModelAttentionReport, StatusResponse, ModelInventory, PluginExtensionsSnapshot } from "../api";
 import { countDiffChangelogEntries, DiffChangelog } from "../components/DiffChangelog";
 import { MergeCaseDuplicateDialog } from "../components/MergeCaseDuplicateDialog";
 import { PageHeader } from "../components/PageHeader";
@@ -23,6 +25,13 @@ const modelPolicyModeLabels = {
 
 /** 仪表盘：当前主模型与统计概览 */
 export function Dashboard({ client, onConfigureProvider }: DashboardProps) {
+  const [extensions, setExtensions] = useState<PluginExtensionsSnapshot | null>(null);
+  const [extensionsLoading, setExtensionsLoading] = useState(false);
+  const [extensionsError, setExtensionsError] = useState<string | null>(null);
+  const [runtimeLoading, setRuntimeLoading] = useState(false);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [onlinePending, setOnlinePending] = useState(false);
   const [inventory, setInventory] = useState<ModelInventory | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [diff, setDiff] = useState<ConfigDiffSummary | null>(null);
@@ -36,68 +45,102 @@ export function Dashboard({ client, onConfigureProvider }: DashboardProps) {
 
   /** 每轮携带递增序号，迟到的旧响应不得覆盖更新的页面结果 */
   const loadSeq = useRef(0);
-  const load = useCallback(async (presetInventory?: ModelInventory) => {
-    const seq = ++loadSeq.current;
+  const loadStatic = useCallback(async (seq: number) => {
     setLoading(true);
     setError(null);
-    setDiffUnavailable(false);
     try {
-      // presetInventory：消费 attention 面板回传的重探测 inventory，该端点本轮不再 GET
-      const [statusResult, diffResult, healthResult, inventoryResult, attentionResult] = await Promise.allSettled([
-        client.getStatus(),
-        client.getDiff(),
-        client.getHealth(),
-        presetInventory ? Promise.resolve(presetInventory) : client.getModelInventory(),
-        client.getModelAttention()
-      ]);
+      const snapshot = await client.getModelConfig();
       if (seq !== loadSeq.current) return;
-      if (statusResult.status === "fulfilled") {
-        setStatus(statusResult.value);
-      } else {
-        throw statusResult.reason;
-      }
-      if (diffResult.status === "fulfilled" && isConfigDiffSummary(diffResult.value)) {
-        setDiff(diffResult.value);
-      } else {
-        setDiff(null);
-        setDiffUnavailable(true);
-      }
-      if (inventoryResult.status === "fulfilled") setInventory(inventoryResult.value);
-      else setError(inventoryResult.reason instanceof Error ? inventoryResult.reason.message : "模型状态未确认");
-      setHealth(healthResult.status === "fulfilled" ? healthResult.value : null);
-      // 问题列表与 inventory 同轮并行读取；attention 每轮只读一次
-      if (attentionResult.status === "fulfilled" && isAttentionReport(attentionResult.value)) {
-        setAttention(attentionResult.value);
-        setAttentionError(null);
-      } else if (attentionResult.status === "fulfilled") {
-        setAttentionError("提醒协议不兼容，请重启服务。");
-      } else {
-        setAttentionError(attentionResult.reason instanceof Error ? attentionResult.reason.message : "无法读取问题状态");
-      }
+      setStatus({ ok: true, ...snapshot.status });
     } catch (err) {
-      if (seq !== loadSeq.current) return;
-      setError(err instanceof Error ? err.message : "加载失败");
+      if (seq === loadSeq.current) setError(err instanceof Error ? err.message : "本地配置读取失败");
     } finally {
       if (seq === loadSeq.current) setLoading(false);
     }
+    const [diffResult, healthResult] = await Promise.allSettled([client.getDiff(), client.getHealth()]);
+    if (seq !== loadSeq.current) return;
+    setDiff(diffResult.status === "fulfilled" && isConfigDiffSummary(diffResult.value) ? diffResult.value : null);
+    setDiffUnavailable(diffResult.status === "rejected" || !isConfigDiffSummary(diffResult.value));
+    setHealth(healthResult.status === "fulfilled" ? healthResult.value : null);
   }, [client]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const loadExtensions = useCallback(async (seq: number) => {
+    setExtensionsLoading(true);
+    setExtensionsError(null);
+    try {
+      const next = await client.getModelExtensions();
+      if (seq === loadSeq.current) setExtensions(next);
+    } catch (err) {
+      if (seq === loadSeq.current) setExtensionsError(err instanceof Error ? err.message : "插件目录读取失败");
+    } finally {
+      if (seq === loadSeq.current) setExtensionsLoading(false);
+    }
+  }, [client]);
+
+  const loadRuntime = useCallback(async (seq: number, preset?: ModelInventory, force = false) => {
+    setRuntimeLoading(true);
+    setRuntimeError(null);
+    try {
+      const next = preset ?? await (force ? client.refreshModelInventory() : client.getModelInventory());
+      if (seq !== loadSeq.current) return;
+      setInventory(next);
+      const confirmationIssue = runtimeConfirmationIssue(next);
+      setOnlinePending(confirmationIssue !== null);
+      setRuntimeError(confirmationIssue);
+      const report = await client.getModelAttention().catch(err => { if (seq === loadSeq.current) setAttentionError(err instanceof Error ? err.message : "无法读取问题状态"); return null; });
+      if (!report) return;
+      if (seq !== loadSeq.current) return;
+      if (isAttentionReport(report)) { setAttention(report); setAttentionError(null); }
+      else setAttentionError("提醒协议不兼容，请重启服务。");
+    } catch (err) {
+      if (seq === loadSeq.current) setRuntimeError(err instanceof Error ? err.message : "模型状态未确认");
+    } finally {
+      if (seq === loadSeq.current) setRuntimeLoading(false);
+    }
+  }, [client]);
+
+  const load = useCallback(async (preset?: ModelInventory) => {
+    const seq = ++loadSeq.current;
+    await Promise.all([loadStatic(seq), loadExtensions(seq), loadRuntime(seq, preset)]);
+  }, [loadStatic, loadExtensions, loadRuntime]);
+
+  async function checkRuntime() {
+    if (confirming) return;
+    setConfirming(true);
+    const seq = ++loadSeq.current;
+    setLoading(false);
+    setExtensionsLoading(false);
+    try { await Promise.all([loadStatic(seq), loadExtensions(seq), loadRuntime(seq, undefined, true)]); }
+    finally { if (seq === loadSeq.current) setConfirming(false); }
+  }
+
+  function saved() {
+    const seq = ++loadSeq.current;
+    setInventory(null);
+    setRuntimeLoading(false);
+    setExtensionsLoading(false);
+    setRuntimeError(null);
+    setOnlinePending(true);
+    void loadStatic(seq);
+  }
+
+  useEffect(() => { void load(); return () => { loadSeq.current += 1; }; }, [load]);
 
   return (
     <section data-testid="dashboard-view">
       <PageHeader
         title="仪表盘"
         actions={
-          <Button variant="outline" size="icon" aria-label="刷新" onClick={() => void load()}>
+          <>
+          <Button variant="outline" size="sm" disabled={confirming} onClick={() => void checkRuntime()}>{confirming ? "检查中…" : "检查并确认"}</Button>
+          <Button variant="outline" size="icon" aria-label="刷新" disabled={loading || confirming} onClick={() => void load()}>
             <RefreshCw className="h-4 w-4" />
           </Button>
+          </>
         }
       />
 
-      {loading ? (
+      {loading && !status ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4" aria-label="加载中">
           <Skeleton className="h-24 sm:col-span-2 lg:col-span-4" />
           <Skeleton className="h-24" />
@@ -109,7 +152,11 @@ export function Dashboard({ client, onConfigureProvider }: DashboardProps) {
       ) : null}
       {error ? <p className="text-sm font-medium text-destructive">{error}</p> : null}
 
-      <div className="mb-4"><ModelAttentionPanel client={client} inventory={inventory} report={attention} loadError={attentionError} onChanged={(next) => void load(next)} onConfigure={onConfigureProvider} /></div>
+      <div className="mb-4 space-y-2">
+        <OperationProgress phase={runtimeLoading ? "checking-runtime" : onlinePending ? "partial" : runtimeError ? "error" : inventory ? "success" : "idle"} message={runtimeError ? `运行时未确认：${runtimeError}` : undefined} />
+        <OperationProgress phase={extensionsLoading ? "loading-plugin" : extensionsError ? "error" : "idle"} message={extensionsError ? `插件目录未取得：${extensionsError}` : undefined} />
+        {extensions ? <p className="text-xs text-muted-foreground">插件目录：{extensions.plugins.length} 个插件 · {extensions.providers.length} 个 Provider{extensions.diagnostics.length ? `；${extensions.diagnostics.join("；")}` : ""}</p> : null}
+        <ModelAttentionPanel client={client} inventory={inventory} report={attention} onReport={setAttention} onSaved={async (result) => { saved(); }} loadError={attentionError} onChanged={(next) => void load(next)} onConfigure={onConfigureProvider} /></div>
       {status ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {/* 主模型独占首行，四个统计卡在第二行 */}
@@ -117,7 +164,7 @@ export function Dashboard({ client, onConfigureProvider }: DashboardProps) {
           <StatCard label="Provider 数量" value={String(status.providerCount)} icon={Box} />
           <StatCard label="Provider 模型" value={String(status.providerModelCount)} icon={Cpu} />
           <StatCard
-            label={`有效可选模型（${modelPolicyModeLabels[status.modelPolicyMode]}）`}
+            label={`本地策略允许模型（${modelPolicyModeLabels[status.modelPolicyMode]}）`}
             value={String(status.effectiveModelCount)}
             icon={ListChecks}
           />
@@ -136,7 +183,7 @@ export function Dashboard({ client, onConfigureProvider }: DashboardProps) {
         group={mergeTarget}
         client={client}
         onCancel={() => setMergeTarget(null)}
-        onMerged={() => { setMergeTarget(null); void load(); }}
+        onMerged={() => { setMergeTarget(null); saved(); }}
       />
     </section>
   );

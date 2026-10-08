@@ -1,3 +1,4 @@
+import { OperationProgress } from "./OperationProgress";
 import { ChevronDown, ChevronRight, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { ApiClient, ProviderSummary, RemoteModelInfo } from "../api";
@@ -55,6 +56,7 @@ export function ProviderDiscoverDialog({
   onAdded
 }: ProviderDiscoverDialogProps) {
   const [loading, setLoading] = useState(false);
+  const [catalogSource, setCatalogSource] = useState<"openclaw-runtime" | undefined>();
   const [error, setError] = useState<string | null>(null);
   const [unsupportedReason, setUnsupportedReason] = useState<string | null>(null);
   const [remoteModels, setRemoteModels] = useState<RemoteModelInfo[]>([]);
@@ -68,6 +70,7 @@ export function ProviderDiscoverDialog({
 
   function resetSession() {
     setLoading(false);
+    setCatalogSource(undefined);
     setError(null);
     setUnsupportedReason(null);
     setRemoteModels([]);
@@ -91,6 +94,7 @@ export function ProviderDiscoverDialog({
     setSelectedIds(new Set());
     try {
       const result = await client.discoverProvider(provider.id);
+      setCatalogSource(result.catalogSource);
       if (result.unsupportedReason) {
         setUnsupportedReason(result.unsupportedReason);
         return;
@@ -177,7 +181,7 @@ export function ProviderDiscoverDialog({
   }
 
   function handleOpenChange(val: boolean) {
-    if (!val) onCancel();
+    if (!val && !submitting) onCancel();
   }
 
   if (!provider) return null;
@@ -188,7 +192,7 @@ export function ProviderDiscoverDialog({
         <DialogHeader>
           <DialogTitle>发现模型 — {provider.id}</DialogTitle>
           <DialogDescription>
-            从远端拉取模型目录，勾选后添加到本地配置。关闭弹窗将丢弃本次列表。
+            {catalogSource === "openclaw-runtime" ? "读取 OpenClaw 原生模型目录，沿用 Codex/OAuth 登录，无需 API Key；目录条目不等于账号调用权限。" : "从远端拉取模型目录，勾选后添加到本地配置。"}关闭弹窗将丢弃本次列表。
           </DialogDescription>
         </DialogHeader>
 
@@ -198,6 +202,8 @@ export function ProviderDiscoverDialog({
           </p>
         ) : null}
 
+        {submitting ? <OperationProgress phase="saving" /> : null}
+        {loading ? <OperationProgress phase="checking-runtime" message="正在读取远端模型目录…" /> : null}
         {error ? <p className="text-sm text-destructive font-medium">{error}</p> : null}
 
         {loading ? (
@@ -307,7 +313,7 @@ export function ProviderDiscoverDialog({
             </p>
           ) : null}
           <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={onCancel}>
+            <Button variant="outline" disabled={submitting} onClick={onCancel}>
               关闭
             </Button>
             <Button disabled={!canSubmit} onClick={() => void handleSubmit()}>

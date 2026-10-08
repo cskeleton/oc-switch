@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import JSON5 from "json5";
 import { Hono } from "hono";
-import { upsertDisabledProviderState, type OcSwitchPaths, type OpenClawConfig, type PluginCatalogResult, type RuntimeModelSnapshot } from "@oc-switch/core";
+import { buildModelPolicyRevision, upsertDisabledProviderState, type OcSwitchPaths, type OpenClawConfig, type PluginCatalogResult, type RuntimeModelSnapshot } from "@oc-switch/core";
 import { createApp } from "../src/app";
 import { createAppRuntime, type AppOptions } from "../src/context";
 import { registerModelRoutes } from "../src/routes/models";
@@ -233,30 +233,27 @@ describe("runtime review: direct HTTP writes", () => {
 
   for (const availability of ["unavailable", "unknown"] as const) {
     for (const action of ["enable", "use", "disable"] as const) {
-      test(`${action} cannot bypass ${availability} with a known static model`, async () => {
+      test(`${action} saves a local catalog model despite ${availability} runtime`, async () => {
         const ws = fixture();
         const runtime = snapshot(false);
         if (availability === "unknown") runtime.completeness.allList = false;
         const app = createApp(appOptions(ws.paths, { runtimeModelCatalogProvider: () => runtime }));
-        const before = readFileSync(ws.paths.openclawPath, "utf8");
         const result = action === "use"
           ? await request(app, "/api/models/primary", "PUT", { ref: "cpa/local" })
           : await request(app, "/api/models", "PATCH", { ref: "cpa/local", enabled: action === "enable" });
-        expect(result.response.status).toBe(400);
-        expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
-        expect(backups(ws.paths)).toEqual([]);
+        expect(result.response.status).toBe(200);
+        expect(result.json.backupId).toBeTruthy();
+        expect(backups(ws.paths)).toHaveLength(1);
       });
     }
   }
 
   for (const action of ["enable", "use"] as const) {
-    test(`${action} rechecks disabled providers after fresh runtime discovery`, async () => {
+    test(`${action} rejects a disabled config provider without runtime discovery`, async () => {
       const ws = fixture();
-      const app = createApp(appOptions(ws.paths, { runtimeModelCatalogProvider: () => {
-        upsertDisabledProviderState(ws.paths.stateDir, { providerId: "cpa", openclawPath: ws.paths.openclawPath,
-          disabledAt: "2026-09-11T00:00:00Z", allowlistEntries: {} });
-        return snapshot();
-      } }));
+      upsertDisabledProviderState(ws.paths.stateDir, { providerId: "cpa", openclawPath: ws.paths.openclawPath,
+        disabledAt: "2026-09-11T00:00:00Z", allowlistEntries: {} });
+      const app = createApp(appOptions(ws.paths, { runtimeModelCatalogProvider: () => { throw new Error("must not probe"); } }));
       const before = readFileSync(ws.paths.openclawPath, "utf8");
       const result = action === "use"
         ? await request(app, "/api/models/primary", "PUT", { ref: "cpa/local" })
@@ -505,21 +502,19 @@ test("HTTP exact-ref deletion cannot empty restricted policy or clean metadata o
 });
 
 for (const action of ["delete", "edit", "batch-remove", "keep-enabled-only"] as const) {
-  test(`legacy HTTP ${action} cannot clean or edit unknown catalog entries`, async () => {
+  test(`HTTP ${action} saves local catalog changes without runtime evidence`, async () => {
     const ws = fixture();
     ws.config.models!.providers!.cpa!.models!.push({ id: "orphan" });
     writeFileSync(ws.paths.openclawPath, JSON.stringify(ws.config));
     const runtime = snapshot(false);
     runtime.completeness.allList = false;
     const app = createApp(appOptions(ws.paths, { runtimeModelCatalogProvider: () => runtime }));
-    const before = readFileSync(ws.paths.openclawPath, "utf8");
     const result = action === "delete" ? await request(app, "/api/models", "DELETE", { ref: "cpa/local", force: true })
       : action === "edit" ? await request(app, "/api/models", "PUT", { ref: "cpa/local", model: { id: "local", name: "Changed", enabled: true } })
       : await request(app, "/api/providers/cpa/models/batch-remove", "POST", action === "batch-remove" ? { modelIds: ["local"] } : { keepEnabledOnly: true });
-    expect(result.response.status).toBe(400);
-    expect(String(result.json.error)).toContain("unknown");
-    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
-    expect(backups(ws.paths)).toEqual([]);
+    expect(result.response.status).toBe(200);
+    expect(result.json.backupId).toBeTruthy();
+    expect(backups(ws.paths)).toHaveLength(1);
   });
 }
 
@@ -544,7 +539,7 @@ test("unknown runtime does not lock Provider connection repair", async () => {
 });
 
 for (const action of ["exact", "materialize", "plugin"] as const) {
-  test(`HTTP ${action} reruns runtime/descriptor preflight when Core retries a changed config`, async () => {
+  test(`HTTP ${action} reruns transaction validation when Core retries a changed config`, async () => {
     const ws = fixture();
     let calls = 0;
     const extra: Partial<AppOptions> = action === "plugin" ? {
@@ -554,12 +549,22 @@ for (const action of ["exact", "materialize", "plugin"] as const) {
         return { providers: [], diagnostics: [], plugins: [{ id: "example", origin: "bundled", enabled: true,
           providerIds: [calls === 1 ? "other" : "cpa"], nonModelCapabilities: [] }] };
       }
+    } : action === "exact" ? {
+      runtimeDiscoveryProvider() {
+        calls += 1;
+        if (calls === 1) {
+          const changed = structuredClone(ws.config);
+          changed.agents!.defaults!.model = "ghost/gone";
+          writeFileSync(ws.paths.openclawPath, JSON.stringify(changed));
+        }
+        return discovery();
+      }
     } : {
       runtimeModelCatalogProvider() {
         calls += 1;
         if (calls === 1) {
           const changed = structuredClone(ws.config);
-          changed.agents!.defaults!.model = action === "exact" ? "ghost/gone" : "cpa/runtime-only";
+          changed.agents!.defaults!.model = "cpa/runtime-only";
           writeFileSync(ws.paths.openclawPath, JSON.stringify(changed));
         }
         return snapshot();
@@ -570,7 +575,7 @@ for (const action of ["exact", "materialize", "plugin"] as const) {
       : action === "materialize" ? await request(app, "/api/models/materialize", "POST", { ref: "cpa/runtime-only", input: { id: "runtime-only", enabled: false } })
       : await request(app, "/api/plugins/example/state", "PATCH", { enabled: false, confirm: true });
     expect(result.response.status).toBe(400);
-    expect(calls).toBe(action === "plugin" ? 3 : 2);
+    expect(calls).toBe(action === "plugin" ? 3 : action === "exact" ? 1 : 2);
     const saved = JSON.parse(readFileSync(ws.paths.openclawPath, "utf8"));
     expect(saved.models).toEqual(ws.config.models);
     expect(saved.agents.defaults.modelPolicy.allow).toEqual(ws.config.agents!.defaults!.modelPolicy!.allow);
@@ -738,3 +743,199 @@ describe("O4/O5:按需 discovery 与刷新合并", () => {
     expect(await runtime.currentDiscovery()).toEqual(marker);
   });
 });
+
+// 2026-10-08：普通本地保存不依赖完整目录/在线探测；显式确认才刷新运行时。
+describe("静态保存与显式运行时确认", () => {
+  const localWrites = [
+    { url: "/api/models/primary", method: "PUT", body: { ref: "cpa/local" } },
+    { url: "/api/models", method: "PATCH", body: { ref: "cpa/local", enabled: true } },
+    { url: "/api/models", method: "PATCH", body: { ref: "cpa/local", enabled: false } },
+    { url: "/api/models", method: "PUT", body: { ref: "cpa/local", model: { id: "local", name: "Updated", enabled: true } } },
+    { url: "/api/models", method: "DELETE", body: { ref: "cpa/local" } },
+    { url: "/api/models", method: "POST", body: { providerId: "cpa", model: { id: "new", enabled: true } } },
+    { url: "/api/providers/cpa", method: "PUT", body: { baseUrl: "https://config.example/v1" } },
+    { url: "/api/providers/cpa/models/batch-remove", method: "POST", body: { modelIds: ["local"] } }
+  ];
+  for (const operation of localWrites) {
+    test(`${operation.method} ${operation.url} confirmRuntime:false 不启动插件或运行时探测`, async () => {
+      const ws = fixture();
+      let pluginCalls = 0, runtimeCalls = 0;
+      const app = createApp(appOptions(ws.paths, {
+        pluginCatalogProvider: () => { pluginCalls++; return emptyPlugins(); },
+        runtimeModelCatalogProvider: () => { runtimeCalls++; return snapshot(); }
+      }));
+      const saved = await request(app, operation.url, operation.method, { ...operation.body, confirmRuntime: false });
+      expect(saved.response.status).toBe(200);
+      expect(saved.json).toMatchObject({ ok: true, onlineStatusPending: true, runtimeConfirmed: false });
+      expect(saved.json.inventory).toBeUndefined();
+      expect(saved.json.backupId).toBeTruthy();
+      expect([pluginCalls, runtimeCalls]).toEqual([0, 0]);
+      const checked = await request(app, "/api/model-inventory/refresh", "POST");
+      expect(checked.response.status).toBe(200);
+      expect(checked.json.schemaVersion).toBe(2);
+      expect([pluginCalls, runtimeCalls]).toEqual([1, 1]);
+    });
+  }
+
+  for (const action of ["add", "replace", "remove", "exact", "batch", "wildcard", "noop"] as const) {
+    test(`policy ${action} 快速保存保留配置保护且不探测`, async () => {
+      const ws = fixture();
+      if (action === "wildcard") ws.config.agents!.defaults!.modelPolicy!.allow!.push("cpa/unused/*");
+      writeFileSync(ws.paths.openclawPath, JSON.stringify(ws.config));
+      let pluginCalls = 0, runtimeCalls = 0;
+      const app = createApp(appOptions(ws.paths, {
+        pluginCatalogProvider: () => { pluginCalls++; return emptyPlugins(); },
+        runtimeModelCatalogProvider: () => { runtimeCalls++; return snapshot(); }
+      }));
+      const expectedRevision = buildModelPolicyRevision(ws.config);
+      const operation = action === "add" ? { url: "/api/model-policy/rules", method: "POST", body: { rule: "cpa/new" } }
+        : action === "replace" ? { url: "/api/model-policy/rules", method: "PATCH", body: { value: "cpa/local", rule: "cpa/new", expectedRevision } }
+        : action === "remove" ? { url: "/api/model-policy/rules", method: "DELETE", body: { value: "cpa/local", expectedRevision } }
+        : action === "exact" ? { url: "/api/model-policy/exact-ref", method: "DELETE", body: { ref: "cpa/local" } }
+        : action === "wildcard" ? { url: "/api/model-policy/wildcard", method: "DELETE", body: { value: "cpa/unused/*" } }
+        : { url: "/api/model-policy/rules/batch-remove", method: "POST", body: { values: action === "noop" ? [] : ["cpa/local"], expectedRevision } };
+      const saved = await request(app, operation.url, operation.method, { ...operation.body, confirmRuntime: false });
+      expect(saved.response.status).toBe(200);
+      expect(saved.json).toMatchObject({ ok: true, onlineStatusPending: true, runtimeConfirmed: false });
+      expect(saved.json.inventory).toBeUndefined();
+      expect([pluginCalls, runtimeCalls]).toEqual([0, 0]);
+      expect(backups(ws.paths)).toHaveLength(action === "noop" ? 0 : 1);
+    });
+  }
+
+  test("旧policy调用默认仍做一次写后确认，快速保存不偷偷关闭revision保护", async () => {
+    const ws = fixture();
+    let runtimeCalls = 0;
+    const app = createApp(appOptions(ws.paths, { runtimeModelCatalogProvider: () => { runtimeCalls++; return snapshot(); } }));
+    const expectedRevision = buildModelPolicyRevision(ws.config);
+    const result = await request(app, "/api/model-policy/rules", "PATCH", { value: "cpa/local", rule: "cpa/new", expectedRevision });
+    expect(result.response.status).toBe(200);
+    expect(result.json.runtimeConfirmed).toBe(true);
+    expect(result.json.inventory.schemaVersion).toBe(2);
+    expect(runtimeCalls).toBe(1);
+    const conflict = await request(app, "/api/model-policy/rules", "DELETE", { value: "cpa/main", expectedRevision, confirmRuntime: false });
+    expect(conflict.response.status).toBe(409);
+    expect(backups(ws.paths)).toHaveLength(1);
+  });
+
+  for (const action of ["enable", "use", "disable"] as const) {
+    for (const availability of ["unavailable", "unknown"] as const) {
+      test(`快速模式仍拒绝 ${availability} runtime-only ${action}`, async () => {
+        const ws = fixture();
+        const observed = snapshot(false);
+        if (availability === "unknown") observed.completeness.allList = false;
+        const app = createApp(appOptions(ws.paths, { runtimeModelCatalogProvider: () => observed }));
+        const before = readFileSync(ws.paths.openclawPath, "utf8");
+        const result = action === "use"
+          ? await request(app, "/api/models/primary", "PUT", { ref: "cpa/runtime-only", confirmRuntime: false })
+          : await request(app, "/api/models", "PATCH", { ref: "cpa/runtime-only", enabled: action === "enable", confirmRuntime: false });
+        expect(result.response.status).toBe(400);
+        expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+        expect(backups(ws.paths)).toEqual([]);
+      });
+    }
+  }
+
+  test("materialize 的快速响应只跳过写后确认，仍执行一次 fresh preflight", async () => {
+    const ws = fixture();
+    let runtimeCalls = 0;
+    const app = createApp(appOptions(ws.paths, { runtimeModelCatalogProvider: () => { runtimeCalls++; return snapshot(); } }));
+    const saved = await request(app, "/api/models/materialize", "POST", { ref: "cpa/runtime-only", input: { id: "runtime-only", enabled: false }, confirmRuntime: false });
+    expect(saved.response.status).toBe(200);
+    expect(saved.json.onlineStatusPending).toBe(true);
+    expect(runtimeCalls).toBe(1);
+    expect(JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")).models.providers.cpa.models.some((model: { id: string }) => model.id === "runtime-only")).toBe(true);
+  });
+
+  test("插件停用的快速响应保留descriptor和选择器预检，跳过写后确认", async () => {
+    const ws = fixture();
+    let pluginCalls = 0, runtimeCalls = 0;
+    const app = createApp(appOptions(ws.paths, {
+      pluginCatalogProvider: () => { pluginCalls++; return { providers: [], diagnostics: [], plugins: [{ id: "shelved", origin: "bundled", enabled: true, providerIds: ["ghost"], nonModelCapabilities: [] }] }; },
+      runtimeModelCatalogProvider: () => { runtimeCalls++; return snapshot(); }
+    }));
+    const saved = await request(app, "/api/plugins/shelved/state", "PATCH", { enabled: false, confirm: true, confirmRuntime: false });
+    expect(saved.response.status).toBe(200);
+    expect(saved.json).toMatchObject({ onlineStatusPending: true, runtimeConfirmed: false });
+    expect([pluginCalls, runtimeCalls]).toEqual([1, 1]);
+    expect(JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")).agents.defaults.modelPolicy.allow).not.toContain("ghost/gone");
+  });
+
+  test("confirmRuntime 非boolean拒绝，不以truthiness改变确认语义", async () => {
+    const ws = fixture();
+    const app = createApp(appOptions(ws.paths));
+    const saved = await request(app, "/api/models/primary", "PUT", { ref: "cpa/local", confirmRuntime: "false" });
+    expect(saved.response.status).toBe(400);
+    expect(backups(ws.paths)).toEqual([]);
+  });
+
+  for (const action of ["enable", "use"] as const) {
+    test(`快速模式仍拒绝 unknown 插件模型 ${action}`, async () => {
+      const ws = fixture();
+      const app = createApp(appOptions(ws.paths, {
+        pluginCatalogProvider: () => ({ providers: [{ pluginId: "external", providerId: "extra", origin: "bundled", enabled: true, models: [{ id: "one" }], apiKeyEnvVars: [] }],
+          plugins: [{ id: "external", origin: "bundled", enabled: true, providerIds: ["extra"], nonModelCapabilities: [] }], diagnostics: [] }),
+        runtimeModelCatalogProvider: () => ({ ...snapshot(false), completeness: { status: false, configuredList: false, allList: false } })
+      }));
+      const result = action === "use"
+        ? await request(app, "/api/models/primary", "PUT", { ref: "extra/one", confirmRuntime: false })
+        : await request(app, "/api/models", "PATCH", { ref: "extra/one", enabled: true, confirmRuntime: false });
+      expect(result.response.status).toBe(400);
+      expect(String(result.json.error)).toContain("unknown");
+      expect(backups(ws.paths)).toEqual([]);
+    });
+  }
+
+  test("Provider停用只省写后确认，保留fresh选择证据；恢复快响应不重探测", async () => {
+    const ws = fixture();
+    ws.config.models!.providers!.idle = { models: [{ id: "one" }] };
+    ws.config.agents!.defaults!.modelPolicy!.allow!.push("idle/one");
+    writeFileSync(ws.paths.openclawPath, JSON.stringify(ws.config));
+    let runtimeCalls = 0;
+    const app = createApp(appOptions(ws.paths, { runtimeModelCatalogProvider: () => { runtimeCalls++; return snapshot(); } }));
+    const off = await request(app, "/api/providers/idle/state", "PATCH", { enabled: false, confirmRuntime: false });
+    expect(off.response.status).toBe(200);
+    expect(off.json).toMatchObject({ runtimeConfirmed: false, onlineStatusPending: true });
+    expect(runtimeCalls).toBe(1);
+    const on = await request(app, "/api/providers/idle/state", "PATCH", { enabled: true, confirmRuntime: false });
+    expect(on.response.status).toBe(200);
+    expect(on.json.onlineStatusPending).toBe(true);
+    expect(runtimeCalls).toBe(1);
+  });
+
+  test("悬空metadata快速响应仍取得fresh inventory，不把新目录误删", async () => {
+    const ws = fixture();
+    ws.config.agents!.defaults!.models!["cpa/gone"] = { alias: "old" };
+    writeFileSync(ws.paths.openclawPath, JSON.stringify(ws.config));
+    let runtimeCalls = 0;
+    const app = createApp(appOptions(ws.paths, { runtimeModelCatalogProvider: () => { runtimeCalls++; return snapshot(); } }));
+    const cleaned = await request(app, "/api/models/dangling-metadata", "DELETE", { ref: "cpa/gone", confirmRuntime: false });
+    expect(cleaned.response.status).toBe(200);
+    expect(cleaned.json.onlineStatusPending).toBe(true);
+    expect(runtimeCalls).toBe(1);
+    const blocked = await request(app, "/api/models/dangling-metadata", "DELETE", { ref: "cpa/local", confirmRuntime: false });
+    expect(blocked.response.status).toBe(400);
+    expect(runtimeCalls).toBe(2);
+    expect(JSON.parse(readFileSync(ws.paths.openclawPath, "utf8")).models.providers.cpa.models.some((model: { id: string }) => model.id === "local")).toBe(true);
+  });
+
+});
+
+
+for (const ref of ["cpa/main", "cpa/fallback"] as const) {
+  test(`HTTP config edit enabled:false cannot remove protected selection ${ref}`, async () => {
+    const ws = fixture();
+    let pluginCalls = 0, runtimeCalls = 0;
+    const app = createApp(appOptions(ws.paths, {
+      pluginCatalogProvider: () => { pluginCalls++; return emptyPlugins(); },
+      runtimeModelCatalogProvider: () => { runtimeCalls++; return snapshot(); }
+    }));
+    const before = readFileSync(ws.paths.openclawPath, "utf8");
+    const edited = await request(app, "/api/models", "PUT", { ref, model: { id: ref.split("/")[1], name: "Changed", enabled: false }, confirmRuntime: false });
+    expect(edited.response.status).toBe(400);
+    expect(String(edited.json.error)).toContain(ref === "cpa/main" ? "primary model" : "fallbacks");
+    expect(readFileSync(ws.paths.openclawPath, "utf8")).toBe(before);
+    expect(backups(ws.paths)).toEqual([]);
+    expect([pluginCalls, runtimeCalls]).toEqual([0, 0]);
+  });
+}

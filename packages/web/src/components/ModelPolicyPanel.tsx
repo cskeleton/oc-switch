@@ -1,4 +1,4 @@
-import type { ModelPolicyMode, ModelPolicyRuleEntry } from "../api";
+import type { ModelPolicyMode, ModelPolicyRuleEntry, StaticModelPolicyRuleEntry } from "../api";
 import { DataTable, type Column } from "./DataTable";
 import { EmptyState } from "./EmptyState";
 import type { StalePolicyRef } from "./StalePolicyRefsCleanupDialog";
@@ -15,8 +15,10 @@ import { Pill } from "./ui/pill";
  * - 顶部「清理悬空引用 (N)」：config-status 检出的悬空 exact 规则批量清理入口（stale cleanup spec §6）。
  */
 
+type PolicyRule = ModelPolicyRuleEntry | StaticModelPolicyRuleEntry;
+
 interface ModelPolicyPanelProps {
-  rules: ModelPolicyRuleEntry[];
+  rules: PolicyRule[];
   /** 当前策略模式；缺失（旧后端）时隐藏添加入口，安全回退为提示 */
   policyMode?: ModelPolicyMode | undefined;
   /** policy 内容指纹；缺失（旧后端）时编辑/删除入口显示「版本不支持」 */
@@ -26,16 +28,16 @@ interface ModelPolicyPanelProps {
   /** 打开添加规则对话框（仅 restricted 模式渲染入口） */
   onAddRule: () => void;
   /** 打开编辑规则对话框（仅 editable 规则渲染入口） */
-  onEditRule: (rule: ModelPolicyRuleEntry) => void;
+  onEditRule: (rule: PolicyRule) => void;
   /** 删除规则入口；由调用方统一走纯规则删除流程 */
-  onRemoveRule: (rule: ModelPolicyRuleEntry) => void | Promise<void>;
+  onRemoveRule: (rule: PolicyRule) => void | Promise<void>;
   /** config-status 检出的悬空 exact 规则（∩ 当前 exact 规则，原始字符串）；非空时顶部显示批量清理入口 */
   staleRefs?: StalePolicyRef[];
   /** 打开「清理悬空引用」对话框 */
   onCleanupStaleRefs?: () => void;
 }
 
-function kindPill(rule: ModelPolicyRuleEntry): { label: string; tone: "brand" | "muted" | "destructive" } {
+function kindPill(rule: PolicyRule): { label: string; tone: "brand" | "muted" | "destructive" } {
   switch (rule.kind) {
     case "exact":
       return { label: "精确", tone: "brand" };
@@ -47,7 +49,8 @@ function kindPill(rule: ModelPolicyRuleEntry): { label: string; tone: "brand" | 
 }
 
 /** 两种布局共享同一份计数内容，手机把它放到完整规则值下方。 */
-function RuleCounts({ rule }: { rule: ModelPolicyRuleEntry }) {
+function RuleCounts({ rule }: { rule: PolicyRule }) {
+  if (!("matchedModelCount" in rule)) return <span className="text-muted-foreground">在线命中情况待确认</span>;
   return (
     <span className="inline-flex flex-wrap items-center gap-1 text-muted-foreground">
       命中 {rule.matchedModelCount} 个模型
@@ -58,7 +61,7 @@ function RuleCounts({ rule }: { rule: ModelPolicyRuleEntry }) {
 }
 
 export function ModelPolicyPanel({ rules, policyMode, policyRevision, busy, onAddRule, onEditRule, onRemoveRule, staleRefs, onCleanupStaleRefs }: ModelPolicyPanelProps) {
-  const columns: Column<ModelPolicyRuleEntry>[] = [
+  const columns: Column<PolicyRule>[] = [
     {
       key: "value",
       header: "规则",
@@ -109,6 +112,7 @@ export function ModelPolicyPanel({ rules, policyMode, policyRevision, busy, onAd
           <Button
             variant="ghost"
             size="sm"
+            disabled={busy}
             aria-label={`编辑规则 ${row.value}`}
             onClick={() => onEditRule(row)}
           >
@@ -120,6 +124,7 @@ export function ModelPolicyPanel({ rules, policyMode, policyRevision, busy, onAd
           <Button
             variant="ghost"
             size="sm"
+            disabled={busy}
             aria-label={`删除规则 ${row.value}`}
             onClick={() => void onRemoveRule(row)}
           >

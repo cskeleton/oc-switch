@@ -3,6 +3,7 @@ import {
   createConfigAdapter,
   disableModel,
   enableModel,
+  hasProviderModel,
   normalizeModelRefForStorage,
   parseModelRef,
   removeDanglingModelMetadata,
@@ -35,6 +36,7 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
   app.put("/api/models/primary", async (c) => {
     try {
       const body = await requireJsonObject(c.req);
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       const ref = requireString(body.ref, "ref");
       const paths = runtime.currentPaths();
       const result = await writeOpenClawTransaction({
@@ -42,6 +44,11 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `set primary model ${ref}`,
         async mutate(config) {
+          // 本地目录模型的保存只校验配置事实；运行时独有模型仍需新鲜可用性证据。
+          if (hasProviderModel(config, ref)) {
+            assertProviderCanEnable(paths, parseModelRef(ref).providerId);
+            return setPrimaryModel(config, ref).config;
+          }
           const entry = (await runtime.buildCurrentInventory({ refresh: true, config, paths })).models.find(row => normalizeModelRefForStorage(row.ref) === normalizeModelRefForStorage(ref));
           if (!entry) throw new Error(`Model ${ref} not found in current inventory.`);
           assertProviderCanEnable(paths, entry.providerId);
@@ -49,7 +56,7 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
         }
       });
       runtime.invalidateCatalogCaches();
-      return c.json({ ok: true, ref, backupId: result.backupDir.split("/").pop() });
+      return c.json({ ok: true, ref, backupId: result.backupDir.split("/").pop(), ...(confirmRuntime ? {} : { onlineStatusPending: true, runtimeConfirmed: false }) });
     } catch (error) {
       return jsonError(c, error);
     }
@@ -58,6 +65,7 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
   app.patch("/api/models", async (c) => {
     try {
       const body = await requireJsonObject(c.req);
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       const ref = requireString(body.ref, "ref");
       const enabled = requireBoolean(body.enabled, "enabled");
       const alias = optionalString(body.alias, "alias");
@@ -67,6 +75,13 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: enabled ? `enable model ${ref}` : `disable model ${ref}`,
         async mutate(config) {
+          if (hasProviderModel(config, ref)) {
+            if (enabled) {
+              assertProviderCanEnable(paths, parseModelRef(ref).providerId);
+              return enableModel(config, ref, alias).config;
+            }
+            return disableModel(config, ref).config;
+          }
           const entry = (await runtime.buildCurrentInventory({ refresh: true, config, paths })).models.find(row => normalizeModelRefForStorage(row.ref) === normalizeModelRefForStorage(ref));
           if (!entry) throw new Error(`Model ${ref} not found in current inventory.`);
           if (enabled) {
@@ -78,7 +93,7 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
         }
       });
       runtime.invalidateCatalogCaches();
-      return c.json({ ok: true, ref, enabled, backupId: result.backupDir.split("/").pop() });
+      return c.json({ ok: true, ref, enabled, backupId: result.backupDir.split("/").pop(), ...(confirmRuntime ? {} : { onlineStatusPending: true, runtimeConfirmed: false }) });
     } catch (error) {
       return jsonError(c, error);
     }
@@ -87,6 +102,7 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
   app.post("/api/models", async (c) => {
     try {
       const body = await requireJsonObject(c.req);
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       const providerId = requireString(body.providerId, "providerId");
       const model = requireProviderModelInput(body.model);
       if (model.enabled) {
@@ -102,7 +118,7 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
         }
       });
       runtime.invalidateCatalogCaches();
-      return c.json({ ok: true, ref, backupId: result.backupDir.split("/").pop() });
+      return c.json({ ok: true, ref, backupId: result.backupDir.split("/").pop(), ...(confirmRuntime ? {} : { onlineStatusPending: true, runtimeConfirmed: false }) });
     } catch (error) {
       return jsonError(c, error);
     }
@@ -111,6 +127,7 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
   app.put("/api/models", async (c) => {
     try {
       const body = await requireJsonObject(c.req);
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       const ref = requireString(body.ref, "ref");
       const model = requireProviderModelInput(body.model);
       const paths = runtime.currentPaths();
@@ -119,14 +136,16 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `edit model ${ref}`,
         async mutate(config) {
-          const entry = (await runtime.buildCurrentInventory({ refresh: true, config, paths })).models.find(row => normalizeModelRefForStorage(row.ref) === normalizeModelRefForStorage(ref));
-          if (entry?.availability === "unknown") throw new Error("Runtime model availability is unknown; refresh before editing its catalog entry.");
+          if (!hasProviderModel(config, ref)) {
+            const entry = (await runtime.buildCurrentInventory({ refresh: true, config, paths })).models.find(row => normalizeModelRefForStorage(row.ref) === normalizeModelRefForStorage(ref));
+            if (entry?.availability === "unknown") throw new Error("Runtime model availability is unknown; refresh before editing its catalog entry.");
+          }
           if (model.enabled) assertProviderCanEnable(paths, parseModelRef(ref).providerId);
           return updateProviderModel(config, ref, model).config;
         }
       });
       runtime.invalidateCatalogCaches();
-      return c.json({ ok: true, ref, backupId: result.backupDir.split("/").pop() });
+      return c.json({ ok: true, ref, backupId: result.backupDir.split("/").pop(), ...(confirmRuntime ? {} : { onlineStatusPending: true, runtimeConfirmed: false }) });
     } catch (error) {
       return jsonError(c, error);
     }
@@ -135,6 +154,7 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
   app.delete("/api/models", async (c) => {
     try {
       const body = await requireJsonObject(c.req);
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       const ref = requireString(body.ref, "ref");
       const removeOptions: { force: boolean; newPrimary?: string; layers?: RemovalLayers } = {
         force: requireBooleanDefault(body.force, "force", false)
@@ -152,11 +172,12 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
         runtimeDiscoveryProvider: runtime.runtimeDiscoveryProvider,
         reason: `remove model ${ref}`,
         async mutate(config) {
-          const entry = (await runtime.buildCurrentInventory({ refresh: true, config, paths })).models.find(row => normalizeModelRefForStorage(row.ref) === normalizeModelRefForStorage(ref));
-          // unknown 门禁保护的是「目录条目」。没有任何目录来源的悬空 metadata 行没有目录条目可保护，
-          // 放行给 removeProviderModel 做 metadata 层清理；primary/fallback 与防清空仍由 Core fail closed。
-          if (entry?.availability === "unknown" && entry.catalogSources.length > 0) {
-            throw new Error("Runtime model availability is unknown; refresh before removing its catalog entry.");
+          if (!hasProviderModel(config, ref)) {
+            // 非本地目录来源仍复核 unknown；无目录的 metadata 引用由 Core 静态保护。
+            const entry = (await runtime.buildCurrentInventory({ refresh: true, config, paths })).models.find(row => normalizeModelRefForStorage(row.ref) === normalizeModelRefForStorage(ref));
+            if (entry?.availability === "unknown" && entry.catalogSources.length > 0) {
+              throw new Error("Runtime model availability is unknown; refresh before removing its catalog entry.");
+            }
           }
           const removed = removeProviderModel(config, ref, removeOptions);
           warnings = removed.warnings;
@@ -164,7 +185,7 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
         }
       });
       runtime.invalidateCatalogCaches();
-      return c.json({ ok: true, ref, warnings, backupId: result.backupDir.split("/").pop() });
+      return c.json({ ok: true, ref, warnings, backupId: result.backupDir.split("/").pop(), ...(confirmRuntime ? {} : { onlineStatusPending: true, runtimeConfirmed: false }) });
     } catch (error) {
       return jsonError(c, error);
     }
@@ -180,6 +201,7 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
   app.delete("/api/models/dangling-metadata", async (c) => {
     try {
       const body = await requireJsonObject(c.req);
+      const confirmRuntime = requireBooleanDefault(body.confirmRuntime, "confirmRuntime", true);
       const ref = requireString(body.ref, "ref");
       const paths = runtime.currentPaths();
       let warnings: string[] = [];
@@ -199,7 +221,7 @@ export function registerModelRoutes(app: Hono, runtime: AppRuntime): void {
         }
       });
       runtime.invalidateCatalogCaches();
-      return c.json({ ok: true, ref, warnings, backupId: result.backupDir.split("/").pop() });
+      return c.json({ ok: true, ref, warnings, backupId: result.backupDir.split("/").pop(), ...(confirmRuntime ? {} : { onlineStatusPending: true, runtimeConfirmed: false }) });
     } catch (error) {
       return jsonError(c, error);
     }

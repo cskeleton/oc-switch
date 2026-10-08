@@ -1,3 +1,4 @@
+import { OperationProgress } from "./OperationProgress";
 import { useEffect, useRef, useState } from "react";
 import type {
   ApiType,
@@ -311,7 +312,7 @@ export function ModelDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={(val) => { if (!val) onCancel(); }}>
+    <Dialog open={open} onOpenChange={(val) => { if (!val && !saving) onCancel(); }}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{mode === "create" ? "添加模型" : "编辑模型"}</DialogTitle>
@@ -508,12 +509,13 @@ export function ModelDialog({
           </div>
         </div>
 
+        {saving ? <OperationProgress phase="saving" /> : null}
         <DialogFooter>
-          <Button variant="outline" onClick={onCancel}>
+          <Button variant="outline" disabled={saving} onClick={onCancel}>
             取消
           </Button>
           <Button disabled={saving} onClick={() => void submit()}>
-            保存模型
+            {saving ? "保存中…" : "保存模型"}
           </Button>
         </DialogFooter>
       </DialogContent>
